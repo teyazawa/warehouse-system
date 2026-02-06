@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { supabase } from "./supabaseClient";
 import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -289,7 +290,7 @@ const SHELF_COLORS = {
   lavender: { bg: "bg-violet-100/70", border: "border-violet-300", handle: "bg-violet-200", label: "ラベンダー" },
 };
 
-function useLocalStorageState(key, initial) {
+function useSupabaseState(key, initial) {
   const [value, setValue] = useState(() => {
     try {
       const raw = localStorage.getItem(key);
@@ -298,13 +299,44 @@ function useLocalStorageState(key, initial) {
       return initial;
     }
   });
+  const [loaded, setLoaded] = useState(false);
+
+  // Supabaseから読み込み（起動時1回）
   useEffect(() => {
+    if (!supabase) { setLoaded(true); return; }
+    supabase
+      .from("app_state")
+      .select("value")
+      .eq("key", key)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (data?.value != null) {
+          setValue(data.value);
+          localStorage.setItem(key, JSON.stringify(data.value));
+        }
+        setLoaded(true);
+      })
+      .catch(() => setLoaded(true));
+  }, [key]);
+
+  // 変更時にSupabase + localStorageに保存（デバウンス）
+  useEffect(() => {
+    if (!loaded) return;
     try {
       localStorage.setItem(key, JSON.stringify(value));
     } catch {
       // ignore
     }
-  }, [key, value]);
+    if (!supabase) return;
+    const timer = setTimeout(() => {
+      supabase
+        .from("app_state")
+        .upsert({ key, value, updated_at: new Date().toISOString() })
+        .then(() => {});
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [key, value, loaded]);
+
   return [value, setValue];
 }
 
@@ -511,11 +543,11 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse }) {
     []
   );
 
-  const [layout, setLayout] = useLocalStorageState(`wh_demo_layout_${wh.id}_v1`, defaultLayout);
-  const [units, setUnits] = useLocalStorageState(`wh_demo_units_${wh.id}_v1`, []);
+  const [layout, setLayout] = useSupabaseState(`wh_demo_layout_${wh.id}_v1`, defaultLayout);
+  const [units, setUnits] = useSupabaseState(`wh_demo_units_${wh.id}_v1`, []);
   // units: {id, kind, client, name, w_m,d_m,h_m, qty, status, rot, loc:{kind:'unplaced'|'floor'|'rack', x?,y?, rackId?, slot?}}
 
-  const [panels, setPanels] = useLocalStorageState(`wh_demo_panels_${wh.id}_v1`, []);
+  const [panels, setPanels] = useSupabaseState(`wh_demo_panels_${wh.id}_v1`, []);
 
   // マイグレーション: layout.panelsが存在する場合、新stateに移行
   useEffect(() => {
@@ -4787,13 +4819,13 @@ export default function App() {
   const [activeWarehouseId, setActiveWarehouseId] = useState(null);
   const [selectedWarehouseId, setSelectedWarehouseId] = useState(null); // 地図上で選択中の倉庫
 
-  const [site, setSite] = useLocalStorageState("wh_demo_site_v1", {
+  const [site, setSite] = useSupabaseState("wh_demo_site_v1", {
     id: "site-1",
     name: "共有ワークスペース 倉庫群",
     map_scale_mode: "ui", // ui | scaled
   });
 
-  const [warehouses, setWarehouses] = useLocalStorageState("wh_demo_warehouses_v3", [
+  const [warehouses, setWarehouses] = useSupabaseState("wh_demo_warehouses_v3", [
     {
       id: "wh-" + uid(),
       name: "第1倉庫",
