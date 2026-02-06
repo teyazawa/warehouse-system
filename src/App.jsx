@@ -1023,7 +1023,22 @@ function openPanelDetailModal(panel) {
     }
     setSelected({ kind: "panel", id });
     setMultiSelected([]);
-    setDrag({ type: "move_panel", id, startX: e.clientX, startY: e.clientY, baseRect: { ...p } });
+    // 荷物と同じくpointerX/pointerY追跡方式（棚ドロップ対応）
+    const { cx, cy } = toCell(e.clientX, e.clientY);
+    const panelWorldX = p.loc?.kind === "shelf"
+      ? (() => { const s = (layout.shelves || []).find((s) => s.id === p.loc.shelfId); return s ? s.x + p.loc.x : p.x; })()
+      : p.x;
+    const panelWorldY = p.loc?.kind === "shelf"
+      ? (() => { const s = (layout.shelves || []).find((s) => s.id === p.loc.shelfId); return s ? s.y + p.loc.y : p.y; })()
+      : p.y;
+    setDrag({
+      type: "move_panel", id,
+      startX: e.clientX, startY: e.clientY,
+      pointerX: e.clientX, pointerY: e.clientY,
+      baseRect: { ...p },
+      offsetCx: cx - panelWorldX,
+      offsetCy: cy - panelWorldY,
+    });
   }
 
   function beginResizePanel(e, id, corner = "se") {
@@ -1096,18 +1111,60 @@ function openPanelDetailModal(panel) {
       return { ...u, loc: { ...u.loc, x: p.x, y: p.y }, rot: !u.rot };
     }));
 
-    // 配電盤の回転
+    // 配電盤の回転（床上のみ、棚上はスキップ）
     setPanels((prev) => prev.map((p) => {
+      if (p.loc?.kind === "shelf") return p;
       const rp = rotatePoint(p.x, p.y, p.w, p.h);
       return { ...p, x: rp.x, y: rp.y, w: p.h, h: p.w };
     }));
   }
 
   function rotateShelf(id) {
+    const shelf = (layout.shelves || []).find((s) => s.id === id);
+    if (!shelf) return;
+    // 床と同じ方式: w/hを入れ替えて物理的に回転（中心を基準に90度CW）
+    const cx = shelf.x + shelf.w / 2;
+    const cy = shelf.y + shelf.h / 2;
+    const newW = shelf.h;
+    const newH = shelf.w;
+    // 丸めなし: ドリフト防止（中心座標を正確に維持）
+    const newX = cx - newW / 2;
+    const newY = cy - newH / 2;
+
+    // 床の rotatePoint と同じパターン（ワールド座標で回転）
+    function rotatePoint(worldItemX, worldItemY, w, h) {
+      const itemCx = worldItemX + w / 2;
+      const itemCy = worldItemY + h / 2;
+      const dx = itemCx - cx;
+      const dy = itemCy - cy;
+      const newItemCx = cx - dy;
+      const newItemCy = cy + dx;
+      return { x: newItemCx - h / 2, y: newItemCy - w / 2 };
+    }
+
+    // 棚上の荷物を回転
+    setUnits((prev) =>
+      prev.map((u) => {
+        if (u.loc?.kind !== "shelf" || u.loc.shelfId !== id) return u;
+        const fp = unitFootprintCells(u);
+        const p = rotatePoint(shelf.x + u.loc.x, shelf.y + u.loc.y, fp.w, fp.h);
+        return { ...u, loc: { ...u.loc, x: p.x - newX, y: p.y - newY }, rot: !u.rot };
+      })
+    );
+
+    // 棚上の配電盤を回転
+    setPanels((prev) =>
+      prev.map((p) => {
+        if (p.loc?.kind !== "shelf" || p.loc.shelfId !== id) return p;
+        const rp = rotatePoint(shelf.x + p.loc.x, shelf.y + p.loc.y, p.w, p.h);
+        return { ...p, loc: { ...p.loc, x: rp.x - newX, y: rp.y - newY }, w: p.h, h: p.w };
+      })
+    );
+
     setLayout((prev) => ({
       ...prev,
       shelves: (prev.shelves || []).map((s) =>
-        s.id === id ? { ...s, rotation: (s.rotation || 0) === 0 ? 90 : 0 } : s
+        s.id === id ? { ...s, x: newX, y: newY, w: newW, h: newH, rotation: 0 } : s
       ),
     }));
   }
@@ -1315,17 +1372,16 @@ function openPanelDetailModal(panel) {
       return;
     }
 
-    if (drag.type === "move_panel" || drag.type === "resize_panel") {
+    if (drag.type === "move_panel") {
+      // 荷物と同じくpointer追跡（endDragでドロップ先判定）
+      setDrag((d) => d ? { ...d, pointerX: e.clientX, pointerY: e.clientY } : d);
+      return;
+    }
+
+    if (drag.type === "resize_panel") {
       setPanels((prev) =>
         prev.map((p) => {
           if (p.id !== drag.id) return p;
-          if (drag.type === "move_panel") {
-            return {
-              ...p,
-              x: clamp(drag.baseRect.x + dx, layout.floor.x || 0, (layout.floor.x || 0) + layout.floor.cols - p.w),
-              y: clamp(drag.baseRect.y + dy, layout.floor.y || 0, (layout.floor.y || 0) + layout.floor.rows - p.h),
-            };
-          }
           // 4隅リサイズ対応
           const corner = drag.corner || "se";
           let newX = drag.baseRect.x;
@@ -1612,6 +1668,39 @@ function openPanelDetailModal(panel) {
 
       // Can't place, revert to original location
       showToast("ここには置けません");
+      setDrag(null);
+      return;
+    }
+
+    if (drag.type === "move_panel") {
+      const p = panels.find((x) => x.id === drag.id);
+      if (!p) { setDrag(null); return; }
+
+      const { cx, cy } = toCell(drag.pointerX, drag.pointerY);
+      const dropX = cx - (drag.offsetCx || 0);
+      const dropY = cy - (drag.offsetCy || 0);
+
+      // 棚にドロップ
+      const shelf = findShelfAtCell(cx, cy);
+      if (shelf) {
+        const local = worldToShelfLocal(shelf, dropX, dropY);
+        const clampedX = clamp(Math.floor(local.localX), 0, shelf.w - p.w);
+        const clampedY = clamp(Math.floor(local.localY), 0, shelf.h - p.h);
+        setPanels((prev) => prev.map((x) =>
+          x.id === p.id ? { ...x, loc: { kind: "shelf", shelfId: shelf.id, x: clampedX, y: clampedY } } : x
+        ));
+        setDrag(null);
+        return;
+      }
+
+      // 床にドロップ
+      const fx = layout.floor.x || 0;
+      const fy = layout.floor.y || 0;
+      const floorX = clamp(dropX, fx, fx + layout.floor.cols - p.w);
+      const floorY = clamp(dropY, fy, fy + layout.floor.rows - p.h);
+      setPanels((prev) => prev.map((x) =>
+        x.id === p.id ? { ...x, x: floorX, y: floorY, loc: { kind: "floor" } } : x
+      ));
       setDrag(null);
       return;
     }
@@ -2000,7 +2089,7 @@ function openPanelDetailModal(panel) {
       const delta = -e.deltaY;
       const factor = delta > 0 ? 1.08 : 0.92;
       setZoom((prevZoom) => {
-        const nextZoom = clamp(prevZoom * factor, 0.6, 2.2);
+        const nextZoom = clamp(prevZoom * factor, 0.3, 2.2);
         const r = el.getBoundingClientRect();
         const cx = e.clientX - r.left;
         const cy = e.clientY - r.top;
@@ -2295,7 +2384,7 @@ function openPanelDetailModal(panel) {
                     return (
                       <div
                         style={{
-                          fontSize: "6rem",
+                          fontSize: `${layout.floor.floorLabelFontSize || 6}rem`,
                           fontWeight: 900,
                           color: `rgba(${labelRgb.join(",")}, 0.08)`,
                           userSelect: "none",
@@ -2307,28 +2396,29 @@ function openPanelDetailModal(panel) {
                   })()}
                 </div>
 
-                {/* 右下リサイズハンドル（三角形）- 回転しても視覚的な右下に維持 */}
-                {mode === "layout" && (
-                  <div
-                    className="absolute cursor-se-resize"
-                    style={{
-                      bottom: 0,
-                      right: 0,
-                      width: 0,
-                      height: 0,
-                      borderStyle: "solid",
-                      borderWidth: "0 0 24px 24px",
-                      borderColor: "transparent transparent #374151 transparent",
-                      zIndex: 100,
-                    }}
-                    onMouseDown={(e) => {
-                      e.stopPropagation();
-                      beginResizeFloor(e, "se");
-                    }}
-                    title="リサイズ"
-                  />
-                )}
               </div>
+
+              {/* 床リサイズハンドル - 床divの外に配置しz-indexで最前面に */}
+              {mode === "layout" && (
+                <div
+                  className="absolute cursor-se-resize"
+                  style={{
+                    left: ((layout.floor.x || 0) + layout.floor.cols) * cellPx - 24,
+                    top: ((layout.floor.y || 0) + layout.floor.rows) * cellPx - 24,
+                    width: 0,
+                    height: 0,
+                    borderStyle: "solid",
+                    borderWidth: "0 0 24px 24px",
+                    borderColor: "transparent transparent #374151 transparent",
+                    zIndex: 200,
+                  }}
+                  onMouseDown={(e) => {
+                    e.stopPropagation();
+                    beginResizeFloor(e, "se");
+                  }}
+                  title="リサイズ"
+                />
+              )}
 
 
               {/* Floor grid lines */}
@@ -2415,19 +2505,14 @@ function openPanelDetailModal(panel) {
                     <div
                       className="absolute pointer-events-none"
                       style={{
-                        top: 0,
-                        left: 0,
-                        right: 0,
-                        bottom: 0,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
+                        top: 0, left: 0, right: 0, bottom: 0,
+                        display: "flex", alignItems: "center", justifyContent: "center",
                         zIndex: 50,
                       }}
                     >
                       <div
                         style={{
-                          fontSize: "1.5rem",
+                          fontSize: `${z.labelFontSize || 1.5}rem`,
                           fontWeight: 900,
                           color: `rgba(${labelRgb.join(",")}, 0.15)`,
                           userSelect: "none",
@@ -2496,19 +2581,14 @@ function openPanelDetailModal(panel) {
                     <div
                       className="absolute pointer-events-none"
                       style={{
-                        top: 0,
-                        left: 0,
-                        right: 0,
-                        bottom: 0,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
+                        top: 0, left: 0, right: 0, bottom: 0,
+                        display: "flex", alignItems: "center", justifyContent: "center",
                         zIndex: 50,
                       }}
                     >
                       <div
                         style={{
-                          fontSize: "1.5rem",
+                          fontSize: `${r.labelFontSize || 1.5}rem`,
                           fontWeight: 900,
                           color: `rgba(${labelRgb.join(",")}, 0.2)`,
                           userSelect: "none",
@@ -2685,7 +2765,7 @@ function openPanelDetailModal(panel) {
                         >
                           <div
                             style={{
-                              fontSize: "2.5rem",
+                              fontSize: `${s.labelFontSize || 2.5}rem`,
                               fontWeight: 900,
                               color: `rgba(${labelRgb.join(",")}, 0.12)`,
                               userSelect: "none",
@@ -2705,21 +2785,16 @@ function openPanelDetailModal(panel) {
                       const shelfUnitBgRgb = hexToRgb(u.bgColor || "#ffffff");
                       const shelfUnitBgOpacity = (u.bgOpacity ?? 100) / 100;
                       const isDraggingShelfUnit = drag?.type === "move_unit" && drag.unitId === u.id;
-                      const shelfDragTransform = isDraggingShelfUnit
-                        ? (() => {
-                            const sdx = (drag.pointerX - drag.startX) / zoom;
-                            const sdy = (drag.pointerY - drag.startY) / zoom;
-                            // 回転した棚の子要素内ではtranslateを逆回転
-                            if (shelfRotation === 90) return `translate(${sdy}px, ${-sdx}px)`;
-                            return `translate(${sdx}px, ${sdy}px)`;
-                          })()
+                      const hasMovedShelfUnit = isDraggingShelfUnit && (drag.pointerX !== drag.startX || drag.pointerY !== drag.startY);
+                      const shelfDragTransform = hasMovedShelfUnit
+                        ? `translate(${(drag.pointerX - drag.startX) / zoom}px, ${(drag.pointerY - drag.startY) / zoom}px)`
                         : undefined;
                       return (
                         <div
                           key={u.id}
                           className={
                             "absolute rounded-xl border-2 cursor-pointer " +
-                            (isDraggingShelfUnit ? "" : "transition-all duration-150 ") +
+                            (hasMovedShelfUnit ? "" : "transition-all duration-150 ") +
                             (isUnitSel ? "ring-2 ring-black shadow-lg z-20" : "hover:shadow-lg")
                           }
                           style={{
@@ -2732,38 +2807,38 @@ function openPanelDetailModal(panel) {
                               : "linear-gradient(145deg, #ffffff 0%, #f8fafc 100%)",
                             borderColor: isUnitSel ? "#1e293b" : (u.bgColor || "#e2e8f0"),
                             boxShadow: "0 2px 6px rgba(0,0,0,0.12)",
-                            zIndex: isDraggingShelfUnit ? 50 : 5,
+                            zIndex: hasMovedShelfUnit ? 50 : 8,
                             transform: shelfDragTransform,
-                            opacity: isDraggingShelfUnit ? 0.7 : undefined,
-                            pointerEvents: isDraggingShelfUnit ? "none" : undefined,
-                            transition: isDraggingShelfUnit ? "none" : undefined,
+                            opacity: hasMovedShelfUnit ? 0.7 : undefined,
+                            pointerEvents: hasMovedShelfUnit ? "none" : undefined,
+                            transition: hasMovedShelfUnit ? "none" : undefined,
                           }}
                           onMouseDown={(e) => {
                             e.stopPropagation();
                             if (mode === "operate") beginMoveUnit(e, u.id);
                           }}
-                          onClick={(e) => handleItemClick(e, "unit", u.id)}
+                          onClick={(e) => { e.stopPropagation(); handleItemClick(e, "unit", u.id); }}
                           onDoubleClick={(e) => {
                             e.stopPropagation();
                             openDetailModal(u);
                           }}
                         >
-                          <div className="p-1 h-full flex flex-col" style={{ color: u.labelColor || "#1f2937" }}>
-                            <div className="flex items-center gap-1">
-                              <span className="text-sm">{kindIcon}</span>
-                              <div className="truncate text-[10px] font-bold">{u.kind}</div>
+                          {/* Unit name - watermark style */}
+                          <div
+                            className="absolute pointer-events-none"
+                            style={{ top: 0, left: 0, right: 0, bottom: 0, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, overflow: "hidden" }}
+                          >
+                            <div style={{ fontSize: `${u.labelFontSize || 0.7}rem`, fontWeight: 900, color: `rgba(${hexToRgb(u.labelColor || "#000000").join(",")}, 0.15)`, userSelect: "none", textAlign: "center", lineHeight: 1.2 }}>
+                              {u.name}
                             </div>
-                            <div className="truncate text-[9px]" style={{ opacity: 0.7 }}>{u.client}</div>
                           </div>
-                          {/* 右下リサイズハンドル（三角形） */}
+                          {/* 右下リサイズハンドル */}
                           {mode === "operate" && (
                             <div
                               className="absolute cursor-se-resize"
                               style={{
-                                bottom: 0,
-                                right: 0,
-                                width: 0,
-                                height: 0,
+                                bottom: 0, right: 0,
+                                width: 0, height: 0,
                                 borderStyle: "solid",
                                 borderWidth: "0 0 12px 12px",
                                 borderColor: "transparent transparent #64748b transparent",
@@ -2776,6 +2851,60 @@ function openPanelDetailModal(panel) {
                               title="リサイズ"
                             />
                           )}
+                        </div>
+                      );
+                    })}
+
+                    {/* Panels on shelf */}
+                    {panels.filter((p) => p.loc?.kind === "shelf" && p.loc.shelfId === s.id).map((p) => {
+                      const isPanelSel = isItemSelected("panel", p.id);
+                      const panelLabelRgb = hexToRgb(p.labelColor || "#000000");
+                      const panelBgRgb = hexToRgb(p.bgColor || "#fef3c7");
+                      const panelBgOpacity = (p.bgOpacity ?? 90) / 100;
+                      const isDraggingShelfPanel = drag?.type === "move_panel" && drag.id === p.id;
+                      const hasMovedShelfPanel = isDraggingShelfPanel && (drag.pointerX !== drag.startX || drag.pointerY !== drag.startY);
+                      const shelfPanelDragTransform = hasMovedShelfPanel
+                        ? `translate(${(drag.pointerX - drag.startX) / zoom}px, ${(drag.pointerY - drag.startY) / zoom}px)`
+                        : undefined;
+                      return (
+                        <div
+                          key={p.id}
+                          className={
+                            "absolute rounded-xl border-2 cursor-pointer " +
+                            (hasMovedShelfPanel ? "" : "transition-all duration-150 ") +
+                            (isPanelSel ? "ring-2 ring-black shadow-lg" : "hover:shadow-lg")
+                          }
+                          style={{
+                            left: p.loc.x * cellPx + 1,
+                            top: p.loc.y * cellPx + 1,
+                            width: p.w * cellPx - 2,
+                            height: p.h * cellPx - 2,
+                            backgroundColor: `rgba(${panelBgRgb.join(",")}, ${panelBgOpacity})`,
+                            borderColor: p.bgColor || "#f59e0b",
+                            zIndex: hasMovedShelfPanel ? 50 : 8,
+                            transform: shelfPanelDragTransform,
+                            opacity: hasMovedShelfPanel ? 0.7 : undefined,
+                            pointerEvents: hasMovedShelfPanel ? "none" : undefined,
+                            transition: hasMovedShelfPanel ? "none" : undefined,
+                          }}
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                            if (mode === "operate") beginMovePanel(e, p.id);
+                          }}
+                          onClick={(e) => { e.stopPropagation(); handleItemClick(e, "panel", p.id); }}
+                          onDoubleClick={(e) => {
+                            e.stopPropagation();
+                            openPanelDetailModal(p);
+                          }}
+                        >
+                          <div
+                            className="absolute pointer-events-none"
+                            style={{ top: 0, left: 0, right: 0, bottom: 0, display: "flex", alignItems: "center", justifyContent: "center" }}
+                          >
+                            <div style={{ fontSize: `${p.labelFontSize || 0.6}rem`, fontWeight: 700, color: `rgba(${panelLabelRgb.join(",")}, 0.7)`, userSelect: "none", textAlign: "center" }}>
+                              {p.name}
+                            </div>
+                          </div>
                         </div>
                       );
                     })}
@@ -2821,8 +2950,9 @@ function openPanelDetailModal(panel) {
                 const unitBgOpacity = (u.bgOpacity ?? 100) / 100;
                 const unitLabelRgb = hexToRgb(u.labelColor || "#000000");
                 const isDragging = drag?.type === "move_unit" && drag.unitId === u.id;
+                const hasMoved = isDragging && (drag.pointerX !== drag.startX || drag.pointerY !== drag.startY);
                 const isGroupMoving = isSel && drag?.type === "group_move";
-                const dragTransform = isDragging
+                const dragTransform = hasMoved
                   ? `translate(${(drag.pointerX - drag.startX) / zoom}px, ${(drag.pointerY - drag.startY) / zoom}px)`
                   : isGroupMoving ? groupMoveTransform : undefined;
                 return (
@@ -2830,7 +2960,7 @@ function openPanelDetailModal(panel) {
                     key={u.id}
                     className={
                       "absolute rounded-3xl border-2 cursor-pointer " +
-                      ((isDragging || isGroupMoving) ? "" : "transition-all duration-150 ") +
+                      ((hasMoved || isGroupMoving) ? "" : "transition-all duration-150 ") +
                       (isSel ? "ring-2 ring-black shadow-lg" : "hover:shadow-xl hover:-translate-y-0.5")
                     }
                     style={{
@@ -2845,11 +2975,11 @@ function openPanelDetailModal(panel) {
                       boxShadow: isSel
                         ? "0 10px 25px -5px rgba(0,0,0,0.15), 0 4px 6px -2px rgba(0,0,0,0.1)"
                         : "0 4px 12px -2px rgba(0,0,0,0.08), 0 2px 4px -1px rgba(0,0,0,0.04)",
-                      zIndex: (isDragging || isGroupMoving) ? 50 : 5,
+                      zIndex: (hasMoved || isGroupMoving) ? 50 : 8,
                       transform: dragTransform,
-                      opacity: isDragging ? 0.7 : undefined,
-                      pointerEvents: isDragging ? "none" : undefined,
-                      transition: isDragging ? "none" : undefined,
+                      opacity: hasMoved ? 0.7 : undefined,
+                      pointerEvents: hasMoved ? "none" : undefined,
+                      transition: hasMoved ? "none" : undefined,
                     }}
                     onMouseDown={(e) => mode === "operate" && beginMoveUnit(e, u.id)}
                     onClick={(e) => handleItemClick(e, "unit", u.id)}
@@ -2858,30 +2988,13 @@ function openPanelDetailModal(panel) {
                       openDetailModal(u);
                     }}
                   >
-                    <div className="p-2 h-full flex flex-col" style={{ color: u.labelColor || "#1f2937" }}>
-                      <div className="flex items-start gap-2">
-                        <div className="text-lg flex-shrink-0">{kindIcon}</div>
-                        <div className="min-w-0 flex-1">
-                          <div className="truncate text-xs font-bold">{u.kind}</div>
-                          <div className="mt-0.5 flex flex-wrap gap-1">
-                            <Badge>{u.client}</Badge>
-                            <Badge color={getStatusColor(u.status)}>
-                              {getStatusLabel(u.status)}
-                            </Badge>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="mt-auto pt-1">
-                        <div className="truncate text-[11px] text-gray-600 font-medium">{u.name}</div>
-                        <div className="flex flex-wrap gap-1 mt-1">
-                          {u.temperature_zone && u.temperature_zone !== "ambient" && (
-                            <Badge color={getTempZoneColor(u.temperature_zone)}>
-                              {getTempZoneLabel(u.temperature_zone)}
-                            </Badge>
-                          )}
-                          {u.fragile && <Badge color="red">壊れやすい</Badge>}
-                          {u.weight_kg > 0 && <span className="text-[10px] text-gray-500">{u.weight_kg}kg</span>}
-                        </div>
+                    {/* Unit name - watermark style */}
+                    <div
+                      className="absolute pointer-events-none"
+                      style={{ top: 0, left: 0, right: 0, bottom: 0, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, overflow: "hidden" }}
+                    >
+                      <div style={{ fontSize: `${u.labelFontSize || 1.2}rem`, fontWeight: 900, color: `rgba(${unitLabelRgb.join(",")}, 0.15)`, userSelect: "none", textAlign: "center", lineHeight: 1.2 }}>
+                        {u.name}
                       </div>
                     </div>
                     {/* 右下リサイズハンドル（三角形） */}
@@ -2909,18 +3022,23 @@ function openPanelDetailModal(panel) {
                 );
               })}
 
-              {/* Panels (配電盤) - z-index: 6 */}
-              {panels.map((p) => {
+              {/* Panels (配電盤) on floor - z-index: 6 */}
+              {panels.filter((p) => !p.loc || p.loc.kind !== "shelf").map((p) => {
                 const isSel = isItemSelected("panel", p.id);
                 const labelRgb = hexToRgb(p.labelColor || "#000000");
                 const bgRgb = hexToRgb(p.bgColor || "#fef3c7");
                 const bgOpacity = (p.bgOpacity ?? 90) / 100;
+                const isDraggingPanel = drag?.type === "move_panel" && drag.id === p.id;
+                const hasMovedPanel = isDraggingPanel && (drag.pointerX !== drag.startX || drag.pointerY !== drag.startY);
+                const panelDragTransform = hasMovedPanel
+                  ? `translate(${(drag.pointerX - drag.startX) / zoom}px, ${(drag.pointerY - drag.startY) / zoom}px)`
+                  : isSel && groupMoveTransform ? groupMoveTransform : undefined;
                 return (
                   <div
                     key={p.id}
                     className={
                       `absolute rounded-xl border-2 cursor-pointer ` +
-                      (isSel && drag?.type === "group_move" ? "" : "transition-all duration-150 ") +
+                      ((hasMovedPanel || (isSel && drag?.type === "group_move")) ? "" : "transition-all duration-150 ") +
                       (isSel ? "ring-2 ring-black shadow-lg" : "hover:shadow-lg")
                     }
                     style={{
@@ -2930,9 +3048,10 @@ function openPanelDetailModal(panel) {
                       height: p.h * cellPx,
                       backgroundColor: `rgba(${bgRgb.join(",")}, ${bgOpacity})`,
                       borderColor: p.bgColor || "#f59e0b",
-                      zIndex: isSel && drag?.type === "group_move" ? 50 : 6,
-                      transform: isSel && groupMoveTransform ? groupMoveTransform : undefined,
-                      transition: drag?.type === "group_move" ? "none" : undefined,
+                      zIndex: hasMovedPanel ? 50 : isSel && drag?.type === "group_move" ? 50 : 6,
+                      transform: panelDragTransform,
+                      opacity: hasMovedPanel ? 0.7 : undefined,
+                      transition: (hasMovedPanel || drag?.type === "group_move") ? "none" : undefined,
                     }}
                     onMouseDown={(e) => mode === "operate" && beginMovePanel(e, p.id)}
                     onClick={(e) => handleItemClick(e, "panel", p.id)}
@@ -2945,19 +3064,14 @@ function openPanelDetailModal(panel) {
                     <div
                       className="absolute pointer-events-none"
                       style={{
-                        top: 0,
-                        left: 0,
-                        right: 0,
-                        bottom: 0,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
+                        top: 0, left: 0, right: 0, bottom: 0,
+                        display: "flex", alignItems: "center", justifyContent: "center",
                         zIndex: 50,
                       }}
                     >
                       <div
                         style={{
-                          fontSize: "0.75rem",
+                          fontSize: `${p.labelFontSize || 0.75}rem`,
                           fontWeight: 700,
                           color: `rgba(${labelRgb.join(",")}, 0.7)`,
                           userSelect: "none",
@@ -3381,6 +3495,26 @@ function openPanelDetailModal(panel) {
                           </div>
                         </div>
                       </div>
+                      <div className="border-t pt-2">
+                        <div className="text-xs font-semibold text-gray-700 mb-2">ラベルサイズ</div>
+                        <div>
+                          <label className="text-[10px] text-gray-500">フォント: {layout.floor.floorLabelFontSize || 6}rem</label>
+                          <input
+                            type="range"
+                            min="1"
+                            max="15"
+                            step="0.5"
+                            value={layout.floor.floorLabelFontSize || 6}
+                            onChange={(e) =>
+                              setLayout((p) => ({
+                                ...p,
+                                floor: { ...p.floor, floorLabelFontSize: Number(e.target.value) },
+                              }))
+                            }
+                            className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                          />
+                        </div>
+                      </div>
                     </div>
                   ) : (
                     <div className="mt-3 space-y-2 text-sm">
@@ -3487,6 +3621,28 @@ function openPanelDetailModal(panel) {
                               />
                             </div>
                           </div>
+                          <div className="border-t pt-2">
+                            <div className="text-xs font-semibold text-gray-700 mb-2">ラベルサイズ</div>
+                            <div>
+                              <label className="text-[10px] text-gray-500">フォント: {selectedEntity.labelFontSize || 1.5}rem</label>
+                              <input
+                                type="range"
+                                min="0.5"
+                                max="5"
+                                step="0.1"
+                                value={selectedEntity.labelFontSize || 1.5}
+                                onChange={(e) =>
+                                  setLayout((p) => ({
+                                    ...p,
+                                    zones: p.zones.map((z) =>
+                                      z.id === selected.id ? { ...z, labelFontSize: Number(e.target.value) } : z
+                                    ),
+                                  }))
+                                }
+                                className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                              />
+                            </div>
+                          </div>
                         </>
                       )}
 
@@ -3575,6 +3731,28 @@ function openPanelDetailModal(panel) {
                                     ...p,
                                     racks: p.racks.map((r) =>
                                       r.id === selected.id ? { ...r, bgOpacity: Number(e.target.value) } : r
+                                    ),
+                                  }))
+                                }
+                                className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                              />
+                            </div>
+                          </div>
+                          <div className="border-t pt-2">
+                            <div className="text-xs font-semibold text-gray-700 mb-2">ラベルサイズ</div>
+                            <div>
+                              <label className="text-[10px] text-gray-500">フォント: {selectedEntity.labelFontSize || 1.5}rem</label>
+                              <input
+                                type="range"
+                                min="0.5"
+                                max="5"
+                                step="0.1"
+                                value={selectedEntity.labelFontSize || 1.5}
+                                onChange={(e) =>
+                                  setLayout((p) => ({
+                                    ...p,
+                                    racks: p.racks.map((r) =>
+                                      r.id === selected.id ? { ...r, labelFontSize: Number(e.target.value) } : r
                                     ),
                                   }))
                                 }
@@ -3877,6 +4055,28 @@ function openPanelDetailModal(panel) {
                                   className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer"
                                 />
                               </div>
+                            </div>
+                          </div>
+                          <div className="border-t pt-2">
+                            <div className="text-xs font-semibold text-gray-700 mb-2">ラベルサイズ</div>
+                            <div>
+                              <label className="text-[10px] text-gray-500">フォント: {selectedEntity.labelFontSize || 2.5}rem</label>
+                              <input
+                                type="range"
+                                min="0.5"
+                                max="5"
+                                step="0.1"
+                                value={selectedEntity.labelFontSize || 2.5}
+                                onChange={(e) =>
+                                  setLayout((p) => ({
+                                    ...p,
+                                    shelves: (p.shelves || []).map((s) =>
+                                      s.id === selected.id ? { ...s, labelFontSize: Number(e.target.value) } : s
+                                    ),
+                                  }))
+                                }
+                                className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                              />
                             </div>
                           </div>
                         </>
@@ -4234,6 +4434,13 @@ className={
                       </div>
                     </div>
                     <div className="border-t pt-2">
+                      <div className="text-xs font-semibold text-gray-700 mb-2">ラベルサイズ</div>
+                      <div>
+                        <label className="text-[10px] text-gray-500">フォント: {selectedEntity.labelFontSize || 0.75}rem</label>
+                        <input type="range" min="0.3" max="5" step="0.1" value={selectedEntity.labelFontSize || 0.75} onChange={(e) => setPanels((p) => p.map((pn) => (pn.id === selected.id ? { ...pn, labelFontSize: Number(e.target.value) } : pn)))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer" />
+                      </div>
+                    </div>
+                    <div className="border-t pt-2">
                       <div className="text-xs font-semibold text-gray-700 mb-2">詳細情報</div>
                       <div className="space-y-2">
                         <div>
@@ -4410,6 +4617,27 @@ className={
                             setUnits((prev) =>
                               prev.map((u) =>
                                 u.id === selectedEntity.id ? { ...u, bgOpacity: Number(e.target.value) } : u
+                              )
+                            )
+                          }
+                          className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                        />
+                      </div>
+                    </div>
+                    <div className="border-t pt-2">
+                      <div className="text-xs font-semibold text-gray-700 mb-2">ラベルサイズ</div>
+                      <div>
+                        <label className="text-[10px] text-gray-500">フォント: {selectedEntity.labelFontSize || 1.2}rem</label>
+                        <input
+                          type="range"
+                          min="0.3"
+                          max="5"
+                          step="0.1"
+                          value={selectedEntity.labelFontSize || 1.2}
+                          onChange={(e) =>
+                            setUnits((prev) =>
+                              prev.map((u) =>
+                                u.id === selectedEntity.id ? { ...u, labelFontSize: Number(e.target.value) } : u
                               )
                             )
                           }
