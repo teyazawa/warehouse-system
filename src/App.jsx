@@ -309,14 +309,15 @@ function useSupabaseState(key, initial) {
       .select("value")
       .eq("key", key)
       .maybeSingle()
-      .then(({ data }) => {
+      .then(({ data, error }) => {
+        console.log("[Supabase] fetch", key, "data:", data, "error:", error);
         if (data?.value != null) {
           setValue(data.value);
           localStorage.setItem(key, JSON.stringify(data.value));
         }
         setLoaded(true);
       })
-      .catch(() => setLoaded(true));
+      .catch((err) => { console.error("[Supabase] fetch error", key, err); setLoaded(true); });
   }, [key]);
 
   // 変更時にSupabase + localStorageに保存（デバウンス）
