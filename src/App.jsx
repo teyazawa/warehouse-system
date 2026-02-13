@@ -423,6 +423,585 @@ function SectionTitle({ children, right }) {
   );
 }
 
+// ─── CSS 2.5D アイソメトリックビュー ───
+function IsometricView({ units, layout, panels, onClose }) {
+  const [viewTarget, setViewTarget] = useState("floor"); // "floor" | "zone-<id>" | "rack-<id>" | "shelf-<id>"
+  const [rotStep, setRotStep] = useState(0); // 0=default, 1=90°, 2=180°, 3=270°
+  const [zoomLevel, setZoomLevel] = useState(1);
+
+  const fx = layout.floor.x || 0;
+  const fy = layout.floor.y || 0;
+  const cellMW = layout.floor.cell_m_w || 1.2;
+  const cellMD = layout.floor.cell_m_d || 1.0;
+
+  // Compute footprint in cells (same logic as WarehouseView.unitFootprintCells)
+  function footprint(u) {
+    if (u.w_cells != null && u.h_cells != null) {
+      const fw = Math.max(1, u.w_cells); const fd = Math.max(1, u.h_cells);
+      return u.rot ? { w: fd, h: fw } : { w: fw, h: fd };
+    }
+    const fw = Math.max(1, Math.ceil(u.w_m / cellMW));
+    const fd = Math.max(1, Math.ceil(u.d_m / cellMD));
+    return u.rot ? { w: fd, h: fw } : { w: fw, h: fd };
+  }
+
+  // Real-world size in fractional cell units (for 3D rendering with actual dimensions)
+  function realFootprint(u) {
+    const fw = Math.max(0.2, (u.w_m || cellMW) / cellMW);
+    const fd = Math.max(0.2, (u.d_m || cellMD) / cellMD);
+    return u.rot ? { w: fd, h: fw } : { w: fw, h: fd };
+  }
+
+  // Convert a panel to a unit-like object for 3D rendering
+  function panelAsUnit(p) {
+    return {
+      id: p.id,
+      kind: "配電盤",
+      name: p.name || "配電盤",
+      w_m: p.w_m || (p.w || 2) * cellMW,
+      d_m: p.d_m || (p.h || 2) * cellMD,
+      h_m: p.h_m || 1.8,
+      rot: false,
+      bgColor: p.bgColor || "#fef3c7",
+      fragile: false,
+      loc: p.loc?.kind === "shelf"
+        ? { kind: "shelf", shelfId: p.loc.shelfId, x: p.loc.x, y: p.loc.y }
+        : { kind: "floor", x: p.x, y: p.y },
+    };
+  }
+
+  // Determine visible area & items based on viewTarget
+  let viewCols, viewRows, viewLabel, viewItems, viewRacks, viewZones, viewBgColor;
+  if (viewTarget === "floor") {
+    viewCols = layout.floor.cols;
+    viewRows = layout.floor.rows;
+    viewLabel = "床全体";
+    viewBgColor = layout.floor.floorBgColor || "#ffffff";
+    viewItems = units.filter((u) => u.loc?.kind === "floor").map((u) => {
+      const fp = realFootprint(u);
+      return { ...u, gx: (u.loc.x || 0) - fx, gy: (u.loc.y || 0) - fy, fw: fp.w, fh: fp.h };
+    });
+    // Add floor panels
+    for (const p of (panels || [])) {
+      if (p.loc?.kind === "shelf") continue;
+      const pu = panelAsUnit(p);
+      const fp = realFootprint(pu);
+      viewItems.push({ ...pu, gx: (p.x || 0) - fx, gy: (p.y || 0) - fy, fw: fp.w, fh: fp.h });
+    }
+    viewRacks = layout.racks.map((r) => ({ ...r, gx: r.x - fx, gy: r.y - fy }));
+    viewZones = layout.zones.filter((z) => !z.loc || z.loc.kind === "floor").map((z) => ({ ...z, gx: z.x - fx, gy: z.y - fy }));
+  } else if (viewTarget.startsWith("zone-")) {
+    const zoneId = viewTarget.slice(5);
+    const zone = layout.zones.find((z) => z.id === zoneId);
+    if (zone) {
+      viewCols = zone.w; viewRows = zone.h;
+      viewLabel = zone.name;
+      viewBgColor = zone.bgColor || "#d1fae5";
+      if (zone.loc?.kind === "shelf") {
+        // Zone is on a shelf - show shelf units within the zone area
+        const shelfId = zone.loc.shelfId;
+        const zx = zone.loc.x || 0, zy = zone.loc.y || 0;
+        viewItems = units.filter((u) => u.loc?.kind === "shelf" && u.loc.shelfId === shelfId).map((u) => {
+          const fp = realFootprint(u);
+          return { ...u, gx: (u.loc.x || 0) - zx, gy: (u.loc.y || 0) - zy, fw: fp.w, fh: fp.h };
+        }).filter((u) => u.gx >= 0 && u.gy >= 0 && u.gx < zone.w && u.gy < zone.h);
+        // Add shelf panels within zone
+        for (const p of (panels || [])) {
+          if (p.loc?.kind !== "shelf" || p.loc.shelfId !== shelfId) continue;
+          const pgx = (p.loc.x || 0) - zx, pgy = (p.loc.y || 0) - zy;
+          if (pgx < 0 || pgy < 0 || pgx >= zone.w || pgy >= zone.h) continue;
+          const pu = panelAsUnit(p);
+          const fp = realFootprint(pu);
+          viewItems.push({ ...pu, gx: pgx, gy: pgy, fw: fp.w, fh: fp.h });
+        }
+      } else {
+        // Zone is on the floor - show floor units within the zone area
+        viewItems = units.filter((u) => u.loc?.kind === "floor").map((u) => {
+          const fp = realFootprint(u);
+          return { ...u, gx: (u.loc.x||0) - zone.x, gy: (u.loc.y||0) - zone.y, fw: fp.w, fh: fp.h };
+        }).filter((u) => u.gx >= 0 && u.gy >= 0 && u.gx < zone.w && u.gy < zone.h);
+        // Add floor panels within zone
+        for (const p of (panels || [])) {
+          if (p.loc?.kind === "shelf") continue;
+          const pgx = (p.x || 0) - zone.x, pgy = (p.y || 0) - zone.y;
+          if (pgx < 0 || pgy < 0 || pgx >= zone.w || pgy >= zone.h) continue;
+          const pu = panelAsUnit(p);
+          const fp = realFootprint(pu);
+          viewItems.push({ ...pu, gx: pgx, gy: pgy, fw: fp.w, fh: fp.h });
+        }
+      }
+      viewRacks = []; viewZones = [];
+    } else { viewCols = 1; viewRows = 1; viewLabel = "?"; viewItems = []; viewRacks = []; viewZones = []; }
+  } else if (viewTarget.startsWith("rack-")) {
+    const rackId = viewTarget.slice(5);
+    const rack = layout.racks.find((r) => r.id === rackId);
+    if (rack) {
+      viewCols = rack.w; viewRows = rack.h;
+      viewLabel = rack.name;
+      viewBgColor = rack.bgColor || "#f1f5f9";
+      const rackUnits = units.filter((u) => u.loc?.kind === "rack" && u.loc.rackId === rackId);
+      viewItems = rackUnits.map((u) => {
+        const slot = u.loc.slot || 0;
+        const rCols = rack.cols || 1;
+        const col = slot % rCols;
+        const row = Math.floor(slot / rCols);
+        const slotW = Math.floor(rack.w / rCols);
+        const slotH = Math.floor(rack.h / (rack.rows || 1));
+        return { ...u, gx: col * slotW, gy: row * slotH, fw: slotW, fh: slotH };
+      });
+      viewRacks = []; viewZones = [];
+    } else { viewCols = 1; viewRows = 1; viewLabel = "?"; viewItems = []; viewRacks = []; viewZones = []; }
+  } else if (viewTarget.startsWith("shelf-")) {
+    const shelfId = viewTarget.slice(6);
+    const shelf = (layout.shelves || []).find((s) => s.id === shelfId);
+    if (shelf) {
+      viewCols = shelf.w; viewRows = shelf.h;
+      viewLabel = shelf.name || "棚";
+      viewBgColor = shelf.bgColor || "#f0fdfa";
+      const shelfUnits = units.filter((u) => u.loc?.kind === "shelf" && u.loc.shelfId === shelfId);
+      viewItems = shelfUnits.map((u) => {
+        const fp = realFootprint(u);
+        return { ...u, gx: u.loc.x || 0, gy: u.loc.y || 0, fw: fp.w, fh: fp.h };
+      });
+      // Add shelf panels
+      for (const p of (panels || [])) {
+        if (p.loc?.kind !== "shelf" || p.loc.shelfId !== shelfId) continue;
+        const pu = panelAsUnit(p);
+        const fp = realFootprint(pu);
+        viewItems.push({ ...pu, gx: p.loc.x || 0, gy: p.loc.y || 0, fw: fp.w, fh: fp.h });
+      }
+      viewRacks = [];
+      viewZones = layout.zones.filter((z) => z.loc?.kind === "shelf" && z.loc.shelfId === shelfId).map((z) => ({ ...z, gx: z.loc.x || 0, gy: z.loc.y || 0 }));
+    } else { viewCols = 1; viewRows = 1; viewLabel = "?"; viewItems = []; viewRacks = []; viewZones = []; }
+  } else {
+    viewCols = layout.floor.cols; viewRows = layout.floor.rows;
+    viewLabel = "床全体"; viewItems = []; viewRacks = []; viewZones = [];
+  }
+
+  // Apply rotation to a single point (for stacking grouping)
+  function rotateGxGy(gx, gy) {
+    const step = rotStep % 4;
+    if (step === 0) return { rx: gx, ry: gy };
+    if (step === 1) return { rx: viewRows - 1 - gy, ry: gx }; // 90° CW
+    if (step === 2) return { rx: viewCols - 1 - gx, ry: viewRows - 1 - gy }; // 180°
+    return { rx: gy, ry: viewCols - 1 - gx }; // 270° CW
+  }
+
+  // Rotate a rectangle: correctly computes the new top-left anchor + swapped dimensions
+  function rotateRect(gx, gy, w, h) {
+    const step = rotStep % 4;
+    if (step === 0) return { rx: gx, ry: gy, rw: w, rh: h };
+    if (step === 1) return { rx: viewRows - gy - h, ry: gx, rw: h, rh: w };
+    if (step === 2) return { rx: viewCols - gx - w, ry: viewRows - gy - h, rw: w, rh: h };
+    return { rx: gy, ry: viewCols - gx - w, rw: h, rh: w };
+  }
+  const effectiveCols = (rotStep % 2 === 0) ? viewCols : viewRows;
+  const effectiveRows = (rotStep % 2 === 0) ? viewRows : viewCols;
+
+  // Group stacks by position (after rotation)
+  const stacks = {};
+  for (const u of viewItems) {
+    const { rx, ry } = rotateGxGy(u.gx, u.gy);
+    const key = `${rx},${ry}`;
+    if (!stacks[key]) stacks[key] = [];
+    stacks[key].push({ ...u, rx, ry });
+  }
+  for (const k of Object.keys(stacks)) stacks[k].sort((a, b) => (a.stackZ || 0) - (b.stackZ || 0));
+
+  // Isometric settings - scale based on view size
+  const baseTile = Math.max(16, Math.min(50, Math.floor(600 / Math.max(effectiveCols, effectiveRows))));
+  const tileW = baseTile;
+  const tileH = baseTile / 2;
+  const heightScale = baseTile * 0.6;
+
+  // Convert grid to isometric screen
+  const toIso = (gx, gy) => ({
+    sx: (gx - gy) * (tileW / 2),
+    sy: (gx + gy) * (tileH / 2),
+  });
+
+  // Canvas bounds
+  const allCorners = [
+    toIso(0, 0), toIso(effectiveCols, 0), toIso(0, effectiveRows), toIso(effectiveCols, effectiveRows),
+  ];
+  const maxStackH = Object.values(stacks).reduce((m, s) => Math.max(m, s.reduce((a, u) => a + (u.h_m || 1), 0)), 0);
+  const minSx = Math.min(...allCorners.map((c) => c.sx)) - 60;
+  const maxSx = Math.max(...allCorners.map((c) => c.sx)) + 60;
+  const minSy = Math.min(...allCorners.map((c) => c.sy)) - Math.max(200, maxStackH * heightScale + 80);
+  const maxSy = Math.max(...allCorners.map((c) => c.sy)) + 60;
+  const svgW = maxSx - minSx;
+  const svgH = maxSy - minSy;
+  const offX = -minSx;
+  const offY = -minSy;
+
+  const boxColors = [
+    "#60a5fa", "#34d399", "#fbbf24", "#f87171", "#a78bfa",
+    "#fb923c", "#38bdf8", "#4ade80", "#facc15", "#f472b6",
+  ];
+
+  // Stable hash from string → consistent color index regardless of sort order
+  function stableColorIndex(id) {
+    let h = 0;
+    for (let i = 0; i < id.length; i++) h = ((h << 5) - h + id.charCodeAt(i)) | 0;
+    return ((h % boxColors.length) + boxColors.length) % boxColors.length;
+  }
+
+  // Kind-specific colors (fallback uses stable hash of item id)
+  function kindColor(kind, id) {
+    if (kind === "配電盤") return "#fbbf24";
+    if (kind === "パレット") return "#60a5fa";
+    if (kind === "カゴ") return "#34d399";
+    return boxColors[stableColorIndex(id || "")];
+  }
+
+  // Render order: back to front
+  const renderItems = [];
+  for (const [key, stack] of Object.entries(stacks)) {
+    let zOff = 0;
+    for (const u of stack) {
+      const fw_orig = u.fw || 1;
+      const fh_orig = u.fh || 1;
+      const isPanel = u.kind === "配電盤";
+      // Use rotateRect to get the correct bounding box anchor + swapped dimensions
+      const { rx: renderGx, ry: renderGy, rw: fw, rh: fh } = rotateRect(u.gx, u.gy, fw_orig, fh_orig);
+      renderItems.push({ u, gx: renderGx, gy: renderGy, fw, fh, zOff: isPanel ? 0 : zOff, h: u.h_m || 1 });
+      if (!isPanel) zOff += u.h_m || 1;
+    }
+  }
+  renderItems.sort((a, b) => {
+    const depthA = a.gx + a.gy;
+    const depthB = b.gx + b.gy;
+    if (depthA !== depthB) return depthA - depthB;
+    return a.zOff - b.zOff;
+  });
+
+  // Draw an isometric box (proper corner-based projection)
+  function IsoBox({ gx, gy, w, d, zOff, h, color, label, isFragile }) {
+    // Compute the 4 corners of the base rectangle using toIso for correct projection
+    const p0 = toIso(gx, gy);           // back corner (top in screen)
+    const p1 = toIso(gx + w, gy);       // right corner
+    const p2 = toIso(gx + w, gy + d);   // front corner (bottom in screen)
+    const p3 = toIso(gx, gy + d);       // left corner
+
+    const lift = zOff * heightScale;
+    const bH = h * heightScale;
+
+    // Screen coordinates with offset
+    const ox = (p) => p.sx + offX;
+    const oy = (p, up) => p.sy + offY - up;
+
+    // Top face (at height lift + bH)
+    const topH = lift + bH;
+    const topPoints = [
+      `${ox(p0)}px ${oy(p0, topH)}px`, `${ox(p1)}px ${oy(p1, topH)}px`,
+      `${ox(p2)}px ${oy(p2, topH)}px`, `${ox(p3)}px ${oy(p3, topH)}px`,
+    ].join(", ");
+
+    // Left face: p3-top → p2-top → p2-bottom → p3-bottom
+    const leftPoints = [
+      `${ox(p3)}px ${oy(p3, topH)}px`, `${ox(p2)}px ${oy(p2, topH)}px`,
+      `${ox(p2)}px ${oy(p2, lift)}px`, `${ox(p3)}px ${oy(p3, lift)}px`,
+    ].join(", ");
+
+    // Right face: p2-top → p1-top → p1-bottom → p2-bottom
+    const rightPoints = [
+      `${ox(p2)}px ${oy(p2, topH)}px`, `${ox(p1)}px ${oy(p1, topH)}px`,
+      `${ox(p1)}px ${oy(p1, lift)}px`, `${ox(p2)}px ${oy(p2, lift)}px`,
+    ].join(", ");
+
+    // Label position: center of top face
+    const cx = (ox(p0) + ox(p1) + ox(p2) + ox(p3)) / 4;
+    const cy = (oy(p0, topH) + oy(p1, topH) + oy(p2, topH) + oy(p3, topH)) / 4;
+
+    return (
+      <g>
+        <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${leftPoints})`, background: color, filter: "brightness(0.7)" }} />
+        <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${rightPoints})`, background: color, filter: "brightness(0.85)" }} />
+        <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${topPoints})`, background: color }} />
+        {label && (
+          <div style={{ position: "absolute", left: cx - 30, top: cy - 8, width: 60, textAlign: "center", fontSize: 9, fontWeight: 700, color: "#1e293b", pointerEvents: "none", textShadow: "0 0 3px rgba(255,255,255,0.9)" }}>
+            {label}
+          </div>
+        )}
+        {isFragile && (
+          <div style={{ position: "absolute", left: cx - 6, top: cy - 14, fontSize: 11, pointerEvents: "none" }}>⚠</div>
+        )}
+      </g>
+    );
+  }
+
+  // Rotate racks/zones grid coords using rotateRect for correct anchor
+  const rotatedRacks = viewRacks.map((r) => {
+    const { rx, ry, rw, rh } = rotateRect(r.gx, r.gy, r.w, r.h);
+    return { ...r, gx: rx, gy: ry, w: rw, h: rh };
+  });
+  const rotatedZones = viewZones.map((z) => {
+    const { rx, ry, rw, rh } = rotateRect(z.gx, z.gy, z.w, z.h);
+    return { ...z, gx: rx, gy: ry, w: rw, h: rh };
+  });
+
+  const rotLabels = ["0°", "90°", "180°", "270°"];
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 50000,
+      background: "rgba(0,0,0,0.5)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+    }} onClick={onClose}>
+      <div
+        style={{
+          background: "#fff",
+          borderRadius: 24,
+          boxShadow: "0 25px 60px rgba(0,0,0,0.3)",
+          padding: 24,
+          maxWidth: "90vw",
+          maxHeight: "90vh",
+          overflow: "auto",
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <div style={{ fontSize: 18, fontWeight: 800, color: "#1e293b" }}>3D ビュー</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <select
+              value={viewTarget}
+              onChange={(e) => setViewTarget(e.target.value)}
+              style={{ borderRadius: 12, border: "2px solid #e2e8f0", padding: "8px 12px", fontSize: 13, fontWeight: 600, background: "#f8fafc", cursor: "pointer" }}
+            >
+              <option value="floor">床全体</option>
+              {layout.zones.map((z) => (
+                <option key={z.id} value={`zone-${z.id}`}>区画: {z.name}</option>
+              ))}
+              {layout.racks.map((r) => (
+                <option key={r.id} value={`rack-${r.id}`}>ラック: {r.name}</option>
+              ))}
+              {(layout.shelves || []).map((s) => (
+                <option key={s.id} value={`shelf-${s.id}`}>棚: {s.name || s.id}</option>
+              ))}
+            </select>
+            <button type="button" onClick={onClose} style={{ background: "#f1f5f9", border: "none", borderRadius: 12, padding: "8px 16px", fontWeight: 700, cursor: "pointer" }}>
+              閉じる
+            </button>
+          </div>
+        </div>
+
+        {/* Controls: rotation + zoom */}
+        <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 12, flexWrap: "wrap" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#64748b" }}>
+            {viewLabel} ({effectiveCols} x {effectiveRows} セル)
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <button
+              type="button"
+              onClick={() => setRotStep((r) => (r + 3) % 4)}
+              style={{ background: "#f1f5f9", border: "2px solid #e2e8f0", borderRadius: 10, padding: "4px 10px", fontSize: 16, cursor: "pointer", fontWeight: 700 }}
+              title="左に90°回転"
+            >↶</button>
+            <span style={{ fontSize: 12, fontWeight: 600, color: "#64748b", minWidth: 30, textAlign: "center" }}>{rotLabels[rotStep]}</span>
+            <button
+              type="button"
+              onClick={() => setRotStep((r) => (r + 1) % 4)}
+              style={{ background: "#f1f5f9", border: "2px solid #e2e8f0", borderRadius: 10, padding: "4px 10px", fontSize: 16, cursor: "pointer", fontWeight: 700 }}
+              title="右に90°回転"
+            >↷</button>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <button
+              type="button"
+              onClick={() => setZoomLevel((z) => Math.max(0.3, z - 0.2))}
+              style={{ background: "#f1f5f9", border: "2px solid #e2e8f0", borderRadius: 10, padding: "4px 10px", fontSize: 16, cursor: "pointer", fontWeight: 700 }}
+            >−</button>
+            <span style={{ fontSize: 12, fontWeight: 600, color: "#64748b", minWidth: 40, textAlign: "center" }}>{Math.round(zoomLevel * 100)}%</span>
+            <button
+              type="button"
+              onClick={() => setZoomLevel((z) => Math.min(3, z + 0.2))}
+              style={{ background: "#f1f5f9", border: "2px solid #e2e8f0", borderRadius: 10, padding: "4px 10px", fontSize: 16, cursor: "pointer", fontWeight: 700 }}
+            >+</button>
+          </div>
+        </div>
+
+        {/* Floor grid + boxes */}
+        <div
+          style={{ overflow: "auto", maxWidth: "85vw", maxHeight: "65vh" }}
+          onWheel={(e) => {
+            if (e.ctrlKey || e.metaKey) {
+              e.preventDefault();
+              setZoomLevel((z) => Math.min(3, Math.max(0.3, z + (e.deltaY < 0 ? 0.1 : -0.1))));
+            }
+          }}
+        >
+          <div style={{ position: "relative", width: svgW * zoomLevel, height: svgH * zoomLevel, margin: "0 auto" }}>
+            <div style={{ transform: `scale(${zoomLevel})`, transformOrigin: "top left", position: "relative", width: svgW, height: svgH }}>
+              {/* Floor tiles */}
+              {Array.from({ length: effectiveRows }, (_, gy) =>
+                Array.from({ length: effectiveCols }, (_, gx) => {
+                  const { sx, sy } = toIso(gx, gy);
+                  const x = sx + offX;
+                  const y = sy + offY;
+                  const points = [
+                    `${x}px ${y}px`, `${x + tileW / 2}px ${y + tileH / 2}px`,
+                    `${x}px ${y + tileH}px`, `${x - tileW / 2}px ${y + tileH / 2}px`,
+                  ].join(", ");
+                  const baseBg = viewBgColor || "#ffffff";
+                  const baseBgRgb = hexToRgb(baseBg);
+                  const tileLight = `rgba(${baseBgRgb.join(",")}, 0.9)`;
+                  const tileDark = `rgba(${baseBgRgb.map((c) => Math.max(0, c - 20)).join(",")}, 0.9)`;
+                  return (
+                    <div key={`f-${gx}-${gy}`} style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${points})`, background: (gx + gy) % 2 === 0 ? tileDark : tileLight }} />
+                  );
+                })
+              )}
+
+              {/* Zone outlines */}
+              {rotatedZones.map((zone) => {
+                const zp0 = toIso(zone.gx, zone.gy);
+                const zp1 = toIso(zone.gx + zone.w, zone.gy);
+                const zp2 = toIso(zone.gx + zone.w, zone.gy + zone.h);
+                const zp3 = toIso(zone.gx, zone.gy + zone.h);
+                const pts = [
+                  `${zp0.sx + offX}px ${zp0.sy + offY}px`, `${zp1.sx + offX}px ${zp1.sy + offY}px`,
+                  `${zp2.sx + offX}px ${zp2.sy + offY}px`, `${zp3.sx + offX}px ${zp3.sy + offY}px`,
+                ].join(", ");
+                const zcx = (zp0.sx + zp1.sx + zp2.sx + zp3.sx) / 4 + offX;
+                const zcy = (zp0.sy + zp1.sy + zp2.sy + zp3.sy) / 4 + offY;
+                const zoneBgRgb = hexToRgb(zone.bgColor || "#d1fae5");
+                const zoneOpacity = (zone.bgOpacity ?? 90) / 100;
+                return (
+                  <div key={`zone-${zone.id}`}>
+                    <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${pts})`, background: `rgba(${zoneBgRgb.join(",")}, ${zoneOpacity})` }} />
+                    <div style={{ position: "absolute", left: zcx - 30, top: zcy - 6, width: 60, textAlign: "center", fontSize: 9, fontWeight: 700, color: zone.labelColor || "#334155", textShadow: "0 0 3px #fff" }}>{zone.name}</div>
+                  </div>
+                );
+              })}
+
+              {/* Rack outlines */}
+              {rotatedRacks.map((rack) => {
+                const rp0 = toIso(rack.gx, rack.gy);
+                const rp1 = toIso(rack.gx + rack.w, rack.gy);
+                const rp2 = toIso(rack.gx + rack.w, rack.gy + rack.h);
+                const rp3 = toIso(rack.gx, rack.gy + rack.h);
+                const rH = 2 * heightScale;
+                const rox = (p) => p.sx + offX;
+                const roy = (p, up) => p.sy + offY - up;
+                const topPts = [
+                  `${rox(rp0)}px ${roy(rp0, rH)}px`, `${rox(rp1)}px ${roy(rp1, rH)}px`,
+                  `${rox(rp2)}px ${roy(rp2, rH)}px`, `${rox(rp3)}px ${roy(rp3, rH)}px`,
+                ].join(", ");
+                const leftPts = [
+                  `${rox(rp3)}px ${roy(rp3, rH)}px`, `${rox(rp2)}px ${roy(rp2, rH)}px`,
+                  `${rox(rp2)}px ${roy(rp2, 0)}px`, `${rox(rp3)}px ${roy(rp3, 0)}px`,
+                ].join(", ");
+                const rightPts = [
+                  `${rox(rp2)}px ${roy(rp2, rH)}px`, `${rox(rp1)}px ${roy(rp1, rH)}px`,
+                  `${rox(rp1)}px ${roy(rp1, 0)}px`, `${rox(rp2)}px ${roy(rp2, 0)}px`,
+                ].join(", ");
+                const rcx = (rox(rp0) + rox(rp1) + rox(rp2) + rox(rp3)) / 4;
+                const rcy = (roy(rp0, rH) + roy(rp1, rH) + roy(rp2, rH) + roy(rp3, rH)) / 4;
+                const rackColor = rack.bgColor || "#94a3b8";
+                return (
+                  <div key={`rack-${rack.id}`}>
+                    <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${leftPts})`, background: rackColor, filter: "brightness(0.7)" }} />
+                    <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${rightPts})`, background: rackColor, filter: "brightness(0.85)" }} />
+                    <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${topPts})`, background: rackColor }} />
+                    <div style={{ position: "absolute", left: rcx - 20, top: rcy - 8, width: 40, textAlign: "center", fontSize: 8, fontWeight: 700, color: rack.labelColor || "#334155", textShadow: "0 0 3px #fff" }}>{rack.name || "棚"}</div>
+                  </div>
+                );
+              })}
+
+              {/* Isometric boxes for units */}
+              {renderItems.map(({ u, gx, gy, fw, fh, zOff, h }, idx) => (
+                <IsoBox
+                  key={u.id + "-" + idx}
+                  gx={gx} gy={gy}
+                  w={fw} d={fh}
+                  zOff={zOff} h={h}
+                  color={u.bgColor || kindColor(u.kind, u.id)}
+                  label={u.kind}
+                  isFragile={u.fragile}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Legend */}
+        <div style={{ marginTop: 16, display: "flex", flexWrap: "wrap", gap: 12, fontSize: 12, color: "#64748b", alignItems: "center" }}>
+          <span>荷物: {viewItems.length}個</span>
+          <span>スタック: {Object.values(stacks).filter((s) => s.length > 1).length}箇所</span>
+          {rotatedRacks.length > 0 && <><span style={{ color: "#94a3b8" }}>■</span><span>ラック {rotatedRacks.length}</span></>}
+          {rotatedZones.length > 0 && <><span style={{ color: "#86efac" }}>■</span><span>区画 {rotatedZones.length}</span></>}
+          <span style={{ color: "#94a3b8", fontSize: 11 }}>※ Ctrl+ホイールで拡大縮小</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 日本の祝日判定（外部ライブラリ不要）
+function getJapaneseHolidays(year) {
+  const holidays = new Set();
+  const add = (m, d) => holidays.add(`${year}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`);
+
+  // 固定祝日
+  add(1, 1);   // 元日
+  add(2, 11);  // 建国記念の日
+  add(2, 23);  // 天皇誕生日
+  add(4, 29);  // 昭和の日
+  add(5, 3);   // 憲法記念日
+  add(5, 4);   // みどりの日
+  add(5, 5);   // こどもの日
+  add(8, 11);  // 山の日
+  add(11, 3);  // 文化の日
+  add(11, 23); // 勤労感謝の日
+
+  // ハッピーマンデー
+  const nthMonday = (m, n) => {
+    const first = new Date(year, m - 1, 1).getDay();
+    return (n - 1) * 7 + ((8 - first) % 7) + 1;
+  };
+  add(1, nthMonday(1, 2));   // 成人の日（1月第2月曜）
+  add(7, nthMonday(7, 3));   // 海の日（7月第3月曜）
+  add(9, nthMonday(9, 3));   // 敬老の日（9月第3月曜）
+  add(10, nthMonday(10, 2)); // スポーツの日（10月第2月曜）
+
+  // 春分の日・秋分の日（近似計算）
+  const shunbun = Math.floor(20.8431 + 0.242194 * (year - 1980) - Math.floor((year - 1980) / 4));
+  const shubun = Math.floor(23.2488 + 0.242194 * (year - 1980) - Math.floor((year - 1980) / 4));
+  add(3, shunbun);
+  add(9, shubun);
+
+  // 振替休日：祝日が日曜なら翌月曜
+  const fmt = (m, d) => `${year}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+  for (const h of [...holidays]) {
+    const [, mm, dd] = h.split("-").map(Number);
+    const dt = new Date(year, mm - 1, dd);
+    if (dt.getDay() === 0) {
+      let next = new Date(dt);
+      next.setDate(next.getDate() + 1);
+      while (holidays.has(fmt(next.getMonth() + 1, next.getDate()))) {
+        next.setDate(next.getDate() + 1);
+      }
+      holidays.add(fmt(next.getMonth() + 1, next.getDate()));
+    }
+  }
+
+  // 国民の休日（祝日に挟まれた平日）
+  for (const h of [...holidays]) {
+    const [, mm, dd] = h.split("-").map(Number);
+    const next2 = fmt(mm, dd + 2);
+    if (holidays.has(next2)) {
+      const between = new Date(year, mm - 1, dd + 1);
+      if (between.getDay() !== 0) {
+        const bKey = fmt(between.getMonth() + 1, between.getDate());
+        if (!holidays.has(bKey)) holidays.add(bKey);
+      }
+    }
+  }
+
+  return holidays;
+}
+
 function CalendarStub({ selectedDate, onPick }) {
   // Very simple month grid (no locale edge cases)
   const d = new Date(selectedDate);
@@ -432,10 +1011,14 @@ function CalendarStub({ selectedDate, onPick }) {
   const startDay = first.getDay(); // 0 Sun
   const daysInMonth = new Date(year, month + 1, 0).getDate();
 
+  const holidays = useMemo(() => getJapaneseHolidays(year), [year]);
+
   const cells = [];
   for (let i = 0; i < startDay; i++) cells.push(null);
   for (let day = 1; day <= daysInMonth; day++) cells.push(new Date(year, month, day));
   while (cells.length % 7 !== 0) cells.push(null);
+
+  const dayHeaders = "日月火水木金土".split("");
 
   return (
     <div className="rounded-2xl border bg-white p-3 shadow-sm">
@@ -461,9 +1044,13 @@ function CalendarStub({ selectedDate, onPick }) {
         </div>
       </div>
 
-      <div className="grid grid-cols-7 gap-1 text-xs text-gray-600">
-        {"日月火水木金土".split("").map((w) => (
-          <div key={w} className="py-1 text-center font-medium">
+      <div className="grid grid-cols-7 gap-1 text-xs">
+        {dayHeaders.map((w, i) => (
+          <div
+            key={w}
+            className="py-1 text-center font-medium"
+            style={{ color: i === 0 ? "#ef4444" : i === 6 ? "#3b82f6" : "#4b5563" }}
+          >
             {w}
           </div>
         ))}
@@ -476,6 +1063,11 @@ function CalendarStub({ selectedDate, onPick }) {
             cd.getFullYear() === d.getFullYear() &&
             cd.getMonth() === d.getMonth() &&
             cd.getDate() === d.getDate();
+          const dow = idx % 7;
+          const isHoliday = cd && holidays.has(
+            `${cd.getFullYear()}-${String(cd.getMonth()+1).padStart(2,"0")}-${String(cd.getDate()).padStart(2,"0")}`
+          );
+          const dayColor = isSelected ? "#ffffff" : (dow === 0 || isHoliday) ? "#ef4444" : dow === 6 ? "#3b82f6" : undefined;
           return (
             <button
               key={idx}
@@ -483,9 +1075,10 @@ function CalendarStub({ selectedDate, onPick }) {
               disabled={!cd}
               onClick={() => cd && onPick(cd)}
               className={
-                "h-8 rounded-lg text-sm " +
-                (cd ? (isSelected ? "bg-black text-white" : "hover:bg-gray-100") : "opacity-0")
+                "aspect-square rounded-lg text-sm " +
+                (cd ? (isSelected ? "bg-black" : "hover:bg-gray-100") : "opacity-0")
               }
+              style={dayColor ? { color: dayColor } : undefined}
             >
               {cd ? cd.getDate() : ""}
             </button>
@@ -494,6 +1087,190 @@ function CalendarStub({ selectedDate, onPick }) {
       </div>
 
       <div className="mt-3 text-xs text-gray-500">選択日: {d.toLocaleDateString("ja-JP")}</div>
+    </div>
+  );
+}
+
+function SimpleGridView({ warehouses, selectedWarehouseId, onSelect, onOpen }) {
+  const CARD_W = 160;
+  const CARD_H = 200;
+  const STORAGE_KEY = "wh_simple_positions_v1";
+
+  // positions: { [warehouseId]: { x, y } }
+  const [positions, setPositions] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}; } catch { return {}; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(positions)); } catch {}
+  }, [positions]);
+
+  // Auto-layout for warehouses without saved positions
+  const getPos = useCallback((wId, idx) => {
+    if (positions[wId]) return positions[wId];
+    const cols = 5;
+    const gapX = CARD_W + 24;
+    const gapY = CARD_H + 24;
+    return { x: 30 + (idx % cols) * gapX, y: 30 + Math.floor(idx / cols) * gapY };
+  }, [positions]);
+
+  const containerRef = useRef(null);
+  const [dragState, setDragState] = useState(null);
+  // dragState: { id, offsetX, offsetY, startX, startY, currentX, currentY, moved }
+
+  const onPointerDown = useCallback((e, wId, pos) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    setDragState({
+      id: wId,
+      offsetX: e.clientX - pos.x,
+      offsetY: e.clientY - pos.y,
+      startX: e.clientX,
+      startY: e.clientY,
+      currentX: pos.x,
+      currentY: pos.y,
+      moved: false,
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!dragState) return;
+    const onMove = (e) => {
+      const nx = e.clientX - dragState.offsetX;
+      const ny = e.clientY - dragState.offsetY;
+      const dist = Math.abs(e.clientX - dragState.startX) + Math.abs(e.clientY - dragState.startY);
+      setDragState((s) => s ? { ...s, currentX: Math.max(0, nx), currentY: Math.max(0, ny), moved: s.moved || dist > 5 } : null);
+    };
+    const onUp = () => {
+      setDragState((s) => {
+        if (s && s.moved) {
+          setPositions((prev) => ({ ...prev, [s.id]: { x: s.currentX, y: s.currentY } }));
+        }
+        return null;
+      });
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [dragState]);
+
+  const cardColors = [
+    "#fef3c7", "#dbeafe", "#fce7f3", "#d1fae5", "#ede9fe",
+    "#ffedd5", "#e0e7ff", "#fecaca", "#ccfbf1", "#fde68a",
+  ];
+
+  // Compute canvas size from positions
+  const allPos = warehouses.map((w, i) => getPos(w.id, i));
+  const canvasW = Math.max(800, ...allPos.map((p) => p.x + CARD_W + 40));
+  const canvasH = Math.max(600, ...allPos.map((p) => p.y + CARD_H + 40));
+
+  return (
+    <div
+      ref={containerRef}
+      className="h-full overflow-auto rounded-2xl border shadow-sm"
+      style={{
+        position: "relative",
+        backgroundImage: "linear-gradient(rgba(255,255,255,0.82), rgba(255,255,255,0.82)), url(/tez_tile_seamless.png)",
+        backgroundRepeat: "repeat",
+        backgroundSize: "auto",
+      }}
+    >
+      <div style={{ position: "relative", minWidth: canvasW, minHeight: canvasH }}>
+        {warehouses.map((w, wi) => {
+          const isSelected = selectedWarehouseId === w.id;
+          const isDragging = dragState?.id === w.id;
+          const pos = isDragging ? { x: dragState.currentX, y: dragState.currentY } : getPos(w.id, wi);
+          const opacity = (w.cardOpacity != null ? w.cardOpacity : 100) / 100;
+          const baseBg = w.cardColor || cardColors[wi % cardColors.length];
+          return (
+            <div
+              key={w.id}
+              className="select-none"
+              style={{
+                position: "absolute",
+                left: pos.x,
+                top: pos.y,
+                width: CARD_W,
+                zIndex: isDragging ? 100 : isSelected ? 10 : 1,
+                cursor: isDragging ? "grabbing" : "grab",
+                transform: isDragging ? "scale(1.1) rotate(-3deg)" : "scale(1) rotate(0deg)",
+                transition: isDragging ? "none" : "transform 0.25s cubic-bezier(.34,1.56,.64,1), box-shadow 0.25s",
+                filter: isDragging ? "drop-shadow(0 20px 30px rgba(0,0,0,0.25))" : "none",
+              }}
+              onPointerDown={(e) => onPointerDown(e, w.id, pos)}
+              onClick={() => { if (!dragState?.moved) onSelect(w.id); }}
+              onDoubleClick={() => onOpen(w.id)}
+            >
+              <div
+                className="flex flex-col items-center rounded-3xl border-2 p-4"
+                style={{
+                  background: baseBg,
+                  opacity: opacity,
+                  borderColor: isSelected ? "#3b82f6" : "rgba(255,255,255,0.8)",
+                  boxShadow: isSelected
+                    ? "0 0 0 3px rgba(59,130,246,0.25), 0 8px 20px rgba(0,0,0,0.12)"
+                    : "0 4px 16px rgba(0,0,0,0.08)",
+                  transition: "border-color 0.2s, box-shadow 0.2s, opacity 0.2s",
+                }}
+              >
+                {w.iconImage ? (
+                  <img
+                    src={w.iconImage}
+                    alt={w.name}
+                    className="rounded-2xl border-2 border-white object-cover"
+                    style={{ width: 80, height: 80, boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}
+                    draggable={false}
+                  />
+                ) : (
+                  <div
+                    className="flex items-center justify-center rounded-2xl border-2 border-white"
+                    style={{
+                      width: 80, height: 80,
+                      fontSize: 44,
+                      background: "rgba(255,255,255,0.7)",
+                      boxShadow: "0 4px 10px rgba(0,0,0,0.08)",
+                    }}
+                  >
+                    🏭
+                  </div>
+                )}
+                <div className="mt-2 w-full truncate text-center text-xs font-bold" style={{ color: "#1e293b" }}>{w.name}</div>
+                <div className="mt-1 flex flex-wrap justify-center gap-1">
+                  <span className="rounded-full px-1.5 py-0.5 text-xs" style={{ background: "rgba(255,255,255,0.8)", color: "#475569", fontSize: 10 }}>{w.area_m2}m²</span>
+                  <span className="rounded-full px-1.5 py-0.5 text-xs" style={{ background: "rgba(255,255,255,0.8)", color: "#475569", fontSize: 10 }}>棚{w.rack_count}</span>
+                </div>
+                <button
+                  type="button"
+                  className="mt-2 w-full rounded-xl px-2 py-1.5 text-xs font-bold"
+                  style={{
+                    background: "#1e293b",
+                    color: "#fff",
+                    boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+                    transition: "transform 0.15s, box-shadow 0.15s",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.transform = "scale(1.05)"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.transform = "scale(1)"; }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpen(w.id);
+                  }}
+                >
+                  開く
+                </button>
+              </div>
+            </div>
+          );
+        })}
+        {warehouses.length === 0 && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="rounded-2xl border bg-white/80 p-8 text-center text-sm text-gray-600 shadow">
+              倉庫がありません。「＋ 倉庫追加」から作成できます。
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -557,6 +1334,57 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse }) {
     }
   }, []);
 
+  // マイグレーション: panels → units (配電盤をユニット化)
+  useEffect(() => {
+    if (panels.length === 0) return;
+    const cellMW = layout.floor.cell_m_w || 1.2;
+    const cellMD = layout.floor.cell_m_d || 1.0;
+    const newUnits = panels.map((p) => ({
+      id: p.id.startsWith("p-") ? "u-" + p.id.slice(2) : "u-" + p.id,
+      kind: "配電盤",
+      client: p.client || "(未設定)",
+      name: p.name || "配電盤",
+      w_m: p.w_m || (p.w || 2) * cellMW,
+      d_m: p.d_m || (p.h || 2) * cellMD,
+      h_m: p.h_m || 1.8,
+      w_cells: p.w || 2,
+      h_cells: p.h || 2,
+      qty: 1,
+      status: "draft",
+      condition: "good",
+      rot: false,
+      loc: p.loc?.kind === "shelf"
+        ? { kind: "shelf", shelfId: p.loc.shelfId, x: p.loc.x, y: p.loc.y }
+        : { kind: "floor", x: p.x, y: p.y },
+      stackZ: 0,
+      sku: "",
+      barcode: "",
+      batch_number: "",
+      weight_kg: 0,
+      temperature_zone: "ambient",
+      fragile: false,
+      stackable: false,
+      max_stack_height: 1,
+      expires_at: null,
+      notes: p.notes || "",
+      arrived_at: null,
+      moves: [],
+      tags: [],
+      kintoneRecordId: p.kintoneRecordId || "",
+      projectName: p.projectName || "",
+      arrivalDate: p.arrivalDate || null,
+      departureDate: p.departureDate || null,
+      departureHistory: p.departureHistory || [],
+      contents: p.contents || [],
+      bgColor: p.bgColor || "#fef3c7",
+      bgOpacity: p.bgOpacity ?? 90,
+      labelColor: p.labelColor || "#000000",
+      labelFontSize: p.labelFontSize || 0.75,
+    }));
+    setUnits((prev) => [...prev, ...newUnits]);
+    setPanels([]);
+  }, []);
+
   const [mode, setMode] = useState("operate"); // operate | layout
   const [selected, setSelected] = useState(null); // {kind:'unit'|'zone'|'rack', id}
   const [multiSelected, setMultiSelected] = useState([]); // [{kind, id}, ...]
@@ -612,6 +1440,7 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse }) {
 
   const canvasRef = useRef(null);
   const [toast, setToast] = useState(null);
+  const [isoViewOpen, setIsoViewOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
 const [detailUnit, setDetailUnit] = useState(null);
 
@@ -785,6 +1614,22 @@ function openPanelDetailModal(panel) {
     return rects;
   }
 
+  // Get the current stack height at a given floor position (sum of h_m of stacked units)
+  function getStackAt(x, y, excludeUnitId = null) {
+    const items = [];
+    for (const u of units) {
+      if (u.id === excludeUnitId) continue;
+      if (u.loc?.kind !== "floor") continue;
+      if (u.loc.x === x && u.loc.y === y) items.push(u);
+    }
+    items.sort((a, b) => (a.stackZ || 0) - (b.stackZ || 0));
+    return items;
+  }
+
+  function getStackHeight(x, y, excludeUnitId = null) {
+    return getStackAt(x, y, excludeUnitId).reduce((sum, u) => sum + (u.h_m || 0), 0);
+  }
+
   function canPlaceOnFloor(u, x, y, excludeUnitId = null) {
     const fp = unitFootprintCells(u);
     const fx = layout.floor.x || 0;
@@ -795,7 +1640,19 @@ function openPanelDetailModal(panel) {
 
     const candidate = { x, y, w: fp.w, h: fp.h };
     for (const r of occupiedRectsFloor(excludeUnitId)) {
-      if (overlapsRect(candidate, r)) return false;
+      if (overlapsRect(candidate, r)) {
+        // Allow stacking: same exact footprint, both stackable, within height limit
+        if (r.kind === "unit" && fp.w === r.w && fp.h === r.h && x === r.x && y === r.y) {
+          const existing = units.find((e) => e.id === r.id);
+          if (existing?.stackable && u.stackable) {
+            const currentH = getStackHeight(x, y, excludeUnitId);
+            const maxH = Math.min(existing.max_stack_height || 3, u.max_stack_height || 3);
+            const stackCount = getStackAt(x, y, excludeUnitId).length;
+            if (stackCount < maxH) continue; // allow this overlap
+          }
+        }
+        return false;
+      }
     }
     return true;
   }
@@ -960,7 +1817,21 @@ function openPanelDetailModal(panel) {
     }
     setSelected({ kind: "zone", id });
     setMultiSelected([]);
-    setDrag({ type: "move_zone", id, startX: e.clientX, startY: e.clientY, baseRect: { ...z } });
+    // pointer tracking for shelf drop support (like panels)
+    const { cx, cy } = toCell(e.clientX, e.clientY);
+    let zoneWorldX = z.x, zoneWorldY = z.y;
+    if (z.loc?.kind === "shelf") {
+      const shelf = (layout.shelves || []).find((s) => s.id === z.loc.shelfId);
+      if (shelf) { zoneWorldX = shelf.x + z.loc.x; zoneWorldY = shelf.y + z.loc.y; }
+    }
+    setDrag({
+      type: "move_zone", id,
+      startX: e.clientX, startY: e.clientY,
+      pointerX: e.clientX, pointerY: e.clientY,
+      baseRect: { ...z },
+      offsetCx: cx - zoneWorldX,
+      offsetCy: cy - zoneWorldY,
+    });
   }
 
   function beginResizeZone(e, id, corner = "se") {
@@ -1236,9 +2107,11 @@ function openPanelDetailModal(panel) {
     if (drag.type === "resize_unit") {
       const newW = Math.max(1, drag.baseSize.w + dx);
       const newH = Math.max(1, drag.baseSize.h + dy);
+      const newWm = +(newW * (layout.floor.cell_m_w || 1.2)).toFixed(2);
+      const newDm = +(newH * (layout.floor.cell_m_d || 1.0)).toFixed(2);
       setUnits((prev) =>
         prev.map((u) =>
-          u.id === drag.unitId ? { ...u, w_cells: newW, h_cells: newH } : u
+          u.id === drag.unitId ? { ...u, w_cells: newW, h_cells: newH, w_m: newWm, d_m: newDm } : u
         )
       );
       return;
@@ -1256,17 +2129,16 @@ function openPanelDetailModal(panel) {
       return;
     }
 
-    if (drag.type === "move_zone" || drag.type === "resize_zone") {
+    if (drag.type === "move_zone") {
+      // pointer tracking for shelf drop support
+      setDrag((d) => d ? { ...d, pointerX: e.clientX, pointerY: e.clientY } : d);
+      return;
+    }
+
+    if (drag.type === "resize_zone") {
       setLayout((prev) => {
         const zones = prev.zones.map((z) => {
           if (z.id !== drag.id) return z;
-          if (drag.type === "move_zone") {
-            return {
-              ...z,
-              x: drag.baseRect.x + dx,
-              y: drag.baseRect.y + dy,
-            };
-          }
           // 4隅リサイズ対応
           const corner = drag.corner || "se";
           let newX = drag.baseRect.x;
@@ -1524,7 +2396,7 @@ function openPanelDetailModal(panel) {
             const zoneIds = new Set(items.filter((s) => s.kind === "zone").map((s) => s.id));
             const rackIds = new Set(items.filter((s) => s.kind === "rack").map((s) => s.id));
             const shelfIds = new Set(items.filter((s) => s.kind === "shelf").map((s) => s.id));
-            if (zoneIds.size > 0) zones = zones.map((z) => zoneIds.has(z.id) ? { ...z, x: z.x + dx, y: z.y + dy } : z);
+            if (zoneIds.size > 0) zones = zones.map((z) => (zoneIds.has(z.id) && (!z.loc || z.loc.kind === "floor")) ? { ...z, x: z.x + dx, y: z.y + dy } : z);
             if (rackIds.size > 0) racks = racks.map((r) => rackIds.has(r.id) ? { ...r, x: r.x + dx, y: r.y + dy } : r);
             if (shelfIds.size > 0) shelves = shelves.map((s) => shelfIds.has(s.id) ? { ...s, x: s.x + dx, y: s.y + dy } : s);
             return { ...prev, zones, racks, shelves };
@@ -1546,7 +2418,7 @@ function openPanelDetailModal(panel) {
         }));
         setLayout((prev) => ({
           ...prev,
-          zones: prev.zones.map((z) => ({ ...z, x: z.x + totalDx, y: z.y + totalDy })),
+          zones: prev.zones.map((z) => (!z.loc || z.loc.kind === "floor") ? { ...z, x: z.x + totalDx, y: z.y + totalDy } : z),
           racks: prev.racks.map((r) => ({ ...r, x: r.x + totalDx, y: r.y + totalDy })),
         }));
         setPanels((prev) => prev.map((p) => ({ ...p, x: p.x + totalDx, y: p.y + totalDy })));
@@ -1672,6 +2544,45 @@ function openPanelDetailModal(panel) {
       return;
     }
 
+    if (drag.type === "move_zone") {
+      const z = layout.zones.find((x) => x.id === drag.id);
+      if (!z) { setDrag(null); return; }
+
+      const { cx, cy } = toCell(drag.pointerX, drag.pointerY);
+      const dropX = cx - (drag.offsetCx || 0);
+      const dropY = cy - (drag.offsetCy || 0);
+
+      // Check if dropped on a shelf
+      const shelf = findShelfAtCell(cx, cy);
+      if (shelf) {
+        const local = worldToShelfLocal(shelf, dropX, dropY);
+        const clampedX = clamp(Math.floor(local.localX), 0, Math.max(0, shelf.w - z.w));
+        const clampedY = clamp(Math.floor(local.localY), 0, Math.max(0, shelf.h - z.h));
+        setLayout((prev) => ({
+          ...prev,
+          zones: prev.zones.map((zn) =>
+            zn.id === z.id ? { ...zn, loc: { kind: "shelf", shelfId: shelf.id, x: clampedX, y: clampedY }, x: clampedX, y: clampedY } : zn
+          ),
+        }));
+        setDrag(null);
+        return;
+      }
+
+      // Drop on floor
+      const fx = layout.floor.x || 0;
+      const fy = layout.floor.y || 0;
+      const floorX = clamp(dropX, fx, fx + layout.floor.cols - z.w);
+      const floorY = clamp(dropY, fy, fy + layout.floor.rows - z.h);
+      setLayout((prev) => ({
+        ...prev,
+        zones: prev.zones.map((zn) =>
+          zn.id === z.id ? { ...zn, loc: { kind: "floor" }, x: floorX, y: floorY } : zn
+        ),
+      }));
+      setDrag(null);
+      return;
+    }
+
     if (drag.type === "move_panel") {
       const p = panels.find((x) => x.id === drag.id);
       if (!p) { setDrag(null); return; }
@@ -1788,7 +2699,7 @@ function openPanelDetailModal(panel) {
     const zfy = layout.floor.y || 0;
     setLayout((prev) => ({
       ...prev,
-      zones: [...prev.zones, { id: "z-" + uid(), name: "新規区画", client: "取引先A", x: zfx + 3, y: zfy + 3, w: 8, h: 5, labelColor: "#000000", bgColor, bgOpacity: 90 }],
+      zones: [...prev.zones, { id: "z-" + uid(), name: "新規区画", client: "取引先A", x: zfx + 3, y: zfy + 3, w: 8, h: 5, labelColor: "#000000", bgColor, bgOpacity: 90, loc: { kind: "floor" } }],
     }));
   }
 
@@ -2021,6 +2932,7 @@ function openPanelDetailModal(panel) {
   condition: "good",
   rot: false,
   loc: { kind: "unplaced" },
+  stackZ: 0,
 
   // ========== 基本情報 ==========
   sku: form.sku || "",
@@ -2052,7 +2964,83 @@ function openPanelDetailModal(panel) {
 };
     setUnits((prev) => [u, ...prev]);
     setSelected({ kind: "unit", id: u.id });
-    showToast("右の一覧に作成しました（ドラッグで配置）");
+    showToast("作成しました（「床に配置」で配置できます）");
+  }
+
+  function placeOnFloorAuto(unitId) {
+    const u = units.find((x) => x.id === unitId);
+    if (!u) return;
+    const fp = unitFootprintCells(u);
+    const fx = layout.floor.x || 0;
+    const fy = layout.floor.y || 0;
+    const cols = layout.floor.cols;
+    const rows = layout.floor.rows;
+    // Spiral search from center of floor
+    const cx = fx + Math.floor((cols - fp.w) / 2);
+    const cy = fy + Math.floor((rows - fp.h) / 2);
+    // Try center first, then spiral outward
+    const maxR = Math.max(cols, rows);
+    for (let r = 0; r <= maxR; r++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue; // only perimeter
+          const tx = cx + dx;
+          const ty = cy + dy;
+          if (canPlaceOnFloor(u, tx, ty, unitId)) {
+            const stackItems = getStackAt(tx, ty, unitId);
+            const stackZ = stackItems.reduce((s, i) => s + (i.h_m || 0), 0);
+            setUnits((prev) => prev.map((x) => (x.id === unitId ? { ...x, loc: { kind: "floor", x: tx, y: ty }, stackZ } : x)));
+            showToast(stackItems.length > 0 ? `床に積み重ねました（${stackItems.length + 1}段目）` : "床に配置しました");
+            return;
+          }
+        }
+      }
+    }
+    showToast("床に空きスペースが見つかりません");
+  }
+
+  function placeOnShelfAuto(unitId, shelfId) {
+    const u = units.find((x) => x.id === unitId);
+    if (!u) return;
+    const shelf = (layout.shelves || []).find((s) => s.id === shelfId);
+    if (!shelf) return;
+    const fp = unitFootprintCells(u);
+    for (let y = 0; y <= shelf.h - fp.h; y++) {
+      for (let x = 0; x <= shelf.w - fp.w; x++) {
+        if (canPlaceOnShelf(shelfId, u, x, y, unitId)) {
+          setUnits((prev) => prev.map((x2) => (x2.id === unitId ? { ...x2, loc: { kind: "shelf", shelfId, x, y } } : x2)));
+          showToast(`棚「${shelf.name || shelfId}」に配置しました`);
+          return;
+        }
+      }
+    }
+    showToast(`棚「${shelf.name || shelfId}」に空きスペースがありません`);
+  }
+
+  function placeOnRackAuto(unitId, rackId) {
+    const u = units.find((x) => x.id === unitId);
+    if (!u) return;
+    const rack = layout.racks.find((r) => r.id === rackId);
+    if (!rack) return;
+    const totalSlots = (rack.rows || 1) * (rack.cols || 1);
+    for (let slot = 0; slot < totalSlots; slot++) {
+      if (isRackSlotFree(rackId, slot, unitId)) {
+        setUnits((prev) => prev.map((x) => (x.id === unitId ? { ...x, loc: { kind: "rack", rackId, slot } } : x)));
+        showToast(`ラック「${rack.name || rackId}」のスロット${slot + 1}に配置しました`);
+        return;
+      }
+    }
+    showToast(`ラック「${rack.name || rackId}」に空きスロットがありません`);
+  }
+
+  function placeAutoByTarget(unitId, target) {
+    if (!target || target === "floor") {
+      placeOnFloorAuto(unitId);
+    } else if (target.startsWith("shelf-")) {
+      placeOnShelfAuto(unitId, target.slice(6));
+    } else if (target.startsWith("rack-")) {
+      placeOnRackAuto(unitId, target.slice(5));
+    }
   }
 
   function startDragExistingUnitFromList(e, unitId) {
@@ -2162,6 +3150,14 @@ function openPanelDetailModal(panel) {
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            className="rounded-xl border px-3 py-2 text-sm shadow-sm font-bold"
+            style={{ background: "#ede9fe", color: "#7c3aed", borderColor: "#c4b5fd" }}
+            onClick={() => setIsoViewOpen(true)}
+            type="button"
+          >
+            3Dビュー
+          </button>
           <div className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm">ズーム {Math.round(zoom * 100)}%</div>
           <button
             className={
@@ -2201,6 +3197,15 @@ function openPanelDetailModal(panel) {
         <div className="fixed left-1/2 top-16 z-50 -translate-x-1/2 rounded-2xl bg-black px-4 py-2 text-sm text-white shadow">
           {toast}
         </div>
+      )}
+
+      {isoViewOpen && (
+        <IsometricView
+          units={units}
+          layout={layout}
+          panels={panels}
+          onClose={() => setIsoViewOpen(false)}
+        />
       )}
 
       {/* Body */}
@@ -2474,12 +3479,17 @@ function openPanelDetailModal(panel) {
                 );
               })()}
 
-              {/* Zones */}
-              {layout.zones.map((z) => {
+              {/* Zones (floor only - shelf zones rendered inside shelf divs) */}
+              {layout.zones.filter((z) => !z.loc || z.loc.kind === "floor").map((z) => {
                 const labelRgb = hexToRgb(z.labelColor || "#000000");
                 const bgRgb = hexToRgb(z.bgColor || "#d1fae5");
                 const bgOpacity = (z.bgOpacity ?? 90) / 100;
                 const zSel = isItemSelected("zone", z.id);
+                const isDraggingZone = drag?.type === "move_zone" && drag.id === z.id;
+                const hasMovedZone = isDraggingZone && (drag.pointerX !== drag.startX || drag.pointerY !== drag.startY);
+                const zoneDragTransform = hasMovedZone
+                  ? `translate(${(drag.pointerX - drag.startX) / zoom}px, ${(drag.pointerY - drag.startY) / zoom}px)`
+                  : (zSel && groupMoveTransform ? groupMoveTransform : undefined);
                 return (
                   <div
                     key={z.id}
@@ -2492,11 +3502,13 @@ function openPanelDetailModal(panel) {
                       top: z.y * cellPx,
                       width: z.w * cellPx,
                       height: z.h * cellPx,
-                      zIndex: zSel && drag?.type === "group_move" ? 50 : 3,
+                      zIndex: (hasMovedZone || (zSel && drag?.type === "group_move")) ? 50 : 1,
                       backgroundColor: `rgba(${bgRgb.join(",")}, ${bgOpacity})`,
                       borderColor: z.bgColor || "#10b981",
-                      transform: zSel && groupMoveTransform ? groupMoveTransform : undefined,
-                      transition: drag?.type === "group_move" ? "none" : undefined,
+                      transform: zoneDragTransform,
+                      opacity: hasMovedZone ? 0.7 : undefined,
+                      pointerEvents: hasMovedZone ? "none" : undefined,
+                      transition: (hasMovedZone || drag?.type === "group_move") ? "none" : undefined,
                     }}
                     onMouseDown={(e) => mode === "layout" && beginMoveZone(e, z.id)}
                     onClick={(e) => handleItemClick(e, "zone", z.id)}
@@ -2781,7 +3793,7 @@ function openPanelDetailModal(panel) {
                     {shelfUnits.map((u) => {
                       const fp = unitFootprintCells(u);
                       const isUnitSel = isItemSelected("unit", u.id);
-                      const kindIcon = u.kind === "パレット" ? "📦" : u.kind === "カゴ" ? "🧺" : "📋";
+                      const kindIcon = u.kind === "パレット" ? "📦" : u.kind === "カゴ" ? "🧺" : u.kind === "配電盤" ? "⚡" : "📋";
                       const shelfUnitBgRgb = hexToRgb(u.bgColor || "#ffffff");
                       const shelfUnitBgOpacity = (u.bgOpacity ?? 100) / 100;
                       const isDraggingShelfUnit = drag?.type === "move_unit" && drag.unitId === u.id;
@@ -2909,6 +3921,63 @@ function openPanelDetailModal(panel) {
                       );
                     })}
 
+                    {/* Zones on shelf */}
+                    {layout.zones.filter((z) => z.loc?.kind === "shelf" && z.loc.shelfId === s.id).map((z) => {
+                      const zLabelRgb = hexToRgb(z.labelColor || "#000000");
+                      const zBgRgb = hexToRgb(z.bgColor || "#d1fae5");
+                      const zBgOpacity = (z.bgOpacity ?? 90) / 100;
+                      const zSel = isItemSelected("zone", z.id);
+                      const isDraggingShelfZone = drag?.type === "move_zone" && drag.id === z.id;
+                      const hasMovedShelfZone = isDraggingShelfZone && (drag.pointerX !== drag.startX || drag.pointerY !== drag.startY);
+                      const shelfZoneDragTransform = hasMovedShelfZone
+                        ? `translate(${(drag.pointerX - drag.startX) / zoom}px, ${(drag.pointerY - drag.startY) / zoom}px)`
+                        : undefined;
+                      return (
+                        <div
+                          key={z.id}
+                          className={
+                            "absolute rounded-2xl border-2 " +
+                            (zSel ? "ring-2 ring-black" : "")
+                          }
+                          style={{
+                            left: (z.loc.x || 0) * cellPx,
+                            top: (z.loc.y || 0) * cellPx,
+                            width: z.w * cellPx,
+                            height: z.h * cellPx,
+                            backgroundColor: `rgba(${zBgRgb.join(",")}, ${zBgOpacity})`,
+                            borderColor: z.bgColor || "#10b981",
+                            zIndex: hasMovedShelfZone ? 50 : 3,
+                            transform: shelfZoneDragTransform,
+                            opacity: hasMovedShelfZone ? 0.7 : undefined,
+                            pointerEvents: hasMovedShelfZone ? "none" : undefined,
+                            transition: hasMovedShelfZone ? "none" : undefined,
+                          }}
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                            if (mode === "layout") beginMoveZone(e, z.id);
+                          }}
+                          onClick={(e) => { e.stopPropagation(); handleItemClick(e, "zone", z.id); }}
+                        >
+                          <div
+                            className="absolute pointer-events-none"
+                            style={{ top: 0, left: 0, right: 0, bottom: 0, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}
+                          >
+                            <div style={{ fontSize: `${z.labelFontSize || 1.5}rem`, fontWeight: 900, color: `rgba(${zLabelRgb.join(",")}, 0.15)`, userSelect: "none", textAlign: "center", lineHeight: 1.2 }}>
+                              {z.name}
+                            </div>
+                          </div>
+                          {mode === "layout" && (
+                            <div
+                              className="absolute cursor-se-resize"
+                              style={{ bottom: 0, right: 0, width: 0, height: 0, borderStyle: "solid", borderWidth: "0 0 16px 16px", borderColor: "transparent transparent #1f2937 transparent", zIndex: 100 }}
+                              onMouseDown={(e) => { e.stopPropagation(); beginResizeZone(e, z.id, "se"); }}
+                              title="リサイズ"
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
+
                     {/* 右下リサイズハンドル（三角形）- 回転しても視覚的な右下に維持 */}
                     {mode === "layout" && (() => {
                       // 回転角度に応じて位置と三角形の形状を調整
@@ -2945,7 +4014,7 @@ function openPanelDetailModal(panel) {
               {placedOnFloor.map((u) => {
                 const fp = unitFootprintCells(u);
                 const isSel = isItemSelected("unit", u.id);
-                const kindIcon = u.kind === "パレット" ? "📦" : u.kind === "カゴ" ? "🧺" : "📋";
+                const kindIcon = u.kind === "パレット" ? "📦" : u.kind === "カゴ" ? "🧺" : u.kind === "配電盤" ? "⚡" : "📋";
                 const unitBgRgb = hexToRgb(u.bgColor || "#ffffff");
                 const unitBgOpacity = (u.bgOpacity ?? 100) / 100;
                 const unitLabelRgb = hexToRgb(u.labelColor || "#000000");
@@ -4088,49 +5157,66 @@ function openPanelDetailModal(panel) {
               </div>
             </div>
           ) : (
-            <div className="rounded-2xl border bg-white p-3 shadow-sm">
+            <div className="rounded-3xl border-2 bg-white p-4 shadow-md">
               <SectionTitle>オブジェクト作成</SectionTitle>
 
-              <div className="rounded-xl border p-3">
-                <div className="text-sm font-semibold">テンプレ</div>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {[{ k: "パレット", w: "1.2", d: "1.0", h: "1.6" }, { k: "カゴ", w: "0.8", d: "0.6", h: "0.7" }, { k: "単体荷物", w: "0.4", d: "0.3", h: "0.25" }].map(
-                    (t) => (
+              {/* テンプレート選択 */}
+              <div className="rounded-2xl border-2 p-4" style={{ background: "#f8fafc" }}>
+                <div className="text-sm font-bold" style={{ color: "#334155" }}>テンプレート</div>
+                <div className="mt-3 grid grid-cols-4 gap-3">
+                  {[
+                    { k: "パレット", icon: "\u{1f4e6}", w: "1.2", d: "1.0", h: "1.6", color: "#dbeafe", activeColor: "#3b82f6" },
+                    { k: "カゴ", icon: "\u{1f6d2}", w: "0.8", d: "0.6", h: "0.7", color: "#d1fae5", activeColor: "#10b981" },
+                    { k: "単体荷物", icon: "\u{1f4e6}", w: "0.4", d: "0.3", h: "0.25", color: "#fef3c7", activeColor: "#f59e0b" },
+                    { k: "配電盤", icon: "\u{26a1}", w: "1.0", d: "0.5", h: "1.8", color: "#fef9c3", activeColor: "#eab308" },
+                  ].map((t) => {
+                    const isActive = template === t.k;
+                    return (
                       <button
                         key={t.k}
-                        className={
-                          "rounded-xl border px-3 py-2 text-sm hover:bg-gray-50 " +
-                          (template === t.k ? "bg-black text-white hover:bg-black/90" : "")
-                        }
                         type="button"
+                        className="flex flex-col items-center rounded-2xl border-2 p-3 select-none"
+                        style={{
+                          background: isActive ? t.activeColor : t.color,
+                          borderColor: isActive ? t.activeColor : "transparent",
+                          color: isActive ? "#fff" : "#334155",
+                          boxShadow: isActive ? "0 4px 14px " + t.activeColor + "66" : "0 2px 6px rgba(0,0,0,0.06)",
+                          transform: isActive ? "scale(1.05)" : "scale(1)",
+                          transition: "all 0.2s cubic-bezier(.34,1.56,.64,1)",
+                        }}
                         onClick={() => {
                           setTemplate(t.k);
                           setForm((s) => ({ ...s, w: t.w, d: t.d, h: t.h }));
                         }}
                       >
-                        {t.k}
+                        <span style={{ fontSize: 28 }}>{t.icon}</span>
+                        <span className="mt-1 text-xs font-bold">{t.k}</span>
+                        <span className="mt-0.5 text-xs" style={{ opacity: 0.7, fontSize: 10 }}>{t.w}x{t.d}x{t.h}m</span>
                       </button>
-                    )
-                  )}
+                    );
+                  })}
                 </div>
               </div>
 
-              <div className="mt-3 rounded-xl border p-3">
-                <div className="text-sm font-semibold">情報</div>
-                <div className="mt-2 grid grid-cols-2 gap-2">
+              {/* 情報入力 */}
+              <div className="mt-4 rounded-2xl border-2 p-4" style={{ background: "#f8fafc" }}>
+                <div className="text-sm font-bold" style={{ color: "#334155" }}>情報</div>
+                <div className="mt-3 grid grid-cols-2 gap-3">
                   <div>
-                    <div className="text-xs text-gray-500">取引先</div>
+                    <div className="text-xs font-semibold" style={{ color: "#64748b" }}>取引先</div>
                     <input
-                      className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                      className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
+                      style={{ borderColor: "#e2e8f0" }}
                       value={form.client}
                       onChange={(e) => setForm((s) => ({ ...s, client: e.target.value }))}
                       placeholder="取引先A"
                     />
                   </div>
                   <div>
-                    <div className="text-xs text-gray-500">数量</div>
+                    <div className="text-xs font-semibold" style={{ color: "#64748b" }}>数量</div>
                     <input
-                      className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                      className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
+                      style={{ borderColor: "#e2e8f0" }}
                       value={form.qty}
                       onChange={(e) => setForm((s) => ({ ...s, qty: e.target.value }))}
                       inputMode="numeric"
@@ -4138,9 +5224,10 @@ function openPanelDetailModal(panel) {
                     />
                   </div>
                   <div className="col-span-2">
-                    <div className="text-xs text-gray-500">名称（任意）</div>
+                    <div className="text-xs font-semibold" style={{ color: "#64748b" }}>名称（任意）</div>
                     <input
-                      className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                      className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
+                      style={{ borderColor: "#e2e8f0" }}
                       value={form.name}
                       onChange={(e) => setForm((s) => ({ ...s, name: e.target.value }))}
                       placeholder="品目や伝票番号など"
@@ -4148,133 +5235,34 @@ function openPanelDetailModal(panel) {
                   </div>
                 </div>
 
-                <div className="mt-3 text-sm font-semibold">サイズ</div>
-                <div className="mt-3 text-sm font-semibold">追加情報（新規）</div>
-<div className="mt-2 grid grid-cols-2 gap-2">
-  <div>
-    <div className="text-xs text-gray-500">SKU</div>
-    <input
-      className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-      value={form.sku}
-      onChange={(e) => setForm((s) => ({ ...s, sku: e.target.value }))}
-      placeholder="商品コード"
-    />
-  </div>
-  <div>
-    <div className="text-xs text-gray-500">バーコード</div>
-    <input
-      className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-      value={form.barcode}
-      onChange={(e) => setForm((s) => ({ ...s, barcode: e.target.value }))}
-      placeholder="JAN等"
-    />
-  </div>
-  <div>
-    <div className="text-xs text-gray-500">ロット番号</div>
-    <input
-      className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-      value={form.batch_number}
-      onChange={(e) => setForm((s) => ({ ...s, batch_number: e.target.value }))}
-      placeholder="LOT-001"
-    />
-  </div>
-  <div>
-    <div className="text-xs text-gray-500">重量(kg)</div>
-    <input
-      className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-      value={form.weight_kg}
-      onChange={(e) => setForm((s) => ({ ...s, weight_kg: e.target.value }))}
-      inputMode="decimal"
-      placeholder="0"
-    />
-  </div>
-  <div>
-    <div className="text-xs text-gray-500">温度ゾーン</div>
-    <select
-      className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-      value={form.temperature_zone}
-      onChange={(e) => setForm((s) => ({ ...s, temperature_zone: e.target.value }))}
-    >
-      <option value="ambient">常温</option>
-      <option value="chilled">冷蔵</option>
-      <option value="frozen">冷凍</option>
-    </select>
-  </div>
-  <div>
-    <div className="text-xs text-gray-500">最大積み段数</div>
-    <input
-      className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-      value={form.max_stack_height}
-      onChange={(e) => setForm((s) => ({ ...s, max_stack_height: e.target.value }))}
-      inputMode="numeric"
-      placeholder="1"
-    />
-  </div>
-  <div>
-    <div className="text-xs text-gray-500">賞味期限</div>
-    <input
-      type="date"
-      className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-      value={form.expires_at}
-      onChange={(e) => setForm((s) => ({ ...s, expires_at: e.target.value }))}
-    />
-  </div>
-</div>
-
-<div className="mt-2 flex gap-2">
-  <label className="flex items-center gap-2 text-sm">
-    <input
-      type="checkbox"
-      checked={form.fragile}
-      onChange={(e) => setForm((s) => ({ ...s, fragile: e.target.checked }))}
-      className="rounded"
-    />
-    <span className="text-xs">壊れやすい</span>
-  </label>
-  <label className="flex items-center gap-2 text-sm">
-    <input
-      type="checkbox"
-      checked={form.stackable}
-      onChange={(e) => setForm((s) => ({ ...s, stackable: e.target.checked }))}
-      className="rounded"
-    />
-    <span className="text-xs">積み重ね可能</span>
-  </label>
-</div>
-
-<div className="mt-2">
-  <div className="text-xs text-gray-500">メモ</div>
-  <textarea
-    className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-    value={form.notes}
-    onChange={(e) => setForm((s) => ({ ...s, notes: e.target.value }))}
-    placeholder="特記事項など"
-    rows={2}
-  />
-</div>
-                <div className="mt-2 grid grid-cols-3 gap-2">
+                {/* サイズ */}
+                <div className="mt-4 text-sm font-bold" style={{ color: "#334155" }}>サイズ</div>
+                <div className="mt-2 grid grid-cols-3 gap-3">
                   <div>
-                    <div className="text-xs text-gray-500">W(m)</div>
+                    <div className="text-xs font-semibold" style={{ color: "#64748b" }}>W(m)</div>
                     <input
-                      className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                      className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
+                      style={{ borderColor: "#e2e8f0" }}
                       value={form.w}
                       onChange={(e) => setForm((s) => ({ ...s, w: e.target.value }))}
                       inputMode="decimal"
                     />
                   </div>
                   <div>
-                    <div className="text-xs text-gray-500">D(m)</div>
+                    <div className="text-xs font-semibold" style={{ color: "#64748b" }}>D(m)</div>
                     <input
-                      className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                      className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
+                      style={{ borderColor: "#e2e8f0" }}
                       value={form.d}
                       onChange={(e) => setForm((s) => ({ ...s, d: e.target.value }))}
                       inputMode="decimal"
                     />
                   </div>
                   <div>
-                    <div className="text-xs text-gray-500">H(m)</div>
+                    <div className="text-xs font-semibold" style={{ color: "#64748b" }}>H(m)</div>
                     <input
-                      className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                      className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
+                      style={{ borderColor: "#e2e8f0" }}
                       value={form.h}
                       onChange={(e) => setForm((s) => ({ ...s, h: e.target.value }))}
                       inputMode="decimal"
@@ -4282,81 +5270,233 @@ function openPanelDetailModal(panel) {
                   </div>
                 </div>
 
+                {/* 追加情報 */}
+                <div className="mt-4 text-sm font-bold" style={{ color: "#334155" }}>追加情報</div>
+                <div className="mt-2 grid grid-cols-2 gap-3">
+                  <div>
+                    <div className="text-xs font-semibold" style={{ color: "#64748b" }}>SKU</div>
+                    <input
+                      className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
+                      style={{ borderColor: "#e2e8f0" }}
+                      value={form.sku}
+                      onChange={(e) => setForm((s) => ({ ...s, sku: e.target.value }))}
+                      placeholder="商品コード"
+                    />
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold" style={{ color: "#64748b" }}>バーコード</div>
+                    <input
+                      className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
+                      style={{ borderColor: "#e2e8f0" }}
+                      value={form.barcode}
+                      onChange={(e) => setForm((s) => ({ ...s, barcode: e.target.value }))}
+                      placeholder="JAN等"
+                    />
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold" style={{ color: "#64748b" }}>ロット番号</div>
+                    <input
+                      className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
+                      style={{ borderColor: "#e2e8f0" }}
+                      value={form.batch_number}
+                      onChange={(e) => setForm((s) => ({ ...s, batch_number: e.target.value }))}
+                      placeholder="LOT-001"
+                    />
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold" style={{ color: "#64748b" }}>重量(kg)</div>
+                    <input
+                      className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
+                      style={{ borderColor: "#e2e8f0" }}
+                      value={form.weight_kg}
+                      onChange={(e) => setForm((s) => ({ ...s, weight_kg: e.target.value }))}
+                      inputMode="decimal"
+                      placeholder="0"
+                    />
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold" style={{ color: "#64748b" }}>温度ゾーン</div>
+                    <select
+                      className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
+                      style={{ borderColor: "#e2e8f0" }}
+                      value={form.temperature_zone}
+                      onChange={(e) => setForm((s) => ({ ...s, temperature_zone: e.target.value }))}
+                    >
+                      <option value="ambient">常温</option>
+                      <option value="chilled">冷蔵</option>
+                      <option value="frozen">冷凍</option>
+                    </select>
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold" style={{ color: "#64748b" }}>最大積み段数</div>
+                    <input
+                      className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
+                      style={{ borderColor: "#e2e8f0" }}
+                      value={form.max_stack_height}
+                      onChange={(e) => setForm((s) => ({ ...s, max_stack_height: e.target.value }))}
+                      inputMode="numeric"
+                      placeholder="1"
+                    />
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold" style={{ color: "#64748b" }}>賞味期限</div>
+                    <input
+                      type="date"
+                      className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
+                      style={{ borderColor: "#e2e8f0" }}
+                      value={form.expires_at}
+                      onChange={(e) => setForm((s) => ({ ...s, expires_at: e.target.value }))}
+                    />
+                  </div>
+                </div>
+
+                {/* チェックボックス */}
+                <div className="mt-3 flex gap-4">
+                  <label className="flex items-center gap-2 rounded-xl border-2 px-3 py-2 text-sm" style={{ borderColor: "#e2e8f0", background: form.fragile ? "#fef2f2" : "transparent" }}>
+                    <input
+                      type="checkbox"
+                      checked={form.fragile}
+                      onChange={(e) => setForm((s) => ({ ...s, fragile: e.target.checked }))}
+                      className="rounded"
+                    />
+                    <span className="text-xs font-semibold">壊れやすい</span>
+                  </label>
+                  <label className="flex items-center gap-2 rounded-xl border-2 px-3 py-2 text-sm" style={{ borderColor: "#e2e8f0", background: form.stackable ? "#f0fdf4" : "transparent" }}>
+                    <input
+                      type="checkbox"
+                      checked={form.stackable}
+                      onChange={(e) => setForm((s) => ({ ...s, stackable: e.target.checked }))}
+                      className="rounded"
+                    />
+                    <span className="text-xs font-semibold">積み重ね可能</span>
+                  </label>
+                </div>
+
+                {/* メモ */}
+                <div className="mt-3">
+                  <div className="text-xs font-semibold" style={{ color: "#64748b" }}>メモ</div>
+                  <textarea
+                    className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
+                    style={{ borderColor: "#e2e8f0" }}
+                    value={form.notes}
+                    onChange={(e) => setForm((s) => ({ ...s, notes: e.target.value }))}
+                    placeholder="特記事項など"
+                    rows={2}
+                  />
+                </div>
+
+                {/* 作成ボタン */}
                 <button
-                  className="mt-3 w-full rounded-2xl bg-black px-4 py-2 text-sm font-semibold text-white hover:bg-black/90"
+                  className="mt-4 w-full rounded-2xl px-4 py-3 text-sm font-bold"
                   type="button"
                   onClick={createUnitFromForm}
+                  style={{
+                    background: "#1e293b",
+                    color: "#fff",
+                    boxShadow: "0 4px 14px rgba(30,41,59,0.3)",
+                    transition: "transform 0.15s, box-shadow 0.15s",
+                    fontSize: 14,
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.transform = "scale(1.02)"; e.currentTarget.style.boxShadow = "0 6px 20px rgba(30,41,59,0.35)"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.transform = "scale(1)"; e.currentTarget.style.boxShadow = "0 4px 14px rgba(30,41,59,0.3)"; }}
                 >
-                  作成（右の一覧に追加）
-                </button>
-                <button
-                  className="mt-2 w-full rounded-2xl border px-4 py-2 text-sm font-semibold hover:bg-gray-50 bg-amber-50 border-amber-300"
-                  type="button"
-                  onClick={addPanel}
-                >
-                  ＋配電盤
+                  作成
                 </button>
               </div>
 
-              <div className="mt-3 rounded-2xl border bg-gray-50 p-3 text-xs text-gray-700">
-                作成した荷物は「未配置」一覧に出ます。カードを<strong>押したままドラッグ</strong>して中央へ配置できます。
-              </div>
-
-              <div className="mt-3 rounded-2xl border p-3">
-                <SectionTitle>未配置（ドラッグで配置）</SectionTitle>
-                <div className="space-y-2">
-                  {unplaced.length === 0 && <div className="text-sm text-gray-600">未配置の荷物はありません。</div>}
+              <div className="mt-4 rounded-3xl border-2 p-4 shadow-md" style={{ background: "#f8fafc" }}>
+                <SectionTitle>未配置</SectionTitle>
+                <div className="space-y-3">
+                  {unplaced.length === 0 && (
+                    <div className="rounded-2xl p-4 text-center text-sm" style={{ background: "#f0f9ff", color: "#64748b" }}>
+                      未配置の荷物はありません
+                    </div>
+                  )}
                   {unplaced.map((u) => {
                     const isSel = isItemSelected("unit", u.id);
+                    const kindIcon = u.kind === "パレット" ? "\u{1f4e6}" : u.kind === "カゴ" ? "\u{1f6d2}" : u.kind === "配電盤" ? "\u{26a1}" : "\u{1f4e6}";
+                    const kindColor = u.kind === "パレット" ? "#dbeafe" : u.kind === "カゴ" ? "#d1fae5" : u.kind === "配電盤" ? "#fef9c3" : "#fef3c7";
                     return (
-                    <div
-  key={u.id}
-className={
-  "rounded-2xl border bg-white shadow-sm hover:shadow-md cursor-pointer p-2 " +
-  (isSel ? "ring-2 ring-black" : "")
-}
-  onMouseDown={(e) => mode === "operate" && beginMoveUnit(e, u.id)}
-  onClick={(e) => handleItemClick(e, "unit", u.id)}
-  onDoubleClick={(e) => {
-    e.stopPropagation();
-    openDetailModal(u);
-  }}
-                      role="button"
-                    >
-                      <div className="flex items-start justify-between">
-                        <div className="min-w-0">
-                          <div className="truncate font-semibold">{u.kind}</div>
-                          <div className="mt-1 flex flex-wrap gap-1">
-  {/* ↓↓↓ 新しいコード ↓↓↓ */}
-  <Badge>{u.client}</Badge>
-  <Badge color={getStatusColor(u.status)}>
-    {getStatusLabel(u.status)}
-  </Badge>
-  {u.sku && <Badge>SKU: {u.sku}</Badge>}
-  {u.weight_kg > 0 && <Badge>{u.weight_kg}kg</Badge>}
-  {u.temperature_zone && u.temperature_zone !== "ambient" && (
-    <Badge color={getTempZoneColor(u.temperature_zone)}>
-      {getTempZoneLabel(u.temperature_zone)}
-    </Badge>
-  )}
-  {/* ↑↑↑ 新しいコード終わり ↑↑↑ */}
-</div>
+                      <div
+                        key={u.id}
+                        className="rounded-2xl border-2 p-3 select-none"
+                        style={{
+                          background: "#fff",
+                          borderColor: isSel ? "#3b82f6" : "#e2e8f0",
+                          boxShadow: isSel ? "0 0 0 3px rgba(59,130,246,0.2), 0 4px 12px rgba(0,0,0,0.08)" : "0 2px 8px rgba(0,0,0,0.05)",
+                          transition: "all 0.2s",
+                        }}
+                        onClick={(e) => handleItemClick(e, "unit", u.id)}
+                        onDoubleClick={(e) => { e.stopPropagation(); openDetailModal(u); }}
+                        role="button"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="flex-shrink-0 flex items-center justify-center rounded-xl" style={{ width: 44, height: 44, background: kindColor, fontSize: 22 }}>
+                            {kindIcon}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-sm font-bold" style={{ color: "#1e293b" }}>{u.kind}</div>
+                            <div className="truncate text-xs" style={{ color: "#64748b" }}>{u.name}</div>
+                          </div>
                         </div>
-                        <button
-                          type="button"
-                          className="rounded-lg border px-2 py-1 text-xs hover:bg-white"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setUnits((prev) => prev.filter((x) => x.id !== u.id));
-                            showToast("削除しました");
-                          }}
-                        >
-                          削除
-                        </button>
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          <Badge>{u.client}</Badge>
+                          <Badge color={getStatusColor(u.status)}>{getStatusLabel(u.status)}</Badge>
+                          {u.sku && <Badge>SKU: {u.sku}</Badge>}
+                          {u.weight_kg > 0 && <Badge>{u.weight_kg}kg</Badge>}
+                          {u.temperature_zone && u.temperature_zone !== "ambient" && (
+                            <Badge color={getTempZoneColor(u.temperature_zone)}>{getTempZoneLabel(u.temperature_zone)}</Badge>
+                          )}
+                        </div>
+                        <div className="mt-3 space-y-2">
+                          <div className="flex gap-2">
+                            <select
+                              className="flex-1 rounded-xl border px-2 py-2 text-xs"
+                              defaultValue="floor"
+                              id={`place-target-${u.id}`}
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <option value="floor">床</option>
+                              {(layout.shelves || []).map((s) => (
+                                <option key={s.id} value={`shelf-${s.id}`}>棚: {s.name || s.id}</option>
+                              ))}
+                              {layout.racks.map((r) => (
+                                <option key={r.id} value={`rack-${r.id}`}>ラック: {r.name || r.id}</option>
+                              ))}
+                            </select>
+                            <button
+                              type="button"
+                              className="rounded-xl px-3 py-2 text-xs font-bold"
+                              style={{ background: "#1e293b", color: "#fff", boxShadow: "0 2px 8px rgba(30,41,59,0.2)", transition: "transform 0.15s", whiteSpace: "nowrap" }}
+                              onMouseEnter={(e) => { e.currentTarget.style.transform = "scale(1.03)"; }}
+                              onMouseLeave={(e) => { e.currentTarget.style.transform = "scale(1)"; }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const sel = document.getElementById(`place-target-${u.id}`);
+                                placeAutoByTarget(u.id, sel?.value || "floor");
+                              }}
+                            >
+                              配置
+                            </button>
+                          </div>
+                          <div className="flex justify-end">
+                            <button
+                              type="button"
+                              className="rounded-xl px-3 py-1.5 text-xs font-bold"
+                              style={{ background: "#fee2e2", color: "#dc2626", transition: "transform 0.15s" }}
+                              onMouseEnter={(e) => { e.currentTarget.style.transform = "scale(1.03)"; }}
+                              onMouseLeave={(e) => { e.currentTarget.style.transform = "scale(1)"; }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setUnits((prev) => prev.filter((x) => x.id !== u.id));
+                                showToast("削除しました");
+                              }}
+                            >
+                              削除
+                            </button>
+                          </div>
+                        </div>
                       </div>
-                      <div className="mt-1 truncate text-xs text-gray-600">{u.name}</div>
-                      <div className="mt-1 text-xs text-gray-500">（押したままドラッグ）</div>
-                    </div>
                     );
                   })}
                 </div>
@@ -4395,7 +5535,7 @@ className={
                         onChange={(e) => setPanels((p) => p.map((pn) => (pn.id === selected.id ? { ...pn, name: e.target.value } : pn)))}
                       />
                     </div>
-                    <div className="grid grid-cols-4 gap-2">
+                    <div className="grid grid-cols-2 gap-2">
                       <div>
                         <div className="text-xs text-gray-500">X</div>
                         <input className="mt-1 w-full rounded-xl border px-2 py-1 text-sm" value={selectedEntity.x} onChange={(e) => { const v = clamp(Number(e.target.value) || 0, 0, layout.floor.cols - 1); setPanels((p) => p.map((pn) => (pn.id === selected.id ? { ...pn, x: v } : pn))); }} inputMode="numeric" />
@@ -4404,13 +5544,22 @@ className={
                         <div className="text-xs text-gray-500">Y</div>
                         <input className="mt-1 w-full rounded-xl border px-2 py-1 text-sm" value={selectedEntity.y} onChange={(e) => { const v = clamp(Number(e.target.value) || 0, 0, layout.floor.rows - 1); setPanels((p) => p.map((pn) => (pn.id === selected.id ? { ...pn, y: v } : pn))); }} inputMode="numeric" />
                       </div>
-                      <div>
-                        <div className="text-xs text-gray-500">幅(W)</div>
-                        <input className="mt-1 w-full rounded-xl border px-2 py-1 text-sm" value={selectedEntity.w} onChange={(e) => { const v = clamp(Number(e.target.value) || 1, 1, layout.floor.cols); setPanels((p) => p.map((pn) => (pn.id === selected.id ? { ...pn, w: v } : pn))); }} inputMode="numeric" />
-                      </div>
-                      <div>
-                        <div className="text-xs text-gray-500">高さ(H)</div>
-                        <input className="mt-1 w-full rounded-xl border px-2 py-1 text-sm" value={selectedEntity.h} onChange={(e) => { const v = clamp(Number(e.target.value) || 1, 1, layout.floor.rows); setPanels((p) => p.map((pn) => (pn.id === selected.id ? { ...pn, h: v } : pn))); }} inputMode="numeric" />
+                    </div>
+                    <div className="border-t pt-2">
+                      <div className="text-xs font-semibold text-gray-700 mb-2">サイズ（実寸）</div>
+                      <div className="grid grid-cols-3 gap-2">
+                        <div>
+                          <div className="text-xs text-gray-500">幅(m)</div>
+                          <input className="mt-1 w-full rounded-xl border px-2 py-1 text-sm" type="number" min="0.1" step="0.1" value={+(selectedEntity.w_m || ((selectedEntity.w || 2) * (layout.floor.cell_m_w || 1.2))).toFixed(2)} onChange={(e) => { const v = Math.max(0.1, Number(e.target.value) || 0.1); const cells = Math.max(1, Math.ceil(v / (layout.floor.cell_m_w || 1.2))); setPanels((p) => p.map((pn) => (pn.id === selected.id ? { ...pn, w_m: +v.toFixed(2), w: cells } : pn))); }} />
+                        </div>
+                        <div>
+                          <div className="text-xs text-gray-500">奥行(m)</div>
+                          <input className="mt-1 w-full rounded-xl border px-2 py-1 text-sm" type="number" min="0.1" step="0.1" value={+(selectedEntity.d_m || ((selectedEntity.h || 2) * (layout.floor.cell_m_d || 1.0))).toFixed(2)} onChange={(e) => { const v = Math.max(0.1, Number(e.target.value) || 0.1); const cells = Math.max(1, Math.ceil(v / (layout.floor.cell_m_d || 1.0))); setPanels((p) => p.map((pn) => (pn.id === selected.id ? { ...pn, d_m: +v.toFixed(2), h: cells } : pn))); }} />
+                        </div>
+                        <div>
+                          <div className="text-xs text-gray-500">高さ(m)</div>
+                          <input className="mt-1 w-full rounded-xl border px-2 py-1 text-sm" type="number" min="0.1" step="0.1" value={+(selectedEntity.h_m || 1.8).toFixed(2)} onChange={(e) => { const v = Math.max(0.1, Number(e.target.value) || 0.1); setPanels((p) => p.map((pn) => (pn.id === selected.id ? { ...pn, h_m: +v.toFixed(2) } : pn))); }} />
+                        </div>
                       </div>
                     </div>
                     <div className="border-t pt-2">
@@ -4483,13 +5632,24 @@ className={
                 ) : (
                   <div className="space-y-2">
                     <div className="text-sm font-semibold">{selectedEntity.kind}</div>
-                    <div className="text-xs text-gray-600">{selectedEntity.name}</div>
-                    <div className="flex flex-wrap gap-2">
-                      <Badge>{selectedEntity.client}</Badge>
-                      <Badge>qty {selectedEntity.qty}</Badge>
-                      <Badge>
-                        {selectedEntity.w_m}×{selectedEntity.d_m}×{selectedEntity.h_m}m
-                      </Badge>
+                    <div>
+                      <div className="text-xs text-gray-500">名前</div>
+                      <input
+                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                        value={selectedEntity.name || ""}
+                        onChange={(e) => setUnits((prev) => prev.map((u) => u.id === selectedEntity.id ? { ...u, name: e.target.value } : u))}
+                      />
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-500">取引先</div>
+                      <input
+                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                        value={selectedEntity.client || ""}
+                        onChange={(e) => setUnits((prev) => prev.map((u) => u.id === selectedEntity.id ? { ...u, client: e.target.value } : u))}
+                      />
+                    </div>
+                    <div className="text-xs text-gray-500">
+                      {selectedEntity.w_m} × {selectedEntity.d_m} × {selectedEntity.h_m} m
                     </div>
                     <div className="flex gap-2">
                       <button
@@ -4524,39 +5684,61 @@ className={
                       </button>
                     </div>
 
-                    {/* サイズ変更UI（セル単位） */}
+                    {/* 実寸サイズ変更UI */}
                     <div className="border-t pt-2">
-                      <div className="text-xs font-semibold text-gray-700 mb-2">サイズ（セル単位）</div>
-                      <div className="grid grid-cols-2 gap-2">
+                      <div className="text-xs font-semibold text-gray-700 mb-2">サイズ（実寸）</div>
+                      <div className="grid grid-cols-3 gap-2">
                         <div>
-                          <div className="text-xs text-gray-500">幅（セル）</div>
+                          <div className="text-xs text-gray-500">幅(m)</div>
                           <input
                             className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
                             type="number"
-                            min="1"
-                            value={selectedEntity.w_cells ?? unitFootprintCells(selectedEntity).w}
+                            min="0.1"
+                            step="0.1"
+                            value={selectedEntity.w_m}
                             onChange={(e) => {
-                              const v = Math.max(1, Number(e.target.value) || 1);
+                              const v = Math.max(0.1, Number(e.target.value) || 0.1);
+                              const cells = Math.max(1, Math.ceil(v / (layout.floor.cell_m_w || 1.2)));
                               setUnits((prev) =>
                                 prev.map((u) =>
-                                  u.id === selectedEntity.id ? { ...u, w_cells: v } : u
+                                  u.id === selectedEntity.id ? { ...u, w_m: +v.toFixed(2), w_cells: cells } : u
                                 )
                               );
                             }}
                           />
                         </div>
                         <div>
-                          <div className="text-xs text-gray-500">奥行（セル）</div>
+                          <div className="text-xs text-gray-500">奥行(m)</div>
                           <input
                             className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
                             type="number"
-                            min="1"
-                            value={selectedEntity.h_cells ?? unitFootprintCells(selectedEntity).h}
+                            min="0.1"
+                            step="0.1"
+                            value={selectedEntity.d_m}
                             onChange={(e) => {
-                              const v = Math.max(1, Number(e.target.value) || 1);
+                              const v = Math.max(0.1, Number(e.target.value) || 0.1);
+                              const cells = Math.max(1, Math.ceil(v / (layout.floor.cell_m_d || 1.0)));
                               setUnits((prev) =>
                                 prev.map((u) =>
-                                  u.id === selectedEntity.id ? { ...u, h_cells: v } : u
+                                  u.id === selectedEntity.id ? { ...u, d_m: +v.toFixed(2), h_cells: cells } : u
+                                )
+                              );
+                            }}
+                          />
+                        </div>
+                        <div>
+                          <div className="text-xs text-gray-500">高さ(m)</div>
+                          <input
+                            className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                            type="number"
+                            min="0.1"
+                            step="0.1"
+                            value={selectedEntity.h_m}
+                            onChange={(e) => {
+                              const v = Math.max(0.1, Number(e.target.value) || 0.1);
+                              setUnits((prev) =>
+                                prev.map((u) =>
+                                  u.id === selectedEntity.id ? { ...u, h_m: +v.toFixed(2) } : u
                                 )
                               );
                             }}
@@ -5046,6 +6228,10 @@ export default function App() {
   const [view, setView] = useState("map"); // map | warehouse
   const [activeWarehouseId, setActiveWarehouseId] = useState(null);
   const [selectedWarehouseId, setSelectedWarehouseId] = useState(null); // 地図上で選択中の倉庫
+  const [topViewMode, setTopViewMode] = useState(() => {
+    try { return localStorage.getItem("wh_top_view_mode") || "map"; } catch { return "map"; }
+  });
+  useEffect(() => { try { localStorage.setItem("wh_top_view_mode", topViewMode); } catch {} }, [topViewMode]);
 
   const [site, setSite] = useSupabaseState("wh_demo_site_v1", {
     id: "site-1",
@@ -5140,6 +6326,8 @@ export default function App() {
     iconSize: "48",
     pointerLength: "10",
     pointerWidth: "8",
+    cardColor: "",
+    cardOpacity: "100",
   });
   const [geocoding, setGeocoding] = useState(false);
 
@@ -5160,6 +6348,8 @@ export default function App() {
       iconSize: String(editTarget.iconSize ?? "48"),
       pointerLength: String(editTarget.pointerLength ?? "10"),
       pointerWidth: String(editTarget.pointerWidth ?? "8"),
+      cardColor: editTarget.cardColor ?? "",
+      cardOpacity: String(editTarget.cardOpacity ?? "100"),
     });
   }, [editTarget]);
 
@@ -5216,6 +6406,8 @@ export default function App() {
         iconSize: Number(editForm.iconSize) || 48,
         pointerLength: Number(editForm.pointerLength) || 10,
         pointerWidth: Number(editForm.pointerWidth) || 8,
+        cardColor: editForm.cardColor || "",
+        cardOpacity: Number(editForm.cardOpacity) || 100,
       };
     });
     setWarehouses(next);
@@ -5425,82 +6617,112 @@ export default function App() {
     <div className="h-screen w-full bg-gray-50">
       {/* Header */}
       <div className="flex items-center justify-between border-b bg-white px-5 py-3">
-        <div>
-          <div className="text-sm text-gray-500">TOP（マップ風配置 / 簡易デモ）</div>
-          <div className="text-lg font-semibold">{site.name}</div>
+        <div className="flex items-center gap-4">
+          <div>
+            <div className="text-sm text-gray-500">TOP（マップ風配置 / 簡易デモ）</div>
+            <div className="text-lg font-semibold">{site.name}</div>
+          </div>
+          <div className="flex overflow-hidden rounded-lg border text-sm">
+            {[["map", "マップ"], ["simple", "一覧"]].map(([mode, label]) => (
+              <button
+                key={mode}
+                type="button"
+                className={"px-3 py-1.5 " + (topViewMode === mode ? "bg-black text-white" : "bg-white hover:bg-gray-100")}
+                onClick={() => setTopViewMode(mode)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <IconButton title="倉庫を追加" onClick={addWarehouse}>
             ＋ 倉庫追加
           </IconButton>
-          <IconButton title="ズームアウト" onClick={() => setZoom((z) => clamp(z * 0.9, 0.5, 2.5))}>
-            −
-          </IconButton>
-          <div className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm">{Math.round(zoom * 100)}%</div>
-          <IconButton title="ズームイン" onClick={() => setZoom((z) => clamp(z * 1.1, 0.5, 2.5))}>
-            ＋
-          </IconButton>
-          <IconButton
-            title="リセット"
-            onClick={() => {
-              setZoom(1);
-              setPan({ x: 0, y: 0 });
-            }}
-          >
-            リセット
-          </IconButton>
+          {topViewMode === "map" && (
+            <>
+              <IconButton title="ズームアウト" onClick={() => setZoom((z) => clamp(z * 0.9, 0.5, 2.5))}>
+                −
+              </IconButton>
+              <div className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm">{Math.round(zoom * 100)}%</div>
+              <IconButton title="ズームイン" onClick={() => setZoom((z) => clamp(z * 1.1, 0.5, 2.5))}>
+                ＋
+              </IconButton>
+              <IconButton
+                title="リセット"
+                onClick={() => {
+                  setZoom(1);
+                  setPan({ x: 0, y: 0 });
+                }}
+              >
+                リセット
+              </IconButton>
+            </>
+          )}
         </div>
       </div>
 
       {/* Body */}
       <div className="grid h-[calc(100vh-64px)] grid-cols-[1fr_380px] gap-4 p-4">
-        {/* Map */}
-        <div className="relative overflow-hidden rounded-2xl border bg-white shadow-sm">
-          {/* Hint */}
-          <div className="absolute left-4 top-4 z-[1000] rounded-2xl bg-white/90 px-4 py-3 text-sm shadow">
-            <div className="font-semibold">操作</div>
-            <div className="mt-1 text-xs text-gray-600">
-              <ul className="list-disc space-y-1 pl-4">
-                <li>マーカー：ドラッグで位置調整</li>
-                <li>マーカー：クリックで情報表示</li>
-                <li>マーカー：ダブルクリックで倉庫に入る</li>
-                <li>マップ：ドラッグで移動 / ホイールでズーム</li>
-              </ul>
+        {/* Main area: Map or Simple Grid */}
+        {topViewMode === "simple" ? (
+          <SimpleGridView
+            warehouses={warehouses}
+            selectedWarehouseId={selectedWarehouseId}
+            onSelect={(id) => setSelectedWarehouseId(id)}
+            onOpen={(id) => {
+              setActiveWarehouseId(id);
+              setView("warehouse");
+            }}
+          />
+        ) : (
+          <div className="relative overflow-hidden rounded-2xl border bg-white shadow-sm">
+            {/* Hint */}
+            <div className="absolute left-4 top-4 z-[1000] rounded-2xl bg-white/90 px-4 py-3 text-sm shadow">
+              <div className="font-semibold">操作</div>
+              <div className="mt-1 text-xs text-gray-600">
+                <ul className="list-disc space-y-1 pl-4">
+                  <li>マーカー：ドラッグで位置調整</li>
+                  <li>マーカー：クリックで情報表示</li>
+                  <li>マーカー：ダブルクリックで倉庫に入る</li>
+                  <li>マップ：ドラッグで移動 / ホイールでズーム</li>
+                </ul>
+              </div>
             </div>
-          </div>
 
-          {/* OpenStreetMap */}
-          <MapContainer
-            center={[35.68, 139.75]}
-            zoom={12}
-            className="h-full w-full"
-            style={{ height: "100%", width: "100%" }}
-          >
-            <MapStateHandler storageKey="wh_demo_map_state_v1" />
-            <TileLayer
-              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-            />
-            {warehouses.map((w) => (
-              <DraggableMarker
-                key={w.id}
-                position={[w.lat || 35.68, w.lng || 139.75]}
-                warehouse={w}
-                isSelected={selectedWarehouseId === w.id}
-                onPositionChange={(id, lat, lng) => {
-                  setWarehouses((prev) =>
-                    prev.map((wh) => (wh.id === id ? { ...wh, lat, lng } : wh))
-                  );
-                }}
-                onClick={() => setSelectedWarehouseId(w.id)}
-                onDoubleClick={() => {
-                  setActiveWarehouseId(w.id);
-                  setView("warehouse");
-                }}
+            {/* OpenStreetMap */}
+            <MapContainer
+              center={[35.68, 139.75]}
+              zoom={12}
+              className="h-full w-full"
+              style={{ height: "100%", width: "100%" }}
+            >
+              <MapStateHandler storageKey="wh_demo_map_state_v1" />
+              <TileLayer
+                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
               />
-            ))}
-          </MapContainer>
-        </div>
+              {warehouses.map((w) => (
+                <DraggableMarker
+                  key={w.id}
+                  position={[w.lat || 35.68, w.lng || 139.75]}
+                  warehouse={w}
+                  isSelected={selectedWarehouseId === w.id}
+                  onPositionChange={(id, lat, lng) => {
+                    setWarehouses((prev) =>
+                      prev.map((wh) => (wh.id === id ? { ...wh, lat, lng } : wh))
+                    );
+                  }}
+                  onClick={() => setSelectedWarehouseId(w.id)}
+                  onDoubleClick={() => {
+                    setActiveWarehouseId(w.id);
+                    setView("warehouse");
+                  }}
+                />
+              ))}
+            </MapContainer>
+          </div>
+        )}
 
         {/* Side panel */}
         <div className="flex flex-col gap-4 overflow-auto">
@@ -5846,6 +7068,86 @@ export default function App() {
                       onChange={(e) => setEditForm((s) => ({ ...s, pointerWidth: e.target.value }))}
                       className="mt-1 w-full"
                     />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* カードカラー設定 */}
+            <div className="rounded-xl border p-3">
+              <div className="text-xs text-gray-500 mb-2 font-semibold">一覧カードの色設定</div>
+              <div className="flex gap-3 items-start">
+                {/* プレビュー */}
+                <div
+                  className="flex-shrink-0 flex items-center justify-center rounded-2xl border-2 border-white"
+                  style={{
+                    width: 64,
+                    height: 64,
+                    fontSize: 32,
+                    background: editForm.cardColor
+                      ? editForm.cardColor + String(Math.round((Number(editForm.cardOpacity) / 100) * 255).toString(16)).padStart(2, "0")
+                      : "#fef3c7",
+                    boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
+                  }}
+                >
+                  🏭
+                </div>
+                <div className="flex-1 space-y-2">
+                  <div>
+                    <div className="text-xs text-gray-500">カード背景色</div>
+                    <div className="mt-1 flex items-center gap-2">
+                      <input
+                        type="color"
+                        value={editForm.cardColor || "#fef3c7"}
+                        onChange={(e) => setEditForm((s) => ({ ...s, cardColor: e.target.value }))}
+                        className="h-9 w-12 cursor-pointer rounded-lg border p-0.5"
+                      />
+                      <input
+                        className="flex-1 rounded-xl border px-3 py-2 text-sm"
+                        value={editForm.cardColor}
+                        onChange={(e) => setEditForm((s) => ({ ...s, cardColor: e.target.value }))}
+                        placeholder="未設定（自動配色）"
+                      />
+                      {editForm.cardColor && (
+                        <button
+                          type="button"
+                          className="rounded-lg border px-2 py-1 text-xs hover:bg-gray-100"
+                          onClick={() => setEditForm((s) => ({ ...s, cardColor: "" }))}
+                        >
+                          リセット
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-gray-500 flex justify-between">
+                      <span>透明度</span>
+                      <span>{editForm.cardOpacity}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="20"
+                      max="100"
+                      step="5"
+                      value={editForm.cardOpacity}
+                      onChange={(e) => setEditForm((s) => ({ ...s, cardOpacity: e.target.value }))}
+                      className="mt-1 w-full"
+                    />
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {["#fef3c7","#dbeafe","#fce7f3","#d1fae5","#ede9fe","#ffedd5","#e0e7ff","#fecaca","#ccfbf1","#fde68a","#fee2e2","#f0fdf4","#faf5ff","#fff7ed"].map((c) => (
+                      <button
+                        key={c}
+                        type="button"
+                        className="h-6 w-6 rounded-full border-2"
+                        style={{
+                          background: c,
+                          borderColor: editForm.cardColor === c ? "#3b82f6" : "transparent",
+                          boxShadow: editForm.cardColor === c ? "0 0 0 2px rgba(59,130,246,0.3)" : "none",
+                        }}
+                        onClick={() => setEditForm((s) => ({ ...s, cardColor: c }))}
+                      />
+                    ))}
                   </div>
                 </div>
               </div>
