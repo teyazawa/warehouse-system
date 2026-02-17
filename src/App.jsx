@@ -1901,13 +1901,29 @@ const personList = site?.personList || [];
     return items;
   }
 
+  // ユニットの配置範囲がいずれかの仮置き場/入庫予定エリア内に収まるか判定
+  function isInStagingZone(x, y, w, h) {
+    for (const z of layout.zones || []) {
+      if (!z.isStagingArea) continue;
+      if (x >= z.x && y >= z.y && x + w <= z.x + z.w && y + h <= z.y + z.h) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   function canPlaceOnFloor(u, x, y, excludeUnitId = null) {
     const fp = unitFootprintCells(u);
     const fx = layout.floor.x || 0;
     const fy = layout.floor.y || 0;
-    if (x < fx || y < fy) return false;
-    if (x + fp.w > fx + layout.floor.cols) return false;
-    if (y + fp.h > fy + layout.floor.rows) return false;
+
+    // 仮置き場/入庫予定エリア内なら床境界チェックをスキップ
+    const inStaging = isInStagingZone(x, y, fp.w, fp.h);
+    if (!inStaging) {
+      if (x < fx || y < fy) return false;
+      if (x + fp.w > fx + layout.floor.cols) return false;
+      if (y + fp.h > fy + layout.floor.rows) return false;
+    }
 
     const candidate = { x, y, w: fp.w, h: fp.h };
     for (const r of occupiedRectsFloor(excludeUnitId)) {
@@ -2789,8 +2805,15 @@ const personList = site?.personList || [];
       const fp = unitFootprintCells(u);
       const fx = layout.floor.x || 0;
       const fy = layout.floor.y || 0;
-      const px = clamp(cx, fx, fx + layout.floor.cols - fp.w);
-      const py = clamp(cy, fy, fy + layout.floor.rows - fp.h);
+      // 仮置き場/入庫予定エリア内ならclampをスキップ
+      let px, py;
+      if (isInStagingZone(cx, cy, fp.w, fp.h)) {
+        px = cx;
+        py = cy;
+      } else {
+        px = clamp(cx, fx, fx + layout.floor.cols - fp.w);
+        py = clamp(cy, fy, fy + layout.floor.rows - fp.h);
+      }
       if (!canPlaceOnFloor(u, px, py)) {
         showToast("ここには置けません（他の荷物/棚と重なっています）");
         setDrag(null);
@@ -2839,14 +2862,16 @@ const personList = site?.personList || [];
         }
       }
 
-      // Check if dropped on floor
+      // Check if dropped on floor or staging zone
       const fx = layout.floor.x || 0;
       const fy = layout.floor.y || 0;
-      const floorX = clamp(dropX, fx, fx + layout.floor.cols - fp.w);
-      const floorY = clamp(dropY, fy, fy + layout.floor.rows - fp.h);
+      // 仮置き場/入庫予定エリア内ならclampをスキップ
+      const inStaging = isInStagingZone(dropX, dropY, fp.w, fp.h);
+      const floorX = inStaging ? dropX : clamp(dropX, fx, fx + layout.floor.cols - fp.w);
+      const floorY = inStaging ? dropY : clamp(dropY, fy, fy + layout.floor.rows - fp.h);
 
-      // Check if unit's target area overlaps with floor
-      if (floorX + fp.w > fx && floorY + fp.h > fy && floorX < fx + layout.floor.cols && floorY < fy + layout.floor.rows) {
+      // Check if unit's target area overlaps with floor or is in staging zone
+      if (inStaging || (floorX + fp.w > fx && floorY + fp.h > fy && floorX < fx + layout.floor.cols && floorY < fy + layout.floor.rows)) {
         if (canPlaceOnFloor(u, floorX, floorY, u.id)) {
           const candidate = { x: floorX, y: floorY, w: fp.w, h: fp.h };
           const containingItems = getContainingStackItems(candidate, u.id);
