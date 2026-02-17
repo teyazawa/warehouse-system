@@ -624,7 +624,7 @@ function IsometricView({ units, layout, panels, onClose }) {
   const allCorners = [
     toIso(0, 0), toIso(effectiveCols, 0), toIso(0, effectiveRows), toIso(effectiveCols, effectiveRows),
   ];
-  const maxStackH = Object.values(stacks).reduce((m, s) => Math.max(m, s.reduce((a, u) => a + (u.h_m || 1), 0)), 0);
+  const maxStackH = viewItems.reduce((m, u) => Math.max(m, (u.stackZ || 0) + (u.h_m || 1)), 0);
   const minSx = Math.min(...allCorners.map((c) => c.sx)) - 60;
   const maxSx = Math.max(...allCorners.map((c) => c.sx)) + 60;
   const minSy = Math.min(...allCorners.map((c) => c.sy)) - Math.max(200, maxStackH * heightScale + 80);
@@ -657,15 +657,13 @@ function IsometricView({ units, layout, panels, onClose }) {
   // Render order: back to front
   const renderItems = [];
   for (const [key, stack] of Object.entries(stacks)) {
-    let zOff = 0;
     for (const u of stack) {
       const fw_orig = u.fw || 1;
       const fh_orig = u.fh || 1;
       const isPanel = u.kind === "配電盤";
       // Use rotateRect to get the correct bounding box anchor + swapped dimensions
       const { rx: renderGx, ry: renderGy, rw: fw, rh: fh } = rotateRect(u.gx, u.gy, fw_orig, fh_orig);
-      renderItems.push({ u, gx: renderGx, gy: renderGy, fw, fh, zOff: isPanel ? 0 : zOff, h: u.h_m || 1 });
-      if (!isPanel) zOff += u.h_m || 1;
+      renderItems.push({ u, gx: renderGx, gy: renderGy, fw, fh, zOff: isPanel ? 0 : (u.stackZ || 0), h: u.h_m || 1 });
     }
   }
   renderItems.sort((a, b) => {
@@ -1275,7 +1273,7 @@ function SimpleGridView({ warehouses, selectedWarehouseId, onSelect, onOpen }) {
   );
 }
 
-function WarehouseView({ wh, onBack, onUpdateWarehouse }) {
+function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, warehouses }) {
   const [selectedDate, setSelectedDate] = useState(() => new Date());
 
   const defaultLayout = useMemo(
@@ -1385,6 +1383,74 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse }) {
     setPanels([]);
   }, []);
 
+  // 仮置き場ゾーンの自動作成（既存オブジェクトと重ならない空き位置を探索）
+  const stagingCreatedRef = useRef(false);
+  useEffect(() => {
+    if (stagingCreatedRef.current) return;
+    const hasStaging = layout.zones.some((z) => z.isStagingArea);
+    if (hasStaging) { stagingCreatedRef.current = true; return; }
+    stagingCreatedRef.current = true;
+    const floor = layout.floor;
+    const fx = floor.x || 0;
+    const fy = floor.y || 0;
+    const sw = Math.max(6, Math.floor(floor.cols * 0.2));
+    const sh = Math.max(4, Math.floor(floor.rows * 0.3));
+    // 既存オブジェクトの矩形一覧（床・ゾーン・ラック・棚すべて）
+    const obstacles = [
+      { x: fx, y: fy, w: floor.cols, h: floor.rows },
+      ...layout.zones.filter((z) => !z.loc || z.loc.kind === "floor").map((z) => ({ x: z.x, y: z.y, w: z.w, h: z.h })),
+      ...(layout.racks || []).map((r) => ({ x: r.x, y: r.y, w: r.w, h: r.h })),
+      ...((layout.shelves || []).map((s) => ({ x: s.x, y: s.y, w: s.w, h: s.h }))),
+    ];
+    function hasOverlap(cx, cy, cw, ch) {
+      for (const o of obstacles) {
+        if (cx < o.x + o.w && cx + cw > o.x && cy < o.y + o.h && cy + ch > o.y) return true;
+      }
+      return false;
+    }
+    // 床の周囲をスキャンして空き位置を探す（右→下→左→上）
+    let sx = null, sy = null;
+    const gap = 2;
+    // 右側
+    for (let tryX = fx + floor.cols + gap; tryX <= fx + floor.cols + 30; tryX += 2) {
+      for (let tryY = fy; tryY <= fy + floor.rows; tryY += 2) {
+        if (!hasOverlap(tryX, tryY, sw, sh)) { sx = tryX; sy = tryY; break; }
+      }
+      if (sx !== null) break;
+    }
+    // 見つからなければ下側
+    if (sx === null) {
+      for (let tryY = fy + floor.rows + gap; tryY <= fy + floor.rows + 30; tryY += 2) {
+        for (let tryX = fx; tryX <= fx + floor.cols; tryX += 2) {
+          if (!hasOverlap(tryX, tryY, sw, sh)) { sx = tryX; sy = tryY; break; }
+        }
+        if (sx !== null) break;
+      }
+    }
+    // それでも見つからなければ遠い位置にフォールバック
+    if (sx === null) { sx = fx + floor.cols + 20; sy = fy; }
+    setLayout((prev) => ({
+      ...prev,
+      zones: [
+        ...prev.zones,
+        {
+          id: "z-staging-" + uid(),
+          name: "仮置き場",
+          client: "",
+          x: sx,
+          y: sy,
+          w: sw,
+          h: sh,
+          labelColor: "#000000",
+          bgColor: "#fef9c3",
+          bgOpacity: 70,
+          isStagingArea: true,
+          loc: { kind: "floor" },
+        },
+      ],
+    }));
+  }, [layout.zones]);
+
   const [mode, setMode] = useState("operate"); // operate | layout
   const [selected, setSelected] = useState(null); // {kind:'unit'|'zone'|'rack', id}
   const [multiSelected, setMultiSelected] = useState([]); // [{kind, id}, ...]
@@ -1434,6 +1500,8 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse }) {
   // Panel toggles (left: calendar/plan, right: creator/editor)
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
+  const [transferDest, setTransferDest] = useState("");
+  const [panelSections, setPanelSections] = useState({ size: false, appearance: false, detail: true });
 
   const unitsRef = useRef(units);
   useEffect(() => { unitsRef.current = units; }, [units]);
@@ -1457,6 +1525,35 @@ function openPanelDetailModal(panel) {
   setDetailPanel(panel);
   setDetailPanelOpen(true);
 }
+
+// 区画拡大モーダル用State
+const [zoneDetailOpen, setZoneDetailOpen] = useState(false);
+const [zoneDetailZone, setZoneDetailZone] = useState(null);
+const [zoneDetailDrag, setZoneDetailDrag] = useState(null);
+const [zoneDetail3D, setZoneDetail3D] = useState(false);
+const [zoneDetailRotStep, setZoneDetailRotStep] = useState(0);
+const [zoneDetailZoom, setZoneDetailZoom] = useState(1);
+
+function openZoneDetailModal(zone) {
+  setZoneDetailZone(zone);
+  setZoneDetailDrag(null);
+  setZoneDetail3D(false);
+  setZoneDetailRotStep(0);
+  setZoneDetailZoom(1);
+  setZoneDetailOpen(true);
+}
+function closeZoneDetailModal() {
+  setZoneDetailOpen(false);
+  setZoneDetailZone(null);
+  setZoneDetailDrag(null);
+  setZoneDetail3D(false);
+}
+
+// 担当者管理モーダル
+const [personModalOpen, setPersonModalOpen] = useState(false);
+const [newPersonName, setNewPersonName] = useState("");
+const personList = site?.personList || [];
+
   // Internal pan/zoom (kept simple)
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -1559,6 +1656,157 @@ function openPanelDetailModal(panel) {
     showToast._t = window.setTimeout(() => setToast(null), 1600);
   }
 
+  // ========== Unit更新ヘルパー ==========
+  function updateUnitField(unitId, field, newValue, action) {
+    setUnits((prev) => prev.map((u) => {
+      if (u.id !== unitId) return u;
+      const oldValue = u[field];
+      const hist = (u.editHistory || []).slice();
+      hist.push({
+        timestamp: new Date().toISOString(),
+        action: action || "changed",
+        field,
+        oldValue,
+        newValue,
+      });
+      if (hist.length > 200) hist.splice(0, hist.length - 200);
+      return { ...u, [field]: newValue, editHistory: hist };
+    }));
+  }
+
+  function updateUnitFieldSilent(unitId, field, newValue) {
+    setUnits((prev) => prev.map((u) =>
+      u.id === unitId ? { ...u, [field]: newValue } : u
+    ));
+  }
+
+  function updateUnitFields(unitId, changes, action) {
+    setUnits((prev) => prev.map((u) => {
+      if (u.id !== unitId) return u;
+      const hist = (u.editHistory || []).slice();
+      const fields = Object.keys(changes);
+      hist.push({
+        timestamp: new Date().toISOString(),
+        action: action || "changed",
+        fields,
+        changes: fields.reduce((acc, f) => { acc[f] = { old: u[f], new: changes[f] }; return acc; }, {}),
+      });
+      if (hist.length > 200) hist.splice(0, hist.length - 200);
+      return { ...u, ...changes, editHistory: hist };
+    }));
+  }
+
+  // 倉庫間移動
+  function transferUnitToWarehouse(unitId, destWarehouseId) {
+    const unit = units.find((u) => u.id === unitId);
+    if (!unit) return;
+    const destWh = warehouses.find((w) => w.id === destWarehouseId);
+    if (!destWh) return;
+
+    // 移動先の layout を読み込み、仮置き場を探す
+    const layoutKey = `wh_demo_layout_${destWarehouseId}_v1`;
+    const unitsKey = `wh_demo_units_${destWarehouseId}_v1`;
+    let destLayout;
+    let destUnits;
+    try {
+      destLayout = JSON.parse(localStorage.getItem(layoutKey)) || null;
+      destUnits = JSON.parse(localStorage.getItem(unitsKey)) || [];
+    } catch {
+      destLayout = null;
+      destUnits = [];
+    }
+
+    // 移動先のレイアウトが無い場合はデフォルトを作成
+    if (!destLayout) {
+      destLayout = {
+        floor: { cols: 34, rows: 22, cellPx: 32, cell_m_w: 1.2, cell_m_d: 1.0, x: 0, y: 0 },
+        zones: [],
+        racks: [],
+        shelves: [],
+      };
+    }
+    // 仮置き場が無ければ作成（既存オブジェクトと重ならない空き位置を探索）
+    let staging = destLayout.zones.find((z) => z.isStagingArea);
+    if (!staging) {
+      const fl = destLayout.floor;
+      const dfx = fl.x || 0;
+      const dfy = fl.y || 0;
+      const sw = Math.max(6, Math.floor(fl.cols * 0.2));
+      const sh = Math.max(4, Math.floor(fl.rows * 0.3));
+      const obs = [
+        { x: dfx, y: dfy, w: fl.cols, h: fl.rows },
+        ...destLayout.zones.map((zz) => ({ x: zz.x, y: zz.y, w: zz.w, h: zz.h })),
+        ...(destLayout.racks || []).map((r) => ({ x: r.x, y: r.y, w: r.w, h: r.h })),
+        ...((destLayout.shelves || []).map((s) => ({ x: s.x, y: s.y, w: s.w, h: s.h }))),
+      ];
+      function ovl(cx, cy, cw, ch) { for (const o of obs) { if (cx < o.x + o.w && cx + cw > o.x && cy < o.y + o.h && cy + ch > o.y) return true; } return false; }
+      let ssx = null, ssy = null;
+      for (let tx = dfx + fl.cols + 2; tx <= dfx + fl.cols + 30; tx += 2) {
+        for (let ty = dfy; ty <= dfy + fl.rows; ty += 2) {
+          if (!ovl(tx, ty, sw, sh)) { ssx = tx; ssy = ty; break; }
+        }
+        if (ssx !== null) break;
+      }
+      if (ssx === null) {
+        for (let ty = dfy + fl.rows + 2; ty <= dfy + fl.rows + 30; ty += 2) {
+          for (let tx = dfx; tx <= dfx + fl.cols; tx += 2) {
+            if (!ovl(tx, ty, sw, sh)) { ssx = tx; ssy = ty; break; }
+          }
+          if (ssx !== null) break;
+        }
+      }
+      if (ssx === null) { ssx = dfx + fl.cols + 20; ssy = dfy; }
+      staging = {
+        id: "z-staging-" + uid(),
+        name: "仮置き場",
+        client: "",
+        x: ssx,
+        y: ssy,
+        w: sw,
+        h: sh,
+        labelColor: "#000000",
+        bgColor: "#fef9c3",
+        bgOpacity: 70,
+        isStagingArea: true,
+        loc: { kind: "floor" },
+      };
+      destLayout = { ...destLayout, zones: [...destLayout.zones, staging] };
+      // レイアウトも保存
+      try { localStorage.setItem(layoutKey, JSON.stringify(destLayout)); } catch {}
+      if (supabase) {
+        supabase.from("app_state").upsert({ key: layoutKey, value: destLayout, updated_at: new Date().toISOString() }).then(() => {});
+      }
+    }
+    const newLoc = { kind: "floor", x: staging.x, y: staging.y };
+
+    // 編集履歴を追加
+    const hist = (unit.editHistory || []).slice();
+    hist.push({
+      timestamp: new Date().toISOString(),
+      action: "倉庫間移動",
+      field: "倉庫",
+      oldValue: wh.name,
+      newValue: destWh.name,
+    });
+    if (hist.length > 200) hist.splice(0, hist.length - 200);
+
+    const movedUnit = { ...unit, loc: newLoc, editHistory: hist };
+
+    // 移動先に追加
+    const newDestUnits = [...destUnits, movedUnit];
+    try {
+      localStorage.setItem(unitsKey, JSON.stringify(newDestUnits));
+    } catch { /* ignore */ }
+    if (supabase) {
+      supabase.from("app_state").upsert({ key: unitsKey, value: newDestUnits, updated_at: new Date().toISOString() }).then(() => {});
+    }
+
+    // 元倉庫から削除
+    setUnits((prev) => prev.filter((u) => u.id !== unitId));
+    setSelected(null);
+    showToast(`${unit.name || "荷物"} を ${destWh.name} の仮置き場に移動しました`);
+  }
+
   function toWorld(clientX, clientY) {
     const el = canvasRef.current;
     if (!el) return { x: 0, y: 0 };
@@ -1595,6 +1843,14 @@ function openPanelDetailModal(panel) {
     return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
   }
 
+  // 矩形outerが矩形innerを完全に包含するか（浮動小数点許容）
+  function containsRect(outer, inner) {
+    return inner.x >= outer.x - 0.001 &&
+           inner.y >= outer.y - 0.001 &&
+           inner.x + inner.w <= outer.x + outer.w + 0.001 &&
+           inner.y + inner.h <= outer.y + outer.h + 0.001;
+  }
+
   function occupiedRectsFloor(excludeUnitId = null) {
     const rects = [];
     // racks block floor
@@ -1620,7 +1876,7 @@ function openPanelDetailModal(panel) {
     for (const u of units) {
       if (u.id === excludeUnitId) continue;
       if (u.loc?.kind !== "floor") continue;
-      if (u.loc.x === x && u.loc.y === y) items.push(u);
+      if (Math.abs((u.loc.x||0) - x) < 0.01 && Math.abs((u.loc.y||0) - y) < 0.01) items.push(u);
     }
     items.sort((a, b) => (a.stackZ || 0) - (b.stackZ || 0));
     return items;
@@ -1628,6 +1884,21 @@ function openPanelDetailModal(panel) {
 
   function getStackHeight(x, y, excludeUnitId = null) {
     return getStackAt(x, y, excludeUnitId).reduce((sum, u) => sum + (u.h_m || 0), 0);
+  }
+
+  // 候補矩形を包含するフロアユニットを返す
+  function getContainingStackItems(candidateRect, excludeUnitId = null, fpFn = null) {
+    const fpFunc = fpFn || unitFootprintCells;
+    const items = [];
+    for (const u of units) {
+      if (u.id === excludeUnitId) continue;
+      if (u.loc?.kind !== "floor") continue;
+      const fp = fpFunc(u);
+      const uRect = { x: u.loc.x || 0, y: u.loc.y || 0, w: fp.w, h: fp.h };
+      if (containsRect(uRect, candidateRect)) items.push(u);
+    }
+    items.sort((a, b) => (a.stackZ || 0) - (b.stackZ || 0));
+    return items;
   }
 
   function canPlaceOnFloor(u, x, y, excludeUnitId = null) {
@@ -1641,14 +1912,61 @@ function openPanelDetailModal(panel) {
     const candidate = { x, y, w: fp.w, h: fp.h };
     for (const r of occupiedRectsFloor(excludeUnitId)) {
       if (overlapsRect(candidate, r)) {
-        // Allow stacking: same exact footprint, both stackable, within height limit
-        if (r.kind === "unit" && fp.w === r.w && fp.h === r.h && x === r.x && y === r.y) {
+        // Allow stacking: candidate fully contained within existing unit's footprint
+        if (r.kind === "unit" && containsRect(r, candidate)) {
           const existing = units.find((e) => e.id === r.id);
           if (existing?.stackable && u.stackable) {
-            const currentH = getStackHeight(x, y, excludeUnitId);
+            const stackItems = getContainingStackItems(candidate, excludeUnitId);
             const maxH = Math.min(existing.max_stack_height || 3, u.max_stack_height || 3);
-            const stackCount = getStackAt(x, y, excludeUnitId).length;
-            if (stackCount < maxH) continue; // allow this overlap
+            if (stackItems.length < maxH) continue; // allow this overlap
+          }
+        }
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // 区画内限定の衝突判定（ローカル座標 0〜zone.w/h）
+  function canPlaceInZone(zone, u, localX, localY, excludeUnitId = null, fpFn = null) {
+    const fpFunc = fpFn || unitFootprintCells;
+    const fp = fpFunc(u);
+    if (localX < -0.001 || localY < -0.001) return false;
+    if (localX + fp.w > zone.w + 0.001) return false;
+    if (localY + fp.h > zone.h + 0.001) return false;
+
+    // 区画の絶対座標オフセット
+    const isShelfZone = zone.loc?.kind === "shelf";
+    const absX = isShelfZone ? (zone.loc.x || 0) + localX : zone.x + localX;
+    const absY = isShelfZone ? (zone.loc.y || 0) + localY : zone.y + localY;
+    const candidate = { x: absX, y: absY, w: fp.w, h: fp.h };
+
+    // 区画内の他荷物との衝突チェック
+    const zoneUnits = isShelfZone
+      ? units.filter((uu) => uu.loc?.kind === "shelf" && uu.loc.shelfId === zone.loc.shelfId)
+      : units.filter((uu) => uu.loc?.kind === "floor");
+
+    for (const uu of zoneUnits) {
+      if (uu.id === excludeUnitId) continue;
+      const ufp = fpFunc(uu);
+      const ux = isShelfZone ? (uu.loc.x || 0) : (uu.loc.x || 0);
+      const uy = isShelfZone ? (uu.loc.y || 0) : (uu.loc.y || 0);
+      const r = { x: ux, y: uy, w: ufp.w, h: ufp.h };
+
+      // 区画内にあるユニットのみ判定
+      const rLocalX = isShelfZone ? ux - (zone.loc.x || 0) : ux - zone.x;
+      const rLocalY = isShelfZone ? uy - (zone.loc.y || 0) : uy - zone.y;
+      if (rLocalX < 0 || rLocalY < 0 || rLocalX >= zone.w || rLocalY >= zone.h) continue;
+
+      if (overlapsRect(candidate, r)) {
+        // スタッキング対応（候補がrに完全包含されていればOK）
+        if (containsRect(r, candidate)) {
+          if (uu.stackable && u.stackable) {
+            const stackAt = isShelfZone
+              ? units.filter((s) => s.id !== excludeUnitId && s.loc?.kind === "shelf" && s.loc.shelfId === zone.loc.shelfId && Math.abs((s.loc.x||0) - ux) < 0.01 && Math.abs((s.loc.y||0) - uy) < 0.01).filter((s) => { const sfp = fpFunc(s); return containsRect({ x: s.loc.x||0, y: s.loc.y||0, w: sfp.w, h: sfp.h }, candidate); })
+              : getContainingStackItems(candidate, excludeUnitId);
+            const maxH = Math.min(uu.max_stack_height || 3, u.max_stack_height || 3);
+            if (stackAt.length < maxH) continue;
           }
         }
         return false;
@@ -2530,8 +2848,13 @@ function openPanelDetailModal(panel) {
       // Check if unit's target area overlaps with floor
       if (floorX + fp.w > fx && floorY + fp.h > fy && floorX < fx + layout.floor.cols && floorY < fy + layout.floor.rows) {
         if (canPlaceOnFloor(u, floorX, floorY, u.id)) {
+          const candidate = { x: floorX, y: floorY, w: fp.w, h: fp.h };
+          const containingItems = getContainingStackItems(candidate, u.id);
+          const newStackZ = containingItems.length > 0
+            ? Math.max(...containingItems.map(i => (i.stackZ || 0) + (i.h_m || 0)))
+            : 0;
           setUnits((prev) => prev.map((x) =>
-            x.id === u.id ? { ...x, loc: { kind: "floor", x: floorX, y: floorY } } : x
+            x.id === u.id ? { ...x, loc: { kind: "floor", x: floorX, y: floorY }, stackZ: newStackZ } : x
           ));
           setDrag(null);
           return;
@@ -2552,17 +2875,56 @@ function openPanelDetailModal(panel) {
       const dropX = cx - (drag.offsetCx || 0);
       const dropY = cy - (drag.offsetCy || 0);
 
+      // 旧区画の位置・配置情報を記録（内部ユニット連動用）
+      const oldLoc = z.loc || { kind: "floor" };
+      const oldZX = z.x;
+      const oldZY = z.y;
+
+      // ユニットが旧区画内にあるか判定するヘルパー
+      function isUnitInOldZone(u) {
+        const fp = unitFootprintCells(u);
+        const ux = u.loc.x || 0, uy = u.loc.y || 0;
+        if (oldLoc.kind === "floor" && u.loc?.kind === "floor") {
+          return ux >= oldZX && uy >= oldZY && ux + fp.w <= oldZX + z.w && uy + fp.h <= oldZY + z.h;
+        }
+        if (oldLoc.kind === "shelf" && u.loc?.kind === "shelf" && u.loc.shelfId === oldLoc.shelfId) {
+          return ux >= oldZX && uy >= oldZY && ux + fp.w <= oldZX + z.w && uy + fp.h <= oldZY + z.h;
+        }
+        return false;
+      }
+
       // Check if dropped on a shelf
       const shelf = findShelfAtCell(cx, cy);
       if (shelf) {
         const local = worldToShelfLocal(shelf, dropX, dropY);
         const clampedX = clamp(Math.floor(local.localX), 0, Math.max(0, shelf.w - z.w));
         const clampedY = clamp(Math.floor(local.localY), 0, Math.max(0, shelf.h - z.h));
+        // 棚内の他の区画との重なりチェック
+        const zoneCandidate = { x: clampedX, y: clampedY, w: z.w, h: z.h };
+        const shelfZoneOverlap = layout.zones.some((oz) => {
+          if (oz.id === z.id) return false;
+          if (oz.loc?.kind !== "shelf" || oz.loc?.shelfId !== shelf.id) return false;
+          return overlapsRect(zoneCandidate, { x: oz.x, y: oz.y, w: oz.w, h: oz.h });
+        });
+        if (shelfZoneOverlap) {
+          showToast("他のオブジェクトと重なるため移動できません");
+          setDrag(null);
+          return;
+        }
+        const newZoneLoc = { kind: "shelf", shelfId: shelf.id, x: clampedX, y: clampedY };
         setLayout((prev) => ({
           ...prev,
           zones: prev.zones.map((zn) =>
-            zn.id === z.id ? { ...zn, loc: { kind: "shelf", shelfId: shelf.id, x: clampedX, y: clampedY }, x: clampedX, y: clampedY } : zn
+            zn.id === z.id ? { ...zn, loc: newZoneLoc, x: clampedX, y: clampedY } : zn
           ),
+        }));
+        // 区画内ユニットを連動移動（床→棚、棚→棚、棚内移動すべて対応）
+        const moveDx = clampedX - oldZX;
+        const moveDy = clampedY - oldZY;
+        setUnits((prev) => prev.map((u) => {
+          if (!isUnitInOldZone(u)) return u;
+          const ux = u.loc.x || 0, uy = u.loc.y || 0;
+          return { ...u, loc: { kind: "shelf", shelfId: shelf.id, x: ux + moveDx, y: uy + moveDy } };
         }));
         setDrag(null);
         return;
@@ -2573,11 +2935,31 @@ function openPanelDetailModal(panel) {
       const fy = layout.floor.y || 0;
       const floorX = clamp(dropX, fx, fx + layout.floor.cols - z.w);
       const floorY = clamp(dropY, fy, fy + layout.floor.rows - z.h);
+      // 床上の他のオブジェクト（区画・ラック・棚）との重なりチェック
+      const floorZoneCandidate = { x: floorX, y: floorY, w: z.w, h: z.h };
+      const floorOverlap = [
+        ...layout.zones.filter((oz) => oz.id !== z.id && (!oz.loc || oz.loc.kind === "floor")).map((oz) => ({ x: oz.x, y: oz.y, w: oz.w, h: oz.h })),
+        ...layout.racks.map((r) => ({ x: r.x, y: r.y, w: r.w, h: r.h })),
+        ...(layout.shelves || []).map((s) => { const vr = getShelfVisualRect(s); return { x: vr.x, y: vr.y, w: vr.w, h: vr.h }; }),
+      ].some((obs) => overlapsRect(floorZoneCandidate, obs));
+      if (floorOverlap) {
+        showToast("他のオブジェクトと重なるため移動できません");
+        setDrag(null);
+        return;
+      }
+      const moveDx = floorX - oldZX;
+      const moveDy = floorY - oldZY;
       setLayout((prev) => ({
         ...prev,
         zones: prev.zones.map((zn) =>
           zn.id === z.id ? { ...zn, loc: { kind: "floor" }, x: floorX, y: floorY } : zn
         ),
+      }));
+      // 区画内ユニットを連動移動（棚→床、床内移動すべて対応）
+      setUnits((prev) => prev.map((u) => {
+        if (!isUnitInOldZone(u)) return u;
+        const ux = u.loc.x || 0, uy = u.loc.y || 0;
+        return { ...u, loc: { kind: "floor", x: ux + moveDx, y: uy + moveDy } };
       }));
       setDrag(null);
       return;
@@ -2697,9 +3079,39 @@ function openPanelDetailModal(panel) {
     const bgColor = defaultBgColors[layout.zones.length % defaultBgColors.length];
     const zfx = layout.floor.x || 0;
     const zfy = layout.floor.y || 0;
+    const zw = 8, zh = 5;
+    // 既存オブジェクトの矩形一覧
+    const obstacles = [
+      ...layout.zones.filter((zn) => !zn.loc || zn.loc.kind === "floor").map((zn) => ({ x: zn.x, y: zn.y, w: zn.w, h: zn.h })),
+      ...layout.racks.map((r) => ({ x: r.x, y: r.y, w: r.w, h: r.h })),
+      ...(layout.shelves || []).map((s) => { const vr = getShelfVisualRect(s); return { x: vr.x, y: vr.y, w: vr.w, h: vr.h }; }),
+    ];
+    function hasZoneOverlap(cx, cy) {
+      const cand = { x: cx, y: cy, w: zw, h: zh };
+      return obstacles.some((o) => overlapsRect(cand, o));
+    }
+    // 床内をスキャンして空き位置を探索
+    let px = null, py = null;
+    for (let ty = zfy; ty <= zfy + layout.floor.rows - zh; ty++) {
+      for (let tx = zfx; tx <= zfx + layout.floor.cols - zw; tx++) {
+        if (!hasZoneOverlap(tx, ty)) { px = tx; py = ty; break; }
+      }
+      if (px !== null) break;
+    }
+    // 床内に見つからなければ床の右側を探索
+    if (px === null) {
+      for (let tx = zfx + layout.floor.cols + 2; tx <= zfx + layout.floor.cols + 30; tx += 2) {
+        for (let ty = zfy; ty <= zfy + layout.floor.rows; ty += 2) {
+          if (!hasZoneOverlap(tx, ty)) { px = tx; py = ty; break; }
+        }
+        if (px !== null) break;
+      }
+    }
+    // それでも見つからなければフォールバック
+    if (px === null) { px = zfx + layout.floor.cols + 10; py = zfy; }
     setLayout((prev) => ({
       ...prev,
-      zones: [...prev.zones, { id: "z-" + uid(), name: "新規区画", client: "取引先A", x: zfx + 3, y: zfy + 3, w: 8, h: 5, labelColor: "#000000", bgColor, bgOpacity: 90, loc: { kind: "floor" } }],
+      zones: [...prev.zones, { id: "z-" + uid(), name: "新規区画", client: "取引先A", x: px, y: py, w: zw, h: zh, labelColor: "#000000", bgColor, bgOpacity: 90, loc: { kind: "floor" } }],
     }));
   }
 
@@ -2956,6 +3368,11 @@ function openPanelDetailModal(panel) {
   departureDate: null,
   departureHistory: [],  // [{date, quantity, destination, notes}]
   contents: [],          // [{name, quantity}]
+  personInCharge: "",
+  editHistory: [{
+    timestamp: new Date().toISOString(),
+    action: "created",
+  }],
 
   // ========== 見た目 ==========
   bgColor: "",
@@ -2987,10 +3404,13 @@ function openPanelDetailModal(panel) {
           const tx = cx + dx;
           const ty = cy + dy;
           if (canPlaceOnFloor(u, tx, ty, unitId)) {
-            const stackItems = getStackAt(tx, ty, unitId);
-            const stackZ = stackItems.reduce((s, i) => s + (i.h_m || 0), 0);
+            const candidate = { x: tx, y: ty, w: fp.w, h: fp.h };
+            const containingItems = getContainingStackItems(candidate, unitId);
+            const stackZ = containingItems.length > 0
+              ? Math.max(...containingItems.map(i => (i.stackZ || 0) + (i.h_m || 0)))
+              : 0;
             setUnits((prev) => prev.map((x) => (x.id === unitId ? { ...x, loc: { kind: "floor", x: tx, y: ty }, stackZ } : x)));
-            showToast(stackItems.length > 0 ? `床に積み重ねました（${stackItems.length + 1}段目）` : "床に配置しました");
+            showToast(containingItems.length > 0 ? `床に積み重ねました（${containingItems.length + 1}段目）` : "床に配置しました");
             return;
           }
         }
@@ -3099,6 +3519,26 @@ function openPanelDetailModal(panel) {
   const placedOnShelf = units.filter((u) => u.loc?.kind === "shelf");
   const unplaced = units.filter((u) => u.loc?.kind === "unplaced");
 
+  // 出庫予定日が selectedDate と一致するユニットの点滅
+  const blinkingUnitIds = useMemo(() => {
+    const selDateStr = selectedDate.toISOString().slice(0, 10);
+    const ids = new Set();
+    for (const u of units) {
+      if (u.departureDate && u.departureDate.slice(0, 10) === selDateStr) {
+        ids.add(u.id);
+      }
+    }
+    return ids;
+  }, [units, selectedDate]);
+
+  // 出庫予定一覧（selectedDate と一致）
+  const shippingSchedule = useMemo(() => {
+    const selDateStr = selectedDate.toISOString().slice(0, 10);
+    return units
+      .filter((u) => u.departureDate && u.departureDate.slice(0, 10) === selDateStr)
+      .sort((a, b) => (a.departureDate || "").localeCompare(b.departureDate || ""));
+  }, [units, selectedDate]);
+
   // Group move visual offset (in screen px, not zoomed)
   const groupMoveDx = drag?.type === "group_move" ? (drag.pointerX - drag.startX) / zoom : 0;
   const groupMoveDy = drag?.type === "group_move" ? (drag.pointerY - drag.startY) / zoom : 0;
@@ -3157,6 +3597,13 @@ function openPanelDetailModal(panel) {
             type="button"
           >
             3Dビュー
+          </button>
+          <button
+            className="rounded-xl border px-3 py-2 text-sm shadow-sm hover:bg-gray-50"
+            onClick={() => setPersonModalOpen(true)}
+            type="button"
+          >
+            担当者管理
           </button>
           <div className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm">ズーム {Math.round(zoom * 100)}%</div>
           <button
@@ -3224,6 +3671,54 @@ function openPanelDetailModal(panel) {
           }}
         >
           <CalendarStub selectedDate={selectedDate} onPick={setSelectedDate} />
+
+          {/* 出庫予定セクション */}
+          <div className="rounded-2xl border bg-white p-3 shadow-sm">
+            <SectionTitle
+              right={<Badge>{shippingSchedule.length} 件</Badge>}
+            >
+              出庫予定（{selectedDate.toLocaleDateString("ja-JP")}）
+            </SectionTitle>
+            {shippingSchedule.length === 0 ? (
+              <div className="text-sm text-gray-500">この日の出庫予定はありません。</div>
+            ) : (
+              <div className="space-y-2 max-h-48 overflow-y-auto">
+                {shippingSchedule.map((u) => (
+                  <div
+                    key={u.id}
+                    className="rounded-xl border p-2 text-sm hover:bg-red-50 cursor-pointer transition-colors"
+                    onClick={() => {
+                      setSelected({ kind: "unit", id: u.id });
+                      if (u.loc?.kind === "floor") {
+                        const fp = unitFootprintCells(u);
+                        const centerX = (u.loc.x + fp.w / 2) * cellPx;
+                        const centerY = (u.loc.y + fp.h / 2) * cellPx;
+                        const el = canvasRef.current;
+                        if (el) {
+                          const r = el.getBoundingClientRect();
+                          setPan({ x: r.width / 2 - centerX * zoom, y: r.height / 2 - centerY * zoom });
+                        }
+                      }
+                    }}
+                  >
+                    <div className="font-medium flex items-center gap-1">
+                      <span className="text-red-500">●</span> {u.name}
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      <Badge>{u.client}</Badge>
+                      <Badge>数量 {u.qty}</Badge>
+                      {u.departureDate && u.departureDate.length > 10 && (
+                        <Badge>{u.departureDate.slice(11, 16)}</Badge>
+                      )}
+                    </div>
+                    {u.personInCharge && (
+                      <div className="mt-1 text-xs text-gray-500">担当: {u.personInCharge}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
 
           <div className="rounded-2xl border bg-white p-3 shadow-sm">
             <SectionTitle
@@ -3330,12 +3825,14 @@ function openPanelDetailModal(panel) {
             ref={canvasRef}
             className="relative h-full min-h-[640px] w-full overflow-hidden rounded-2xl border bg-gray-50"
             onMouseDown={(e) => {
-              if (e.shiftKey) beginPan(e);
-              else if (e.ctrlKey || e.metaKey) {
+              if (e.ctrlKey || e.metaKey) {
                 // Start rubber band selection
                 setDrag({ type: "rubber_band", startX: e.clientX, startY: e.clientY, pointerX: e.clientX, pointerY: e.clientY });
+              } else {
+                // 空白エリアのドラッグ → パン（スクロール）
+                clearSelection();
+                beginPan(e);
               }
-              else clearSelection();
             }}
           >
             {/* Grid background */}
@@ -3512,6 +4009,7 @@ function openPanelDetailModal(panel) {
                     }}
                     onMouseDown={(e) => mode === "layout" && beginMoveZone(e, z.id)}
                     onClick={(e) => handleItemClick(e, "zone", z.id)}
+                    onDoubleClick={(e) => { e.stopPropagation(); openZoneDetailModal(z); }}
                   >
                     {/* Zone label - watermark style */}
                     <div
@@ -3957,6 +4455,7 @@ function openPanelDetailModal(panel) {
                             if (mode === "layout") beginMoveZone(e, z.id);
                           }}
                           onClick={(e) => { e.stopPropagation(); handleItemClick(e, "zone", z.id); }}
+                          onDoubleClick={(e) => { e.stopPropagation(); openZoneDetailModal(z); }}
                         >
                           <div
                             className="absolute pointer-events-none"
@@ -4024,13 +4523,15 @@ function openPanelDetailModal(panel) {
                 const dragTransform = hasMoved
                   ? `translate(${(drag.pointerX - drag.startX) / zoom}px, ${(drag.pointerY - drag.startY) / zoom}px)`
                   : isGroupMoving ? groupMoveTransform : undefined;
+                const shouldBlink = blinkingUnitIds.has(u.id);
                 return (
                   <div
                     key={u.id}
                     className={
                       "absolute rounded-3xl border-2 cursor-pointer " +
                       ((hasMoved || isGroupMoving) ? "" : "transition-all duration-150 ") +
-                      (isSel ? "ring-2 ring-black shadow-lg" : "hover:shadow-xl hover:-translate-y-0.5")
+                      (isSel ? "ring-2 ring-black shadow-lg" : "hover:shadow-xl hover:-translate-y-0.5") +
+                      (shouldBlink && !isSel ? " wh-departure-blink" : "")
                     }
                     style={{
                       left: u.loc.x * cellPx,
@@ -4040,10 +4541,10 @@ function openPanelDetailModal(panel) {
                       background: u.bgColor
                         ? `rgba(${unitBgRgb.join(",")}, ${unitBgOpacity})`
                         : "linear-gradient(145deg, #ffffff 0%, #f8fafc 50%, #f1f5f9 100%)",
-                      borderColor: isSel ? "#1e293b" : (u.bgColor || "#e2e8f0"),
-                      boxShadow: isSel
+                      borderColor: (shouldBlink && !isSel) ? undefined : (isSel ? "#1e293b" : (u.bgColor || "#e2e8f0")),
+                      boxShadow: (shouldBlink && !isSel) ? undefined : (isSel
                         ? "0 10px 25px -5px rgba(0,0,0,0.15), 0 4px 6px -2px rgba(0,0,0,0.1)"
-                        : "0 4px 12px -2px rgba(0,0,0,0.08), 0 2px 4px -1px rgba(0,0,0,0.04)",
+                        : "0 4px 12px -2px rgba(0,0,0,0.08), 0 2px 4px -1px rgba(0,0,0,0.04)"),
                       zIndex: (hasMoved || isGroupMoving) ? 50 : 8,
                       transform: dragTransform,
                       opacity: hasMoved ? 0.7 : undefined,
@@ -4291,37 +4792,36 @@ function openPanelDetailModal(panel) {
         >
           {mode === "layout" ? (
             <div className="rounded-2xl border bg-white p-3 shadow-sm">
-              <SectionTitle
-                right={
-                  <div className="flex gap-2">
-                    <button
-                      className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
-                      onClick={addZone}
-                      type="button"
-                    >
-                      ＋区画
-                    </button>
-                    <button
-                      className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
-                      onClick={addRack}
-                      type="button"
-                    >
-                      ＋ラック
-                    </button>
-                    <button
-                      className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50 bg-teal-50 border-teal-300"
-                      onClick={addShelf}
-                      type="button"
-                    >
-                      ＋棚
-                    </button>
-                  </div>
-                }
-              >
-                レイアウト編集
-              </SectionTitle>
+              <SectionTitle>レイアウト編集</SectionTitle>
 
-              <div className="rounded-2xl border bg-gray-50 p-3 text-xs text-gray-700">
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { label: "区画", emoji: "\u25A6", color: "#d1fae5", textColor: "#065f46", onClick: addZone },
+                  { label: "ラック", emoji: "\u25A4", color: "#e2e8f0", textColor: "#334155", onClick: addRack },
+                  { label: "棚", emoji: "\u2261", color: "#ccfbf1", textColor: "#0f766e", onClick: addShelf },
+                ].map((t) => (
+                  <button
+                    key={t.label}
+                    type="button"
+                    className="flex flex-col items-center rounded-2xl border-2 p-2.5 select-none"
+                    style={{
+                      background: t.color,
+                      borderColor: "transparent",
+                      color: t.textColor,
+                      boxShadow: "0 2px 6px rgba(0,0,0,0.06)",
+                      transition: "all 0.2s cubic-bezier(.34,1.56,.64,1)",
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.transform = "scale(1.05)"; e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.12)"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.transform = "scale(1)"; e.currentTarget.style.boxShadow = "0 2px 6px rgba(0,0,0,0.06)"; }}
+                    onClick={t.onClick}
+                  >
+                    <span style={{ fontSize: 22 }}>{t.emoji}</span>
+                    <span className="mt-0.5 text-xs font-bold">+ {t.label}</span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="mt-2 rounded-2xl border bg-gray-50 p-3 text-xs text-gray-700">
                 区画/ラック/棚を<strong>ドラッグで移動</strong>、右下ハンドルでリサイズできます。
               </div>
 
@@ -4543,7 +5043,7 @@ function openPanelDetailModal(panel) {
                                   floor: { ...p.floor, floorCellGridOpacity: Number(e.target.value) },
                                 }))
                               }
-                              className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                              className="w-full h-2 bg-gray-300 rounded-lg cursor-pointer accent-blue-500"
                             />
                           </div>
                           <div>
@@ -4559,7 +5059,7 @@ function openPanelDetailModal(panel) {
                                   floor: { ...p.floor, floorTsuboGridOpacity: Number(e.target.value) },
                                 }))
                               }
-                              className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                              className="w-full h-2 bg-gray-300 rounded-lg cursor-pointer accent-blue-500"
                             />
                           </div>
                         </div>
@@ -4580,7 +5080,7 @@ function openPanelDetailModal(panel) {
                                 floor: { ...p.floor, floorLabelFontSize: Number(e.target.value) },
                               }))
                             }
-                            className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                            className="w-full h-2 bg-gray-300 rounded-lg cursor-pointer accent-blue-500"
                           />
                         </div>
                       </div>
@@ -4686,7 +5186,7 @@ function openPanelDetailModal(panel) {
                                     ),
                                   }))
                                 }
-                                className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                                className="w-full h-2 bg-gray-300 rounded-lg cursor-pointer accent-blue-500"
                               />
                             </div>
                           </div>
@@ -4708,7 +5208,7 @@ function openPanelDetailModal(panel) {
                                     ),
                                   }))
                                 }
-                                className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                                className="w-full h-2 bg-gray-300 rounded-lg cursor-pointer accent-blue-500"
                               />
                             </div>
                           </div>
@@ -4803,7 +5303,7 @@ function openPanelDetailModal(panel) {
                                     ),
                                   }))
                                 }
-                                className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                                className="w-full h-2 bg-gray-300 rounded-lg cursor-pointer accent-blue-500"
                               />
                             </div>
                           </div>
@@ -4825,7 +5325,7 @@ function openPanelDetailModal(panel) {
                                     ),
                                   }))
                                 }
-                                className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                                className="w-full h-2 bg-gray-300 rounded-lg cursor-pointer accent-blue-500"
                               />
                             </div>
                           </div>
@@ -5103,7 +5603,7 @@ function openPanelDetailModal(panel) {
                                       ),
                                     }))
                                   }
-                                  className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                                  className="w-full h-2 bg-gray-300 rounded-lg cursor-pointer accent-blue-500"
                                 />
                               </div>
                               <div>
@@ -5121,7 +5621,7 @@ function openPanelDetailModal(panel) {
                                       ),
                                     }))
                                   }
-                                  className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                                  className="w-full h-2 bg-gray-300 rounded-lg cursor-pointer accent-blue-500"
                                 />
                               </div>
                             </div>
@@ -5144,7 +5644,7 @@ function openPanelDetailModal(panel) {
                                     ),
                                   }))
                                 }
-                                className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                                className="w-full h-2 bg-gray-300 rounded-lg cursor-pointer accent-blue-500"
                               />
                             </div>
                           </div>
@@ -5579,14 +6079,14 @@ function openPanelDetailModal(panel) {
                       <div className="text-xs font-semibold text-gray-700 mb-2">透明度</div>
                       <div>
                         <label className="text-[10px] text-gray-500">背景: {selectedEntity.bgOpacity ?? 90}%</label>
-                        <input type="range" min="0" max="100" value={selectedEntity.bgOpacity ?? 90} onChange={(e) => setPanels((p) => p.map((pn) => (pn.id === selected.id ? { ...pn, bgOpacity: Number(e.target.value) } : pn)))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer" />
+                        <input type="range" min="0" max="100" value={selectedEntity.bgOpacity ?? 90} onChange={(e) => setPanels((p) => p.map((pn) => (pn.id === selected.id ? { ...pn, bgOpacity: Number(e.target.value) } : pn)))} className="w-full h-2 bg-gray-300 rounded-lg cursor-pointer accent-blue-500" />
                       </div>
                     </div>
                     <div className="border-t pt-2">
                       <div className="text-xs font-semibold text-gray-700 mb-2">ラベルサイズ</div>
                       <div>
                         <label className="text-[10px] text-gray-500">フォント: {selectedEntity.labelFontSize || 0.75}rem</label>
-                        <input type="range" min="0.3" max="5" step="0.1" value={selectedEntity.labelFontSize || 0.75} onChange={(e) => setPanels((p) => p.map((pn) => (pn.id === selected.id ? { ...pn, labelFontSize: Number(e.target.value) } : pn)))} className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer" />
+                        <input type="range" min="0.3" max="5" step="0.1" value={selectedEntity.labelFontSize || 0.75} onChange={(e) => setPanels((p) => p.map((pn) => (pn.id === selected.id ? { ...pn, labelFontSize: Number(e.target.value) } : pn)))} className="w-full h-2 bg-gray-300 rounded-lg cursor-pointer accent-blue-500" />
                       </div>
                     </div>
                     <div className="border-t pt-2">
@@ -5631,13 +6131,15 @@ function openPanelDetailModal(panel) {
                   </div>
                 ) : (
                   <div className="space-y-2">
+                    {/* ===== 基本情報（常に展開） ===== */}
                     <div className="text-sm font-semibold">{selectedEntity.kind}</div>
                     <div>
                       <div className="text-xs text-gray-500">名前</div>
                       <input
                         className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
                         value={selectedEntity.name || ""}
-                        onChange={(e) => setUnits((prev) => prev.map((u) => u.id === selectedEntity.id ? { ...u, name: e.target.value } : u))}
+                        onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "name", e.target.value)}
+                        onBlur={(e) => updateUnitField(selectedEntity.id, "name", e.target.value, "名前変更")}
                       />
                     </div>
                     <div>
@@ -5645,18 +6147,21 @@ function openPanelDetailModal(panel) {
                       <input
                         className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
                         value={selectedEntity.client || ""}
-                        onChange={(e) => setUnits((prev) => prev.map((u) => u.id === selectedEntity.id ? { ...u, client: e.target.value } : u))}
+                        onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "client", e.target.value)}
+                        onBlur={(e) => updateUnitField(selectedEntity.id, "client", e.target.value, "取引先変更")}
                       />
                     </div>
                     <div className="text-xs text-gray-500">
-                      {selectedEntity.w_m} × {selectedEntity.d_m} × {selectedEntity.h_m} m
+                      {selectedEntity.w_m} x {selectedEntity.d_m} x {selectedEntity.h_m} m
                     </div>
+
+                    {/* ===== 操作ボタン（常に展開） ===== */}
                     <div className="flex gap-2">
                       <button
                         className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
                         type="button"
                         onClick={() => {
-                          setUnits((prev) => prev.map((u) => (u.id === selectedEntity.id ? { ...u, rot: !u.rot } : u)));
+                          updateUnitFieldSilent(selectedEntity.id, "rot", !selectedEntity.rot);
                         }}
                       >
                         回転
@@ -5665,7 +6170,7 @@ function openPanelDetailModal(panel) {
                         className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
                         type="button"
                         onClick={() => {
-                          setUnits((prev) => prev.map((u) => (u.id === selectedEntity.id ? { ...u, loc: { kind: "unplaced" } } : u)));
+                          updateUnitField(selectedEntity.id, "loc", { kind: "unplaced" }, "未配置に変更");
                           showToast("未配置に戻しました");
                         }}
                       >
@@ -5684,148 +6189,270 @@ function openPanelDetailModal(panel) {
                       </button>
                     </div>
 
-                    {/* 実寸サイズ変更UI */}
-                    <div className="border-t pt-2">
-                      <div className="text-xs font-semibold text-gray-700 mb-2">サイズ（実寸）</div>
-                      <div className="grid grid-cols-3 gap-2">
-                        <div>
-                          <div className="text-xs text-gray-500">幅(m)</div>
-                          <input
-                            className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                            type="number"
-                            min="0.1"
-                            step="0.1"
-                            value={selectedEntity.w_m}
-                            onChange={(e) => {
-                              const v = Math.max(0.1, Number(e.target.value) || 0.1);
-                              const cells = Math.max(1, Math.ceil(v / (layout.floor.cell_m_w || 1.2)));
-                              setUnits((prev) =>
-                                prev.map((u) =>
-                                  u.id === selectedEntity.id ? { ...u, w_m: +v.toFixed(2), w_cells: cells } : u
-                                )
-                              );
+                    {/* ===== 倉庫間移動（カード風） ===== */}
+                    {warehouses.filter((w) => w.id !== wh.id).length > 0 && (
+                      <div className="rounded-xl border-2 border-indigo-200 bg-indigo-50 p-3">
+                        <div className="text-xs font-bold text-indigo-700 mb-2">倉庫間移動</div>
+                        <div className="flex gap-2">
+                          <select
+                            className="flex-1 rounded-lg border border-indigo-200 bg-white px-2 py-1.5 text-sm"
+                            value={transferDest}
+                            onChange={(e) => setTransferDest(e.target.value)}
+                          >
+                            <option value="">移動先を選択</option>
+                            {warehouses.filter((w) => w.id !== wh.id).map((w) => (
+                              <option key={w.id} value={w.id}>{w.name}</option>
+                            ))}
+                          </select>
+                          <button
+                            className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm text-white hover:bg-indigo-700 font-medium"
+                            type="button"
+                            onClick={() => {
+                              if (!transferDest) { showToast("移動先を選択してください"); return; }
+                              transferUnitToWarehouse(selectedEntity.id, transferDest);
+                              setTransferDest("");
                             }}
-                          />
-                        </div>
-                        <div>
-                          <div className="text-xs text-gray-500">奥行(m)</div>
-                          <input
-                            className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                            type="number"
-                            min="0.1"
-                            step="0.1"
-                            value={selectedEntity.d_m}
-                            onChange={(e) => {
-                              const v = Math.max(0.1, Number(e.target.value) || 0.1);
-                              const cells = Math.max(1, Math.ceil(v / (layout.floor.cell_m_d || 1.0)));
-                              setUnits((prev) =>
-                                prev.map((u) =>
-                                  u.id === selectedEntity.id ? { ...u, d_m: +v.toFixed(2), h_cells: cells } : u
-                                )
-                              );
-                            }}
-                          />
-                        </div>
-                        <div>
-                          <div className="text-xs text-gray-500">高さ(m)</div>
-                          <input
-                            className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                            type="number"
-                            min="0.1"
-                            step="0.1"
-                            value={selectedEntity.h_m}
-                            onChange={(e) => {
-                              const v = Math.max(0.1, Number(e.target.value) || 0.1);
-                              setUnits((prev) =>
-                                prev.map((u) =>
-                                  u.id === selectedEntity.id ? { ...u, h_m: +v.toFixed(2) } : u
-                                )
-                              );
-                            }}
-                          />
+                          >
+                            移動
+                          </button>
                         </div>
                       </div>
-                      <div className="mt-1 text-xs text-gray-500">
-                        右下の三角ハンドルでもリサイズ可能
-                      </div>
+                    )}
+
+                    {/* ===== サイズ（実寸）— 折りたたみ（デフォルト閉） ===== */}
+                    <div className="border-t">
+                      <button
+                        type="button"
+                        className="flex w-full items-center justify-between py-2 text-xs font-semibold text-gray-700 hover:text-gray-900"
+                        onClick={() => setPanelSections((s) => ({ ...s, size: !s.size }))}
+                      >
+                        <span>サイズ（実寸）</span>
+                        <span className="text-gray-400">{panelSections.size ? "\u25BC" : "\u25B6"}</span>
+                      </button>
+                      {panelSections.size && (
+                        <div className="pb-2">
+                          <div className="grid grid-cols-3 gap-2">
+                            <div>
+                              <div className="text-xs text-gray-500">幅(m)</div>
+                              <input
+                                className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                                type="number"
+                                min="0.1"
+                                step="0.1"
+                                value={selectedEntity.w_m}
+                                onChange={(e) => {
+                                  const v = Math.max(0.1, Number(e.target.value) || 0.1);
+                                  const cells = Math.max(1, Math.ceil(v / (layout.floor.cell_m_w || 1.2)));
+                                  updateUnitFieldSilent(selectedEntity.id, "w_m", +v.toFixed(2));
+                                  updateUnitFieldSilent(selectedEntity.id, "w_cells", cells);
+                                }}
+                                onBlur={() => updateUnitFieldSilent(selectedEntity.id, "w_m", selectedEntity.w_m)}
+                              />
+                            </div>
+                            <div>
+                              <div className="text-xs text-gray-500">奥行(m)</div>
+                              <input
+                                className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                                type="number"
+                                min="0.1"
+                                step="0.1"
+                                value={selectedEntity.d_m}
+                                onChange={(e) => {
+                                  const v = Math.max(0.1, Number(e.target.value) || 0.1);
+                                  const cells = Math.max(1, Math.ceil(v / (layout.floor.cell_m_d || 1.0)));
+                                  updateUnitFieldSilent(selectedEntity.id, "d_m", +v.toFixed(2));
+                                  updateUnitFieldSilent(selectedEntity.id, "h_cells", cells);
+                                }}
+                                onBlur={() => updateUnitFieldSilent(selectedEntity.id, "d_m", selectedEntity.d_m)}
+                              />
+                            </div>
+                            <div>
+                              <div className="text-xs text-gray-500">高さ(m)</div>
+                              <input
+                                className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                                type="number"
+                                min="0.1"
+                                step="0.1"
+                                value={selectedEntity.h_m}
+                                onChange={(e) => {
+                                  const v = Math.max(0.1, Number(e.target.value) || 0.1);
+                                  updateUnitFieldSilent(selectedEntity.id, "h_m", +v.toFixed(2));
+                                }}
+                                onBlur={() => updateUnitFieldSilent(selectedEntity.id, "h_m", selectedEntity.h_m)}
+                              />
+                            </div>
+                          </div>
+                          <div className="mt-1 text-xs text-gray-500">
+                            右下の三角ハンドルでもリサイズ可能
+                          </div>
+                        </div>
+                      )}
                     </div>
 
-                    {/* 荷物の色設定 */}
-                    <div className="border-t pt-2">
-                      <div className="text-xs font-semibold text-gray-700 mb-2">色設定</div>
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="color"
-                            value={selectedEntity.bgColor || "#ffffff"}
-                            onChange={(e) =>
-                              setUnits((prev) =>
-                                prev.map((u) =>
-                                  u.id === selectedEntity.id ? { ...u, bgColor: e.target.value } : u
-                                )
-                              )
-                            }
-                            className="w-8 h-8 rounded cursor-pointer border"
-                          />
-                          <span className="text-xs text-gray-600">背景色</span>
+                    {/* ===== 見た目（色・透明度・ラベル）— 折りたたみ（デフォルト閉） ===== */}
+                    <div className="border-t">
+                      <button
+                        type="button"
+                        className="flex w-full items-center justify-between py-2 text-xs font-semibold text-gray-700 hover:text-gray-900"
+                        onClick={() => setPanelSections((s) => ({ ...s, appearance: !s.appearance }))}
+                      >
+                        <span>見た目（色・透明度・ラベル）</span>
+                        <span className="text-gray-400">{panelSections.appearance ? "\u25BC" : "\u25B6"}</span>
+                      </button>
+                      {panelSections.appearance && (
+                        <div className="pb-2 space-y-3">
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="color"
+                                value={selectedEntity.bgColor || "#ffffff"}
+                                onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "bgColor", e.target.value)}
+                                className="w-8 h-8 rounded cursor-pointer border"
+                              />
+                              <span className="text-xs text-gray-600">背景色</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="color"
+                                value={selectedEntity.labelColor || "#000000"}
+                                onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "labelColor", e.target.value)}
+                                className="w-8 h-8 rounded cursor-pointer border"
+                              />
+                              <span className="text-xs text-gray-600">ラベル色</span>
+                            </div>
+                          </div>
+                          <div>
+                            <label className="text-[10px] text-gray-500">背景透明度: {selectedEntity.bgOpacity ?? 100}%</label>
+                            <input
+                              type="range"
+                              min="0"
+                              max="100"
+                              value={selectedEntity.bgOpacity ?? 100}
+                              onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "bgOpacity", Number(e.target.value))}
+                              onMouseUp={(e) => updateUnitFieldSilent(selectedEntity.id, "bgOpacity", Number(e.target.value))}
+                              className="w-full h-2 bg-gray-300 rounded-lg cursor-pointer accent-blue-500"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] text-gray-500">フォント: {selectedEntity.labelFontSize || 1.2}rem</label>
+                            <input
+                              type="range"
+                              min="0.3"
+                              max="5"
+                              step="0.1"
+                              value={selectedEntity.labelFontSize || 1.2}
+                              onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "labelFontSize", Number(e.target.value))}
+                              onMouseUp={(e) => updateUnitFieldSilent(selectedEntity.id, "labelFontSize", Number(e.target.value))}
+                              className="w-full h-2 bg-gray-300 rounded-lg cursor-pointer accent-blue-500"
+                            />
+                          </div>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="color"
-                            value={selectedEntity.labelColor || "#000000"}
-                            onChange={(e) =>
-                              setUnits((prev) =>
-                                prev.map((u) =>
-                                  u.id === selectedEntity.id ? { ...u, labelColor: e.target.value } : u
-                                )
-                              )
-                            }
-                            className="w-8 h-8 rounded cursor-pointer border"
-                          />
-                          <span className="text-xs text-gray-600">ラベル色</span>
+                      )}
+                    </div>
+
+                    {/* ===== 詳細情報 — 折りたたみ（デフォルト開） ===== */}
+                    <div className="border-t">
+                      <button
+                        type="button"
+                        className="flex w-full items-center justify-between py-2 text-xs font-semibold text-gray-700 hover:text-gray-900"
+                        onClick={() => setPanelSections((s) => ({ ...s, detail: !s.detail }))}
+                      >
+                        <span>詳細情報</span>
+                        <span className="text-gray-400">{panelSections.detail ? "\u25BC" : "\u25B6"}</span>
+                      </button>
+                      {panelSections.detail && (
+                        <div className="pb-2 space-y-2">
+                          {/* 担当者 */}
+                          <div>
+                            <div className="text-xs text-gray-500">担当者</div>
+                            <select
+                              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                              value={selectedEntity.personInCharge || ""}
+                              onChange={(e) => updateUnitField(selectedEntity.id, "personInCharge", e.target.value, "担当者変更")}
+                            >
+                              <option value="">（未設定）</option>
+                              {personList.map((p) => (
+                                <option key={p.id} value={p.name}>{p.name}</option>
+                              ))}
+                            </select>
+                          </div>
+                          {/* 案件名 */}
+                          <div>
+                            <div className="text-xs text-gray-500">案件名</div>
+                            <input
+                              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                              value={selectedEntity.projectName || ""}
+                              onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "projectName", e.target.value)}
+                              onBlur={(e) => updateUnitField(selectedEntity.id, "projectName", e.target.value, "案件名変更")}
+                              placeholder="案件名を入力"
+                            />
+                          </div>
+                          {/* 入庫日時 */}
+                          <div>
+                            <div className="text-xs text-gray-500">入庫日時</div>
+                            <input
+                              type="datetime-local"
+                              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                              value={selectedEntity.arrivalDate || ""}
+                              onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "arrivalDate", e.target.value)}
+                              onBlur={(e) => updateUnitField(selectedEntity.id, "arrivalDate", e.target.value, "入庫日時変更")}
+                            />
+                          </div>
+                          {/* 出庫予定日時 */}
+                          <div>
+                            <div className="text-xs text-gray-500">出庫予定日時</div>
+                            <input
+                              type="datetime-local"
+                              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                              value={selectedEntity.departureDate || ""}
+                              onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "departureDate", e.target.value)}
+                              onBlur={(e) => updateUnitField(selectedEntity.id, "departureDate", e.target.value, "出庫予定日時変更")}
+                            />
+                          </div>
+                          {/* 保管場所（表示のみ） */}
+                          <div>
+                            <div className="text-xs text-gray-500">保管場所</div>
+                            <div className="mt-1 text-sm text-gray-700">
+                              {selectedEntity.loc?.kind === "floor"
+                                ? `${wh.name} > 床 > (${selectedEntity.loc.x}, ${selectedEntity.loc.y})`
+                                : selectedEntity.loc?.kind === "rack"
+                                ? `${wh.name} > 棚 ${selectedEntity.loc.rackId} > スロット ${selectedEntity.loc.slot}`
+                                : "未配置"}
+                            </div>
+                          </div>
+                          {/* kintoneレコードID */}
+                          <div>
+                            <div className="text-xs text-gray-500">kintoneレコードID</div>
+                            <input
+                              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                              value={selectedEntity.kintoneRecordId || ""}
+                              onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "kintoneRecordId", e.target.value)}
+                              onBlur={(e) => updateUnitFieldSilent(selectedEntity.id, "kintoneRecordId", e.target.value)}
+                              placeholder="レコードID"
+                            />
+                          </div>
+                          {/* 備考 */}
+                          <div>
+                            <div className="text-xs text-gray-500">備考</div>
+                            <textarea
+                              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm resize-none"
+                              rows={2}
+                              value={selectedEntity.notes || ""}
+                              onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "notes", e.target.value)}
+                              onBlur={(e) => updateUnitField(selectedEntity.id, "notes", e.target.value, "備考変更")}
+                              placeholder="備考を入力"
+                            />
+                          </div>
+                          {/* 詳細モーダルボタン */}
+                          <button
+                            type="button"
+                            className="w-full rounded-lg bg-gray-100 px-2 py-1 text-xs hover:bg-gray-200"
+                            onClick={() => openDetailModal(selectedEntity)}
+                          >
+                            詳細モーダルを開く
+                          </button>
                         </div>
-                      </div>
-                    </div>
-                    <div className="border-t pt-2">
-                      <div className="text-xs font-semibold text-gray-700 mb-2">透明度</div>
-                      <div>
-                        <label className="text-[10px] text-gray-500">背景: {selectedEntity.bgOpacity ?? 100}%</label>
-                        <input
-                          type="range"
-                          min="0"
-                          max="100"
-                          value={selectedEntity.bgOpacity ?? 100}
-                          onChange={(e) =>
-                            setUnits((prev) =>
-                              prev.map((u) =>
-                                u.id === selectedEntity.id ? { ...u, bgOpacity: Number(e.target.value) } : u
-                              )
-                            )
-                          }
-                          className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer"
-                        />
-                      </div>
-                    </div>
-                    <div className="border-t pt-2">
-                      <div className="text-xs font-semibold text-gray-700 mb-2">ラベルサイズ</div>
-                      <div>
-                        <label className="text-[10px] text-gray-500">フォント: {selectedEntity.labelFontSize || 1.2}rem</label>
-                        <input
-                          type="range"
-                          min="0.3"
-                          max="5"
-                          step="0.1"
-                          value={selectedEntity.labelFontSize || 1.2}
-                          onChange={(e) =>
-                            setUnits((prev) =>
-                              prev.map((u) =>
-                                u.id === selectedEntity.id ? { ...u, labelFontSize: Number(e.target.value) } : u
-                              )
-                            )
-                          }
-                          className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer"
-                        />
-                      </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -5938,6 +6565,10 @@ function openPanelDetailModal(panel) {
             {/* 拡張フィールド */}
             <div className="grid grid-cols-2 gap-4 border-t pt-4">
               <div>
+                <div className="text-xs text-gray-500">担当者</div>
+                <div className="text-sm">{detailUnit.personInCharge || "-"}</div>
+              </div>
+              <div>
                 <div className="text-xs text-gray-500">kintoneレコードID</div>
                 <div className="text-sm">{detailUnit.kintoneRecordId || "-"}</div>
               </div>
@@ -5945,19 +6576,23 @@ function openPanelDetailModal(panel) {
                 <div className="text-xs text-gray-500">案件名</div>
                 <div className="text-sm">{detailUnit.projectName || "-"}</div>
               </div>
+              <div className="col-span-2">
+                <div className="text-xs text-gray-500">備考</div>
+                <div className="text-sm">{detailUnit.notes || "-"}</div>
+              </div>
               <div>
-                <div className="text-xs text-gray-500">入庫日</div>
+                <div className="text-xs text-gray-500">入庫日時</div>
                 <div className="text-sm">
                   {detailUnit.arrivalDate
-                    ? new Date(detailUnit.arrivalDate).toLocaleDateString("ja-JP")
+                    ? new Date(detailUnit.arrivalDate).toLocaleString("ja-JP")
                     : "-"}
                 </div>
               </div>
               <div>
-                <div className="text-xs text-gray-500">出庫日</div>
+                <div className="text-xs text-gray-500">出庫予定日時</div>
                 <div className="text-sm">
                   {detailUnit.departureDate
-                    ? new Date(detailUnit.departureDate).toLocaleDateString("ja-JP")
+                    ? new Date(detailUnit.departureDate).toLocaleString("ja-JP")
                     : "-"}
                 </div>
               </div>
@@ -6023,6 +6658,43 @@ function openPanelDetailModal(panel) {
               </div>
             )}
 
+            {/* 編集履歴 */}
+            {detailUnit.editHistory && detailUnit.editHistory.length > 0 && (
+              <div className="border-t pt-4">
+                <div className="text-sm font-semibold mb-2">編集履歴（{detailUnit.editHistory.length}件）</div>
+                <div className="space-y-2 max-h-60 overflow-y-auto">
+                  {[...detailUnit.editHistory].reverse().map((h, idx) => (
+                    <div key={idx} className="rounded-xl border p-2 text-xs">
+                      <div className="flex justify-between text-gray-500">
+                        <span>{new Date(h.timestamp).toLocaleString("ja-JP")}</span>
+                        <span className="font-medium text-gray-700">{h.action}</span>
+                      </div>
+                      {h.field && (
+                        <div className="mt-1">
+                          <span className="text-gray-600">{h.field}: </span>
+                          <span className="text-red-500">{h.oldValue === undefined || h.oldValue === null || h.oldValue === "" ? "(空)" : String(h.oldValue)}</span>
+                          <span className="text-gray-400"> → </span>
+                          <span className="text-green-600">{h.newValue === undefined || h.newValue === null || h.newValue === "" ? "(空)" : String(h.newValue)}</span>
+                        </div>
+                      )}
+                      {h.fields && h.changes && (
+                        <div className="mt-1 space-y-0.5">
+                          {h.fields.map((f) => (
+                            <div key={f}>
+                              <span className="text-gray-600">{f}: </span>
+                              <span className="text-red-500">{h.changes[f]?.old == null || h.changes[f]?.old === "" ? "(空)" : String(h.changes[f].old)}</span>
+                              <span className="text-gray-400"> → </span>
+                              <span className="text-green-600">{h.changes[f]?.new == null || h.changes[f]?.new === "" ? "(空)" : String(h.changes[f].new)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="flex gap-2">
               <button
                 className="flex-1 rounded-2xl border px-4 py-2 text-sm hover:bg-gray-50"
@@ -6037,6 +6709,67 @@ function openPanelDetailModal(panel) {
             </div>
           </div>
         )}
+      </Modal>
+
+      {/* 担当者管理モーダル */}
+      <Modal
+        title="担当者リスト管理"
+        open={personModalOpen}
+        onClose={() => { setPersonModalOpen(false); setNewPersonName(""); }}
+      >
+        <div className="space-y-3">
+          <div className="flex gap-2">
+            <input
+              className="flex-1 rounded-xl border px-3 py-2 text-sm"
+              placeholder="担当者名を入力"
+              value={newPersonName}
+              onChange={(e) => setNewPersonName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && newPersonName.trim()) {
+                  const np = { id: "p-" + uid(), name: newPersonName.trim() };
+                  onUpdateSite({ ...site, personList: [...personList, np] });
+                  setNewPersonName("");
+                }
+              }}
+            />
+            <button
+              type="button"
+              className="rounded-xl bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+              disabled={!newPersonName.trim()}
+              onClick={() => {
+                const np = { id: "p-" + uid(), name: newPersonName.trim() };
+                onUpdateSite({ ...site, personList: [...personList, np] });
+                setNewPersonName("");
+              }}
+            >
+              追加
+            </button>
+          </div>
+          {personList.length === 0 && <div className="text-sm text-gray-500">担当者がまだ登録されていません。</div>}
+          <div className="space-y-1 max-h-60 overflow-y-auto">
+            {personList.map((p) => (
+              <div key={p.id} className="flex items-center justify-between rounded-xl border px-3 py-2">
+                <span className="text-sm">{p.name}</span>
+                <button
+                  type="button"
+                  className="text-xs text-red-500 hover:text-red-700"
+                  onClick={() => {
+                    onUpdateSite({ ...site, personList: personList.filter((x) => x.id !== p.id) });
+                  }}
+                >
+                  削除
+                </button>
+              </div>
+            ))}
+          </div>
+          <button
+            type="button"
+            className="w-full rounded-2xl border px-4 py-2 text-sm hover:bg-gray-50"
+            onClick={() => { setPersonModalOpen(false); setNewPersonName(""); }}
+          >
+            閉じる
+          </button>
+        </div>
       </Modal>
 
       {/* 配電盤詳細モーダル */}
@@ -6204,6 +6937,494 @@ function openPanelDetailModal(panel) {
           </div>
         )}
       </Modal>
+
+      {/* 区画拡大モーダル */}
+      {zoneDetailOpen && zoneDetailZone && (() => {
+        const z = layout.zones.find((zz) => zz.id === zoneDetailZone.id) || zoneDetailZone;
+        const isShelfZone = z.loc?.kind === "shelf";
+        const cellMW = layout.floor.cell_m_w || 1.2;
+        const cellMD = layout.floor.cell_m_d || 1.0;
+
+        // 実寸フットプリント（セル単位の小数）
+        const realFP = (u) => {
+          const fw = Math.max(0.2, (u.w_m || cellMW) / cellMW);
+          const fd = Math.max(0.2, (u.d_m || cellMD) / cellMD);
+          return u.rot ? { w: fd, h: fw } : { w: fw, h: fd };
+        };
+
+        // 区画内の荷物を取得（ローカル座標に変換 + 実寸サイズ）
+        const zoneUnits = (() => {
+          if (isShelfZone) {
+            const shelfId = z.loc.shelfId;
+            const zx = z.loc.x || 0, zy = z.loc.y || 0;
+            return units.filter((u) => u.loc?.kind === "shelf" && u.loc.shelfId === shelfId).map((u) => {
+              const fp = unitFootprintCells(u);
+              const rp = realFP(u);
+              return { ...u, _localX: (u.loc.x || 0) - zx, _localY: (u.loc.y || 0) - zy, _fw: fp.w, _fh: fp.h, _realW: rp.w, _realH: rp.h };
+            }).filter((u) => u._localX >= -0.01 && u._localY >= -0.01 && u._localX + u._realW <= z.w + 0.01 && u._localY + u._realH <= z.h + 0.01);
+          } else {
+            return units.filter((u) => u.loc?.kind === "floor").map((u) => {
+              const fp = unitFootprintCells(u);
+              const rp = realFP(u);
+              return { ...u, _localX: (u.loc.x || 0) - z.x, _localY: (u.loc.y || 0) - z.y, _fw: fp.w, _fh: fp.h, _realW: rp.w, _realH: rp.h };
+            }).filter((u) => u._localX >= -0.01 && u._localY >= -0.01 && u._localX + u._realW <= z.w + 0.01 && u._localY + u._realH <= z.h + 0.01);
+          }
+        })();
+
+        // 動的スケール: モーダル内に区画が収まるよう計算
+        const maxModalW = Math.min(window.innerWidth - 80, 1200);
+        const maxModalH = Math.min(window.innerHeight - 160, 800);
+        const zoneCellPx = Math.min(Math.floor(maxModalW / z.w), Math.floor(maxModalH / z.h), 80);
+        const gridW = z.w * zoneCellPx;
+        const gridH = z.h * zoneCellPx;
+
+        // === 3Dビュー用の計算 ===
+        const iso3d = (() => {
+          if (!zoneDetail3D) return null;
+
+          const rotStep = zoneDetailRotStep;
+          const viewCols = z.w, viewRows = z.h;
+
+          // viewItems with local coords and real footprint
+          const viewItems = zoneUnits.map((u) => ({ ...u, gx: u._localX, gy: u._localY, fw: u._realW, fh: u._realH }));
+
+          // Rotation helpers
+          const rotateGxGy = (gx, gy) => {
+            const s = rotStep % 4;
+            if (s === 0) return { rx: gx, ry: gy };
+            if (s === 1) return { rx: viewRows - 1 - gy, ry: gx };
+            if (s === 2) return { rx: viewCols - 1 - gx, ry: viewRows - 1 - gy };
+            return { rx: gy, ry: viewCols - 1 - gx };
+          };
+          const rotateRect = (gx, gy, w, h) => {
+            const s = rotStep % 4;
+            if (s === 0) return { rx: gx, ry: gy, rw: w, rh: h };
+            if (s === 1) return { rx: viewRows - gy - h, ry: gx, rw: h, rh: w };
+            if (s === 2) return { rx: viewCols - gx - w, ry: viewRows - gy - h, rw: w, rh: h };
+            return { rx: gy, ry: viewCols - gx - w, rw: h, rh: w };
+          };
+          // 逆回転（スクリーン差分→ローカル座標差分）
+          const invRotDelta = (drx, dry) => {
+            const s = rotStep % 4;
+            if (s === 0) return { dgx: drx, dgy: dry };
+            if (s === 1) return { dgx: dry, dgy: -drx };
+            if (s === 2) return { dgx: -drx, dgy: -dry };
+            return { dgx: -dry, dgy: drx };
+          };
+
+          const effCols = (rotStep % 2 === 0) ? viewCols : viewRows;
+          const effRows = (rotStep % 2 === 0) ? viewRows : viewCols;
+
+          // Group stacks
+          const stacks = {};
+          for (const u of viewItems) {
+            const { rx, ry } = rotateGxGy(u.gx, u.gy);
+            const key = `${rx},${ry}`;
+            if (!stacks[key]) stacks[key] = [];
+            stacks[key].push({ ...u, rx, ry });
+          }
+          for (const k of Object.keys(stacks)) stacks[k].sort((a, b) => (a.stackZ || 0) - (b.stackZ || 0));
+
+          // Tile sizing
+          const baseTile = Math.max(16, Math.min(50, Math.floor(600 / Math.max(effCols, effRows))));
+          const tileW = baseTile, tileH = baseTile / 2;
+          const heightScale = baseTile * 0.6;
+          const toIso = (gx, gy) => ({ sx: (gx - gy) * (tileW / 2), sy: (gx + gy) * (tileH / 2) });
+
+          // Canvas bounds
+          const allCorners = [toIso(0, 0), toIso(effCols, 0), toIso(0, effRows), toIso(effCols, effRows)];
+          const maxStackH = viewItems.reduce((m, u) => Math.max(m, (u.stackZ || 0) + (u.h_m || 1)), 0);
+          const minSx = Math.min(...allCorners.map((c) => c.sx)) - 60;
+          const maxSx = Math.max(...allCorners.map((c) => c.sx)) + 60;
+          const minSy = Math.min(...allCorners.map((c) => c.sy)) - Math.max(200, maxStackH * heightScale + 80);
+          const maxSy = Math.max(...allCorners.map((c) => c.sy)) + 60;
+          const svgW = maxSx - minSx;
+          const svgH = maxSy - minSy;
+          const offX = -minSx;
+          const offY = -minSy;
+
+          // Colors
+          const boxColors = ["#60a5fa","#34d399","#fbbf24","#f87171","#a78bfa","#fb923c","#38bdf8","#4ade80","#facc15","#f472b6"];
+          const stableColorIdx = (id) => { let h=0; for(let i=0;i<id.length;i++) h=((h<<5)-h+id.charCodeAt(i))|0; return ((h%boxColors.length)+boxColors.length)%boxColors.length; };
+          const kindCol = (kind, id) => kind==="配電盤"?"#fbbf24":kind==="パレット"?"#60a5fa":kind==="カゴ"?"#34d399":boxColors[stableColorIdx(id||"")];
+
+          // Render items
+          const renderItems = [];
+          for (const [, stack] of Object.entries(stacks)) {
+            for (const u of stack) {
+              const isPanel = u.kind === "配電盤";
+              const { rx: rgx, ry: rgy, rw: fw, rh: fh } = rotateRect(u.gx, u.gy, u.fw || 1, u.fh || 1);
+              renderItems.push({ u, gx: rgx, gy: rgy, fw, fh, zOff: isPanel ? 0 : (u.stackZ || 0), h: u.h_m || 1 });
+            }
+          }
+          renderItems.sort((a, b) => { const da=a.gx+a.gy, db=b.gx+b.gy; return da!==db ? da-db : a.zOff-b.zOff; });
+
+          return { effCols, effRows, tileW, tileH, heightScale, toIso, svgW, svgH, offX, offY, renderItems, kindCol, stacks, viewItems, rotateRect, invRotDelta };
+        })();
+
+        // ドラッグ中の移動先ローカル座標を計算するヘルパー
+        const SUB = 4; // 4分割サブグリッド（0.25セル刻み）
+        const calcDragTarget = (d) => {
+          if (zoneDetail3D && iso3d) {
+            const { tileW, tileH, invRotDelta } = iso3d;
+            const zm = zoneDetailZoom;
+            const dsx = (d.pointerX - d.startX) / zm;
+            const dsy = (d.pointerY - d.startY) / zm;
+            // 逆アイソメトリック: スクリーン差分 → 回転グリッド差分
+            const drgx = dsx / tileW + dsy / tileH;
+            const drgy = dsy / tileH - dsx / tileW;
+            // 逆回転: 回転グリッド差分 → ローカル座標差分
+            const { dgx, dgy } = invRotDelta(drgx, drgy);
+            return { x: Math.round((d.baseLocalX + dgx) * SUB) / SUB, y: Math.round((d.baseLocalY + dgy) * SUB) / SUB };
+          }
+          const dx = d.pointerX - d.startX;
+          const dy = d.pointerY - d.startY;
+          const rawX = d.baseLocalX + dx / zoneCellPx;
+          const rawY = d.baseLocalY + dy / zoneCellPx;
+          return { x: Math.round(rawX * SUB) / SUB, y: Math.round(rawY * SUB) / SUB };
+        };
+
+        // ドラッグ中のゴースト位置計算（2D/3D共通）
+        const ghost = (() => {
+          if (!zoneDetailDrag) return null;
+          const d = zoneDetailDrag;
+          const { x: newLocalX, y: newLocalY } = calcDragTarget(d);
+          const u = units.find((uu) => uu.id === d.unitId);
+          if (!u) return null;
+          const ok = canPlaceInZone(z, u, newLocalX, newLocalY, u.id, realFP);
+          const fp = realFP(u);
+          return { x: newLocalX, y: newLocalY, w: fp.w, h: fp.h, ok, unitId: u.id };
+        })();
+
+        // ドラッグ中のユニットかどうか
+        const draggingId = zoneDetailDrag?.unitId;
+        const hasDragMoved = zoneDetailDrag && (zoneDetailDrag.pointerX !== zoneDetailDrag.startX || zoneDetailDrag.pointerY !== zoneDetailDrag.startY);
+
+        // ドロップ処理（2D/3D共通）
+        const handleDrop = () => {
+          if (!zoneDetailDrag) return;
+          const d = zoneDetailDrag;
+          const { x: newLocalX, y: newLocalY } = calcDragTarget(d);
+          const u = units.find((uu) => uu.id === d.unitId);
+          if (u && (Math.abs(newLocalX - d.baseLocalX) > 0.001 || Math.abs(newLocalY - d.baseLocalY) > 0.001)) {
+            if (canPlaceInZone(z, u, newLocalX, newLocalY, u.id, realFP)) {
+              const absX = isShelfZone ? (z.loc.x || 0) + newLocalX : z.x + newLocalX;
+              const absY = isShelfZone ? (z.loc.y || 0) + newLocalY : z.y + newLocalY;
+              const fp = realFP(u);
+              const candidate = { x: absX, y: absY, w: fp.w, h: fp.h };
+              const containingItems = isShelfZone
+                ? units.filter((s) => s.id !== u.id && s.loc?.kind === "shelf" && s.loc.shelfId === z.loc.shelfId).filter((s) => { const sfp = realFP(s); return containsRect({ x: s.loc.x||0, y: s.loc.y||0, w: sfp.w, h: sfp.h }, candidate); })
+                : getContainingStackItems(candidate, u.id);
+              const newStackZ = containingItems.length > 0
+                ? Math.max(...containingItems.map(i => (i.stackZ || 0) + (i.h_m || 0)))
+                : 0;
+              if (isShelfZone) {
+                setUnits((prev) => prev.map((uu) => uu.id === u.id ? { ...uu, loc: { ...uu.loc, x: absX, y: absY }, stackZ: newStackZ } : uu));
+              } else {
+                setUnits((prev) => prev.map((uu) => uu.id === u.id ? { ...uu, loc: { kind: "floor", x: absX, y: absY }, stackZ: newStackZ } : uu));
+              }
+            } else {
+              showToast("ここには置けません（他の荷物と重なっています）");
+            }
+          }
+          setZoneDetailDrag(null);
+        };
+
+        // ドラッグ開始ヘルパー
+        const startDragUnit = (e, u) => {
+          e.stopPropagation();
+          e.preventDefault();
+          const zu = zoneUnits.find((uu) => uu.id === u.id);
+          if (!zu) return;
+          setZoneDetailDrag({
+            unitId: u.id,
+            startX: e.clientX,
+            startY: e.clientY,
+            pointerX: e.clientX,
+            pointerY: e.clientY,
+            baseLocalX: zu._localX,
+            baseLocalY: zu._localY,
+          });
+        };
+
+        return (
+          <div
+            style={{
+              position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+              zIndex: 99998,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              backgroundColor: "rgba(0, 0, 0, 0.6)",
+            }}
+            onClick={(e) => { if (e.target === e.currentTarget) closeZoneDetailModal(); }}
+            onMouseMove={(e) => {
+              if (!zoneDetailDrag) return;
+              setZoneDetailDrag((prev) => prev ? { ...prev, pointerX: e.clientX, pointerY: e.clientY } : null);
+            }}
+            onMouseUp={handleDrop}
+          >
+            <div
+              style={{
+                background: "white",
+                borderRadius: 16,
+                boxShadow: "0 25px 50px -12px rgba(0,0,0,0.25)",
+                maxWidth: maxModalW + 48,
+                maxHeight: window.innerHeight - 40,
+                overflow: "auto",
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* ヘッダー */}
+              <div className="flex items-center justify-between border-b px-5 py-4 gap-3">
+                <div className="text-lg font-semibold flex-1 min-w-0">
+                  {z.name || "区画"}{z.client ? ` (${z.client})` : ""} — {z.w}×{z.h} セル
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  {/* 2D/3D切替 */}
+                  <button
+                    className="rounded-xl border px-3 py-1.5 text-sm font-bold"
+                    style={zoneDetail3D
+                      ? { background: "#ede9fe", color: "#7c3aed", borderColor: "#c4b5fd" }
+                      : { background: "#f1f5f9", color: "#475569", borderColor: "#cbd5e1" }
+                    }
+                    onClick={() => { setZoneDetail3D((v) => !v); setZoneDetailDrag(null); }}
+                    type="button"
+                  >{zoneDetail3D ? "2Dに戻す" : "3Dビュー"}</button>
+                  {/* 3D回転コントロール */}
+                  {zoneDetail3D && (
+                    <>
+                      <button className="rounded-lg border px-2 py-1 text-sm hover:bg-gray-100" onClick={() => setZoneDetailRotStep((r) => (r + 3) % 4)} type="button">↺</button>
+                      <button className="rounded-lg border px-2 py-1 text-sm hover:bg-gray-100" onClick={() => setZoneDetailRotStep((r) => (r + 1) % 4)} type="button">↻</button>
+                      <button className="rounded-lg border px-2 py-1 text-xs hover:bg-gray-100" onClick={() => setZoneDetailZoom((v) => Math.min(3, v + 0.2))} type="button">+</button>
+                      <button className="rounded-lg border px-2 py-1 text-xs hover:bg-gray-100" onClick={() => setZoneDetailZoom((v) => Math.max(0.3, v - 0.2))} type="button">-</button>
+                    </>
+                  )}
+                  <button
+                    className="rounded-xl px-3 py-1 text-sm hover:bg-gray-100"
+                    onClick={closeZoneDetailModal}
+                    type="button"
+                  >✕</button>
+                </div>
+              </div>
+
+              {/* === 2Dグリッド（実寸サイズ反映） === */}
+              {!zoneDetail3D && (
+                <div className="px-5 py-4 flex justify-center">
+                  <div
+                    style={{
+                      position: "relative",
+                      width: gridW,
+                      height: gridH,
+                      backgroundColor: z.bgColor || "#d1fae5",
+                      borderRadius: 8,
+                      border: `2px solid ${z.bgColor || "#10b981"}`,
+                      userSelect: "none",
+                    }}
+                  >
+                    {/* サブグリッド線（0.25セル刻み） */}
+                    {Array.from({ length: z.w * SUB - 1 }, (_, i) => (
+                      <div key={`sv${i}`} style={{
+                        position: "absolute", left: (i + 1) * (zoneCellPx / SUB), top: 0,
+                        width: (i + 1) % SUB === 0 ? 1 : 1, height: gridH,
+                        backgroundColor: (i + 1) % SUB === 0 ? "rgba(0,0,0,0.10)" : "rgba(0,0,0,0.03)",
+                      }} />
+                    ))}
+                    {Array.from({ length: z.h * SUB - 1 }, (_, i) => (
+                      <div key={`sh${i}`} style={{
+                        position: "absolute", top: (i + 1) * (zoneCellPx / SUB), left: 0,
+                        height: (i + 1) % SUB === 0 ? 1 : 1, width: gridW,
+                        backgroundColor: (i + 1) % SUB === 0 ? "rgba(0,0,0,0.10)" : "rgba(0,0,0,0.03)",
+                      }} />
+                    ))}
+
+                    {/* 区画内の荷物（実寸サイズ表示） */}
+                    {zoneUnits.map((u) => {
+                      const isDrag = u.id === draggingId && hasDragMoved;
+                      const ubgRgb = hexToRgb(u.bgColor || "#ffffff");
+                      const ubgOp = (u.bgOpacity ?? 100) / 100;
+                      const kindIcon = u.kind === "パレット" ? "📦" : u.kind === "カゴ" ? "🧺" : u.kind === "配電盤" ? "⚡" : "📋";
+                      // 実寸サイズで描画
+                      const realWPx = u._realW * zoneCellPx;
+                      const realHPx = u._realH * zoneCellPx;
+                      // 寸法ラベル
+                      const wM = u.rot ? (u.d_m || cellMD) : (u.w_m || cellMW);
+                      const dM = u.rot ? (u.w_m || cellMW) : (u.d_m || cellMD);
+                      return (
+                        <div
+                          key={u.id}
+                          style={{
+                            position: "absolute",
+                            left: u._localX * zoneCellPx,
+                            top: u._localY * zoneCellPx,
+                            width: realWPx,
+                            height: realHPx,
+                            background: u.bgColor
+                              ? `rgba(${ubgRgb.join(",")}, ${ubgOp})`
+                              : "linear-gradient(145deg, #ffffff 0%, #f8fafc 50%, #f1f5f9 100%)",
+                            border: "2px solid " + (u.bgColor || "#e2e8f0"),
+                            borderRadius: 12,
+                            cursor: "grab",
+                            boxShadow: "0 4px 12px -2px rgba(0,0,0,0.08)",
+                            opacity: isDrag ? 0.4 : 1,
+                            display: "flex",
+                            flexDirection: "column",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            overflow: "hidden",
+                            zIndex: 5,
+                            transition: isDrag ? "none" : "opacity 0.15s",
+                          }}
+                          onMouseDown={(e) => startDragUnit(e, u)}
+                          onDoubleClick={(e) => { e.stopPropagation(); openDetailModal(u); }}
+                        >
+                          <div style={{ fontSize: Math.min(zoneCellPx * 0.35, 22), lineHeight: 1 }}>{kindIcon}</div>
+                          <div style={{
+                            fontSize: Math.min(zoneCellPx * 0.16, 11),
+                            fontWeight: 700,
+                            color: "#334155",
+                            textAlign: "center",
+                            lineHeight: 1.2,
+                            padding: "0 2px",
+                            wordBreak: "break-all",
+                            maxHeight: "2.4em",
+                            overflow: "hidden",
+                          }}>{u.name}</div>
+                          {zoneCellPx >= 40 && (
+                            <div style={{ fontSize: Math.min(zoneCellPx * 0.13, 9), color: "#94a3b8", marginTop: 1 }}>
+                              {wM.toFixed(1)}×{dM.toFixed(1)}m
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    {/* ゴーストプレビュー */}
+                    {ghost && hasDragMoved && (
+                      <div style={{
+                        position: "absolute",
+                        left: ghost.x * zoneCellPx,
+                        top: ghost.y * zoneCellPx,
+                        width: ghost.w * zoneCellPx,
+                        height: ghost.h * zoneCellPx,
+                        border: `3px dashed ${ghost.ok ? "#3b82f6" : "#ef4444"}`,
+                        borderRadius: 12,
+                        backgroundColor: ghost.ok ? "rgba(59,130,246,0.12)" : "rgba(239,68,68,0.12)",
+                        zIndex: 10,
+                        pointerEvents: "none",
+                        transition: "left 0.08s, top 0.08s",
+                      }} />
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* === 3Dアイソメトリックビュー === */}
+              {zoneDetail3D && iso3d && (() => {
+                const { effCols, effRows, tileW, tileH, heightScale, toIso, svgW, svgH, offX, offY, renderItems, kindCol, stacks, rotateRect } = iso3d;
+                const zm = zoneDetailZoom;
+                const bgRgb = hexToRgb(z.bgColor || "#d1fae5");
+
+                // 3Dゴースト用の回転座標計算
+                const isoGhost = (() => {
+                  if (!ghost || !hasDragMoved) return null;
+                  const u = units.find((uu) => uu.id === ghost.unitId);
+                  if (!u) return null;
+                  const rfp = realFP(u);
+                  const { rx, ry, rw, rh } = rotateRect(ghost.x, ghost.y, rfp.w, rfp.h);
+                  return { gx: rx, gy: ry, fw: rw, fh: rh, ok: ghost.ok, h: u.h_m || 1 };
+                })();
+
+                return (
+                  <div className="px-5 py-4 flex justify-center">
+                    <div
+                      style={{ overflow: "auto", maxWidth: "85vw", maxHeight: "60vh" }}
+                      onWheel={(e) => {
+                        if (e.ctrlKey || e.metaKey) {
+                          e.preventDefault();
+                          setZoneDetailZoom((v) => Math.min(3, Math.max(0.3, v + (e.deltaY < 0 ? 0.1 : -0.1))));
+                        }
+                      }}
+                    >
+                      <div style={{ position: "relative", width: svgW * zm, height: svgH * zm, margin: "0 auto" }}>
+                        <div style={{ transform: `scale(${zm})`, transformOrigin: "top left", position: "relative", width: svgW, height: svgH }}>
+                          {/* Floor tiles */}
+                          {Array.from({ length: effRows }, (_, gy) =>
+                            Array.from({ length: effCols }, (_, gx) => {
+                              const { sx, sy } = toIso(gx, gy);
+                              const x = sx + offX, y = sy + offY;
+                              const points = [`${x}px ${y}px`,`${x+tileW/2}px ${y+tileH/2}px`,`${x}px ${y+tileH}px`,`${x-tileW/2}px ${y+tileH/2}px`].join(", ");
+                              const tileLight = `rgba(${bgRgb.join(",")}, 0.9)`;
+                              const tileDark = `rgba(${bgRgb.map((c) => Math.max(0, c - 20)).join(",")}, 0.9)`;
+                              return <div key={`f-${gx}-${gy}`} style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${points})`, background: (gx+gy)%2===0 ? tileDark : tileLight }} />;
+                            })
+                          )}
+
+                          {/* Isometric boxes for units */}
+                          {renderItems.map(({ u, gx, gy, fw, fh, zOff, h }, idx) => {
+                            const isDrag3D = u.id === draggingId && hasDragMoved;
+                            const p0 = toIso(gx, gy), p1 = toIso(gx+fw, gy), p2 = toIso(gx+fw, gy+fh), p3 = toIso(gx, gy+fh);
+                            const lift = zOff * heightScale, bH = h * heightScale;
+                            const ox = (p) => p.sx + offX, oy = (p, up) => p.sy + offY - up;
+                            const topH = lift + bH;
+                            const topPts = [`${ox(p0)}px ${oy(p0,topH)}px`,`${ox(p1)}px ${oy(p1,topH)}px`,`${ox(p2)}px ${oy(p2,topH)}px`,`${ox(p3)}px ${oy(p3,topH)}px`].join(", ");
+                            const leftPts = [`${ox(p3)}px ${oy(p3,topH)}px`,`${ox(p2)}px ${oy(p2,topH)}px`,`${ox(p2)}px ${oy(p2,lift)}px`,`${ox(p3)}px ${oy(p3,lift)}px`].join(", ");
+                            const rightPts = [`${ox(p2)}px ${oy(p2,topH)}px`,`${ox(p1)}px ${oy(p1,topH)}px`,`${ox(p1)}px ${oy(p1,lift)}px`,`${ox(p2)}px ${oy(p2,lift)}px`].join(", ");
+                            const cx = (ox(p0)+ox(p1)+ox(p2)+ox(p3))/4, cy = (oy(p0,topH)+oy(p1,topH)+oy(p2,topH)+oy(p3,topH))/4;
+                            const color = u.bgColor || kindCol(u.kind, u.id);
+                            // クリック/ドラッグ領域
+                            const bx0 = Math.min(ox(p0),ox(p1),ox(p2),ox(p3)), bx1 = Math.max(ox(p0),ox(p1),ox(p2),ox(p3));
+                            const by0 = Math.min(oy(p0,topH),oy(p1,topH),oy(p2,topH),oy(p3,topH)), by1 = Math.max(oy(p0,lift),oy(p1,lift),oy(p2,lift),oy(p3,lift));
+                            return (
+                              <g key={u.id + "-" + idx}>
+                                <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${leftPts})`, background: color, filter: "brightness(0.7)", opacity: isDrag3D ? 0.3 : 1 }} />
+                                <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${rightPts})`, background: color, filter: "brightness(0.85)", opacity: isDrag3D ? 0.3 : 1 }} />
+                                <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${topPts})`, background: color, opacity: isDrag3D ? 0.3 : 1 }} />
+                                {!isDrag3D && <div style={{ position: "absolute", left: cx-30, top: cy-8, width: 60, textAlign: "center", fontSize: 9, fontWeight: 700, color: "#1e293b", pointerEvents: "none", textShadow: "0 0 3px rgba(255,255,255,0.9)" }}>{u.name || u.kind}</div>}
+                                {u.fragile && !isDrag3D && <div style={{ position: "absolute", left: cx-6, top: cy-14, fontSize: 11, pointerEvents: "none" }}>⚠</div>}
+                                {/* 透明ドラッグ/クリック領域（ボックス全体） */}
+                                <div
+                                  style={{ position: "absolute", left: bx0, top: by0, width: bx1-bx0, height: Math.max(by1-by0, 16), cursor: "grab", zIndex: 20 }}
+                                  onMouseDown={(e) => startDragUnit(e, u)}
+                                  onDoubleClick={(e) => { e.stopPropagation(); openDetailModal(u); }}
+                                  title={`${u.name} (ドラッグで移動 / ダブルクリックで詳細)`}
+                                />
+                              </g>
+                            );
+                          })}
+
+                          {/* 3Dゴーストプレビュー */}
+                          {isoGhost && (() => {
+                            const { gx, gy, fw: gfw, fh: gfh, ok, h: gh } = isoGhost;
+                            const gp0 = toIso(gx, gy), gp1 = toIso(gx+gfw, gy), gp2 = toIso(gx+gfw, gy+gfh), gp3 = toIso(gx, gy+gfh);
+                            const gbH = gh * heightScale;
+                            const gox = (p) => p.sx + offX, goy = (p, up) => p.sy + offY - up;
+                            const gTopPts = [`${gox(gp0)}px ${goy(gp0,gbH)}px`,`${gox(gp1)}px ${goy(gp1,gbH)}px`,`${gox(gp2)}px ${goy(gp2,gbH)}px`,`${gox(gp3)}px ${goy(gp3,gbH)}px`].join(", ");
+                            const gLeftPts = [`${gox(gp3)}px ${goy(gp3,gbH)}px`,`${gox(gp2)}px ${goy(gp2,gbH)}px`,`${gox(gp2)}px ${goy(gp2,0)}px`,`${gox(gp3)}px ${goy(gp3,0)}px`].join(", ");
+                            const gRightPts = [`${gox(gp2)}px ${goy(gp2,gbH)}px`,`${gox(gp1)}px ${goy(gp1,gbH)}px`,`${gox(gp1)}px ${goy(gp1,0)}px`,`${gox(gp2)}px ${goy(gp2,0)}px`].join(", ");
+                            const ghostColor = ok ? "rgba(59,130,246,0.35)" : "rgba(239,68,68,0.35)";
+                            return (
+                              <g>
+                                <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${gLeftPts})`, background: ghostColor, filter: "brightness(0.8)", pointerEvents: "none", zIndex: 30 }} />
+                                <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${gRightPts})`, background: ghostColor, filter: "brightness(0.9)", pointerEvents: "none", zIndex: 30 }} />
+                                <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${gTopPts})`, background: ghostColor, pointerEvents: "none", zIndex: 30 }} />
+                              </g>
+                            );
+                          })()}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* フッター情報 */}
+              <div className="border-t px-5 py-3 text-xs text-gray-500 flex justify-between">
+                <span>ドラッグで移動 / ダブルクリックで詳細</span>
+                <span>{zoneUnits.length} 個の荷物{zoneDetail3D && iso3d ? ` / スタック ${Object.values(iso3d.stacks).filter((s) => s.length > 1).length} 箇所` : ""}</span>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -6237,6 +7458,7 @@ export default function App() {
     id: "site-1",
     name: "共有ワークスペース 倉庫群",
     map_scale_mode: "ui", // ui | scaled
+    personList: [],  // [{id, name}]
   });
 
   const [warehouses, setWarehouses] = useSupabaseState("wh_demo_warehouses_v3", [
@@ -6609,6 +7831,9 @@ export default function App() {
           setActiveWarehouseId(null);
         }}
         onUpdateWarehouse={updateWarehouse}
+        site={site}
+        onUpdateSite={setSite}
+        warehouses={warehouses}
       />
     );
   }
