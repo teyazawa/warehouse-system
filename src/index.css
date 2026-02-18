@@ -7,3 +7,13 @@
   50% { border-color: transparent; box-shadow: none; }
 }
 .wh-departure-blink { animation: wh-border-blink 1s ease-in-out infinite; }
+
+@keyframes wh-3d-departure-blink {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 0; }
+}
+.wh-3d-blink-overlay {
+  animation: wh-3d-departure-blink 1s ease-in-out infinite;
+  background: rgba(239, 68, 68, 0.4);
+  pointer-events: none;
+}

@@ -424,7 +424,7 @@ function SectionTitle({ children, right }) {
 }
 
 // ─── CSS 2.5D アイソメトリックビュー ───
-function IsometricView({ units, layout, panels, onClose }) {
+function IsometricView({ units, layout, panels, onClose, blinkingUnitIds }) {
   const [viewTarget, setViewTarget] = useState("floor"); // "floor" | "zone-<id>" | "rack-<id>" | "shelf-<id>"
   const [rotStep, setRotStep] = useState(0); // 0=default, 1=90°, 2=180°, 3=270°
   const [zoomLevel, setZoomLevel] = useState(1);
@@ -674,7 +674,7 @@ function IsometricView({ units, layout, panels, onClose }) {
   });
 
   // Draw an isometric box (proper corner-based projection)
-  function IsoBox({ gx, gy, w, d, zOff, h, color, label, isFragile }) {
+  function IsoBox({ gx, gy, w, d, zOff, h, color, label, isFragile, isBlink }) {
     // Compute the 4 corners of the base rectangle using toIso for correct projection
     const p0 = toIso(gx, gy);           // back corner (top in screen)
     const p1 = toIso(gx + w, gy);       // right corner
@@ -716,6 +716,13 @@ function IsometricView({ units, layout, panels, onClose }) {
         <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${leftPoints})`, background: color, filter: "brightness(0.7)" }} />
         <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${rightPoints})`, background: color, filter: "brightness(0.85)" }} />
         <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${topPoints})`, background: color }} />
+        {isBlink && (
+          <>
+            <div className="wh-3d-blink-overlay" style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${leftPoints})` }} />
+            <div className="wh-3d-blink-overlay" style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${rightPoints})` }} />
+            <div className="wh-3d-blink-overlay" style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${topPoints})` }} />
+          </>
+        )}
         {label && (
           <div style={{ position: "absolute", left: cx - 30, top: cy - 8, width: 60, textAlign: "center", fontSize: 9, fontWeight: 700, color: "#1e293b", pointerEvents: "none", textShadow: "0 0 3px rgba(255,255,255,0.9)" }}>
             {label}
@@ -917,6 +924,7 @@ function IsometricView({ units, layout, panels, onClose }) {
                   color={u.bgColor || kindColor(u.kind, u.id)}
                   label={u.kind}
                   isFragile={u.fragile}
+                  isBlink={blinkingUnitIds?.has(u.id)}
                 />
               ))}
             </div>
@@ -3677,6 +3685,7 @@ const personList = site?.personList || [];
           layout={layout}
           panels={panels}
           onClose={() => setIsoViewOpen(false)}
+          blinkingUnitIds={blinkingUnitIds}
         />
       )}
 
@@ -7403,6 +7412,13 @@ const personList = site?.personList || [];
                                 <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${leftPts})`, background: color, filter: "brightness(0.7)", opacity: isDrag3D ? 0.3 : 1 }} />
                                 <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${rightPts})`, background: color, filter: "brightness(0.85)", opacity: isDrag3D ? 0.3 : 1 }} />
                                 <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${topPts})`, background: color, opacity: isDrag3D ? 0.3 : 1 }} />
+                                {blinkingUnitIds.has(u.id) && !isDrag3D && (
+                                  <>
+                                    <div className="wh-3d-blink-overlay" style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${leftPts})` }} />
+                                    <div className="wh-3d-blink-overlay" style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${rightPts})` }} />
+                                    <div className="wh-3d-blink-overlay" style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${topPts})` }} />
+                                  </>
+                                )}
                                 {!isDrag3D && <div style={{ position: "absolute", left: cx-30, top: cy-8, width: 60, textAlign: "center", fontSize: 9, fontWeight: 700, color: "#1e293b", pointerEvents: "none", textShadow: "0 0 3px rgba(255,255,255,0.9)" }}>{u.name || u.kind}</div>}
                                 {u.fragile && !isDrag3D && <div style={{ position: "absolute", left: cx-6, top: cy-14, fontSize: 11, pointerEvents: "none" }}>⚠</div>}
                                 {/* 透明ドラッグ/クリック領域（ボックス全体） */}
