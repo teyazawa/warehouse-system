@@ -1584,6 +1584,9 @@ const [zoneDetailDrag, setZoneDetailDrag] = useState(null);
 const [zoneDetail3D, setZoneDetail3D] = useState(false);
 const [zoneDetailRotStep, setZoneDetailRotStep] = useState(0);
 const [zoneDetailZoom, setZoneDetailZoom] = useState(1);
+const [zoneDetailPan, setZoneDetailPan] = useState({ x: 0, y: 0 });
+const zoneDetailPanRef = useRef(null); // { startX, startY, basePan }
+const zoneDetail3DContainerRef = useRef(null);
 
 function openZoneDetailModal(zone) {
   setZoneDetailZone(zone);
@@ -1591,6 +1594,7 @@ function openZoneDetailModal(zone) {
   setZoneDetail3D(false);
   setZoneDetailRotStep(0);
   setZoneDetailZoom(1);
+  setZoneDetailPan({ x: 0, y: 0 });
   setZoneDetailOpen(true);
 }
 function closeZoneDetailModal() {
@@ -1599,6 +1603,46 @@ function closeZoneDetailModal() {
   setZoneDetailDrag(null);
   setZoneDetail3D(false);
 }
+
+// Reset zone detail pan on rotation change
+useEffect(() => { setZoneDetailPan({ x: 0, y: 0 }); }, [zoneDetailRotStep]);
+
+// Zone detail 3D: wheel zoom (cursor-stable, no modifier key)
+useEffect(() => {
+  const el = zoneDetail3DContainerRef.current;
+  if (!el) return;
+  const handleWheel = (e) => {
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.1 : 0.9;
+    setZoneDetailZoom((prevZoom) => {
+      const nextZoom = Math.min(3, Math.max(0.3, prevZoom * factor));
+      const r = el.getBoundingClientRect();
+      const cx = e.clientX - r.left;
+      const cy = e.clientY - r.top;
+      setZoneDetailPan((prevPan) => {
+        const wx = (cx - prevPan.x) / prevZoom;
+        const wy = (cy - prevPan.y) / prevZoom;
+        return { x: cx - wx * nextZoom, y: cy - wy * nextZoom };
+      });
+      return nextZoom;
+    });
+  };
+  el.addEventListener("wheel", handleWheel, { passive: false });
+  return () => el.removeEventListener("wheel", handleWheel);
+}, [zoneDetail3D, zoneDetailOpen]);
+
+// Zone detail 3D: mouse drag to pan
+useEffect(() => {
+  const onMove = (e) => {
+    const d = zoneDetailPanRef.current;
+    if (!d) return;
+    setZoneDetailPan({ x: d.basePan.x + (e.clientX - d.startX), y: d.basePan.y + (e.clientY - d.startY) });
+  };
+  const onUp = () => { zoneDetailPanRef.current = null; };
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", onUp);
+  return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+}, []);
 
 // 担当者管理モーダル
 const [personModalOpen, setPersonModalOpen] = useState(false);
@@ -7413,16 +7457,16 @@ const personList = site?.personList || [];
                 return (
                   <div className="px-5 py-4 flex justify-center">
                     <div
-                      style={{ overflow: "auto", maxWidth: "85vw", maxHeight: "60vh" }}
-                      onWheel={(e) => {
-                        if (e.ctrlKey || e.metaKey) {
-                          e.preventDefault();
-                          setZoneDetailZoom((v) => Math.min(3, Math.max(0.3, v + (e.deltaY < 0 ? 0.1 : -0.1))));
+                      ref={zoneDetail3DContainerRef}
+                      style={{ overflow: "hidden", maxWidth: "85vw", maxHeight: "60vh", cursor: zoneDetailPanRef.current ? "grabbing" : "grab" }}
+                      onMouseDown={(e) => {
+                        if (e.button === 0 && !zoneDetailDrag) {
+                          zoneDetailPanRef.current = { startX: e.clientX, startY: e.clientY, basePan: { ...zoneDetailPan } };
                         }
                       }}
                     >
-                      <div style={{ position: "relative", width: svgW * zm, height: svgH * zm, margin: "0 auto" }}>
-                        <div style={{ transform: `scale(${zm})`, transformOrigin: "top left", position: "relative", width: svgW, height: svgH }}>
+                      <div style={{ position: "relative", width: "100%", height: "60vh" }}>
+                        <div style={{ transform: `translate(${zoneDetailPan.x}px, ${zoneDetailPan.y}px) scale(${zm})`, transformOrigin: "0 0", position: "relative", width: svgW, height: svgH }}>
                           {/* Floor tiles */}
                           {Array.from({ length: effRows }, (_, gy) =>
                             Array.from({ length: effCols }, (_, gx) => {
