@@ -424,184 +424,100 @@ function SectionTitle({ children, right }) {
 }
 
 // ─── CSS 2.5D アイソメトリックビュー ───
-function IsometricView({ units, layout, panels, onClose, blinkingUnitIds }) {
-  const [viewTarget, setViewTarget] = useState("floor"); // "floor" | "zone-<id>" | "rack-<id>" | "shelf-<id>"
-  const [rotStep, setRotStep] = useState(0); // 0=default, 1=90°, 2=180°, 3=270°
-  const [zoomLevel, setZoomLevel] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const panDragRef = useRef(null); // { startX, startY, basePan }
-  const isoContainerRef = useRef(null);
+// === Shared 3D Isometric Utilities & Component ===
 
-  const fx = layout.floor.x || 0;
-  const fy = layout.floor.y || 0;
-  const cellMW = layout.floor.cell_m_w || 1.2;
-  const cellMD = layout.floor.cell_m_d || 1.0;
-
-  // Compute footprint in cells (same logic as WarehouseView.unitFootprintCells)
-  function footprint(u) {
-    if (u.w_cells != null && u.h_cells != null) {
-      const fw = Math.max(1, u.w_cells); const fd = Math.max(1, u.h_cells);
-      return u.rot ? { w: fd, h: fw } : { w: fw, h: fd };
-    }
-    const fw = Math.max(1, Math.ceil(u.w_m / cellMW));
-    const fd = Math.max(1, Math.ceil(u.d_m / cellMD));
-    return u.rot ? { w: fd, h: fw } : { w: fw, h: fd };
-  }
-
-  // Real-world size in fractional cell units (for 3D rendering with actual dimensions)
-  function realFootprint(u) {
-    const fw = Math.max(0.2, (u.w_m || cellMW) / cellMW);
-    const fd = Math.max(0.2, (u.d_m || cellMD) / cellMD);
-    return u.rot ? { w: fd, h: fw } : { w: fw, h: fd };
-  }
-
-  // Convert a panel to a unit-like object for 3D rendering
-  function panelAsUnit(p) {
-    return {
-      id: p.id,
-      kind: "配電盤",
-      name: p.name || "配電盤",
-      w_m: p.w_m || (p.w || 2) * cellMW,
-      d_m: p.d_m || (p.h || 2) * cellMD,
-      h_m: p.h_m || 1.8,
-      rot: false,
-      bgColor: p.bgColor || "#fef3c7",
-      fragile: false,
-      loc: p.loc?.kind === "shelf"
-        ? { kind: "shelf", shelfId: p.loc.shelfId, x: p.loc.x, y: p.loc.y }
-        : { kind: "floor", x: p.x, y: p.y },
-    };
-  }
-
-  // Determine visible area & items based on viewTarget
-  let viewCols, viewRows, viewLabel, viewItems, viewRacks, viewZones, viewBgColor;
-  if (viewTarget === "floor") {
-    viewCols = layout.floor.cols;
-    viewRows = layout.floor.rows;
-    viewLabel = "床全体";
-    viewBgColor = layout.floor.floorBgColor || "#ffffff";
-    viewItems = units.filter((u) => u.loc?.kind === "floor").map((u) => {
-      const fp = realFootprint(u);
-      return { ...u, gx: (u.loc.x || 0) - fx, gy: (u.loc.y || 0) - fy, fw: fp.w, fh: fp.h };
-    });
-    // Add floor panels
-    for (const p of (panels || [])) {
-      if (p.loc?.kind === "shelf") continue;
-      const pu = panelAsUnit(p);
-      const fp = realFootprint(pu);
-      viewItems.push({ ...pu, gx: (p.x || 0) - fx, gy: (p.y || 0) - fy, fw: fp.w, fh: fp.h });
-    }
-    viewRacks = layout.racks.map((r) => ({ ...r, gx: r.x - fx, gy: r.y - fy }));
-    viewZones = layout.zones.filter((z) => !z.loc || z.loc.kind === "floor").map((z) => ({ ...z, gx: z.x - fx, gy: z.y - fy }));
-  } else if (viewTarget.startsWith("zone-")) {
-    const zoneId = viewTarget.slice(5);
-    const zone = layout.zones.find((z) => z.id === zoneId);
-    if (zone) {
-      viewCols = zone.w; viewRows = zone.h;
-      viewLabel = zone.name;
-      viewBgColor = zone.bgColor || "#d1fae5";
-      if (zone.loc?.kind === "shelf") {
-        // Zone is on a shelf - show shelf units within the zone area
-        const shelfId = zone.loc.shelfId;
-        const zx = zone.loc.x || 0, zy = zone.loc.y || 0;
-        viewItems = units.filter((u) => u.loc?.kind === "shelf" && u.loc.shelfId === shelfId).map((u) => {
-          const fp = realFootprint(u);
-          return { ...u, gx: (u.loc.x || 0) - zx, gy: (u.loc.y || 0) - zy, fw: fp.w, fh: fp.h };
-        }).filter((u) => u.gx >= 0 && u.gy >= 0 && u.gx < zone.w && u.gy < zone.h);
-        // Add shelf panels within zone
-        for (const p of (panels || [])) {
-          if (p.loc?.kind !== "shelf" || p.loc.shelfId !== shelfId) continue;
-          const pgx = (p.loc.x || 0) - zx, pgy = (p.loc.y || 0) - zy;
-          if (pgx < 0 || pgy < 0 || pgx >= zone.w || pgy >= zone.h) continue;
-          const pu = panelAsUnit(p);
-          const fp = realFootprint(pu);
-          viewItems.push({ ...pu, gx: pgx, gy: pgy, fw: fp.w, fh: fp.h });
-        }
-      } else {
-        // Zone is on the floor - show floor units within the zone area
-        viewItems = units.filter((u) => u.loc?.kind === "floor").map((u) => {
-          const fp = realFootprint(u);
-          return { ...u, gx: (u.loc.x||0) - zone.x, gy: (u.loc.y||0) - zone.y, fw: fp.w, fh: fp.h };
-        }).filter((u) => u.gx >= 0 && u.gy >= 0 && u.gx < zone.w && u.gy < zone.h);
-        // Add floor panels within zone
-        for (const p of (panels || [])) {
-          if (p.loc?.kind === "shelf") continue;
-          const pgx = (p.x || 0) - zone.x, pgy = (p.y || 0) - zone.y;
-          if (pgx < 0 || pgy < 0 || pgx >= zone.w || pgy >= zone.h) continue;
-          const pu = panelAsUnit(p);
-          const fp = realFootprint(pu);
-          viewItems.push({ ...pu, gx: pgx, gy: pgy, fw: fp.w, fh: fp.h });
-        }
-      }
-      viewRacks = []; viewZones = [];
-    } else { viewCols = 1; viewRows = 1; viewLabel = "?"; viewItems = []; viewRacks = []; viewZones = []; }
-  } else if (viewTarget.startsWith("rack-")) {
-    const rackId = viewTarget.slice(5);
-    const rack = layout.racks.find((r) => r.id === rackId);
-    if (rack) {
-      viewCols = rack.w; viewRows = rack.h;
-      viewLabel = rack.name;
-      viewBgColor = rack.bgColor || "#f1f5f9";
-      const rackUnits = units.filter((u) => u.loc?.kind === "rack" && u.loc.rackId === rackId);
-      viewItems = rackUnits.map((u) => {
-        const slot = u.loc.slot || 0;
-        const rCols = rack.cols || 1;
-        const col = slot % rCols;
-        const row = Math.floor(slot / rCols);
-        const slotW = Math.floor(rack.w / rCols);
-        const slotH = Math.floor(rack.h / (rack.rows || 1));
-        return { ...u, gx: col * slotW, gy: row * slotH, fw: slotW, fh: slotH };
-      });
-      viewRacks = []; viewZones = [];
-    } else { viewCols = 1; viewRows = 1; viewLabel = "?"; viewItems = []; viewRacks = []; viewZones = []; }
-  } else if (viewTarget.startsWith("shelf-")) {
-    const shelfId = viewTarget.slice(6);
-    const shelf = (layout.shelves || []).find((s) => s.id === shelfId);
-    if (shelf) {
-      viewCols = shelf.w; viewRows = shelf.h;
-      viewLabel = shelf.name || "棚";
-      viewBgColor = shelf.bgColor || "#f0fdfa";
-      const shelfUnits = units.filter((u) => u.loc?.kind === "shelf" && u.loc.shelfId === shelfId);
-      viewItems = shelfUnits.map((u) => {
-        const fp = realFootprint(u);
-        return { ...u, gx: u.loc.x || 0, gy: u.loc.y || 0, fw: fp.w, fh: fp.h };
-      });
-      // Add shelf panels
-      for (const p of (panels || [])) {
-        if (p.loc?.kind !== "shelf" || p.loc.shelfId !== shelfId) continue;
-        const pu = panelAsUnit(p);
-        const fp = realFootprint(pu);
-        viewItems.push({ ...pu, gx: p.loc.x || 0, gy: p.loc.y || 0, fw: fp.w, fh: fp.h });
-      }
-      viewRacks = [];
-      viewZones = layout.zones.filter((z) => z.loc?.kind === "shelf" && z.loc.shelfId === shelfId).map((z) => ({ ...z, gx: z.loc.x || 0, gy: z.loc.y || 0 }));
-    } else { viewCols = 1; viewRows = 1; viewLabel = "?"; viewItems = []; viewRacks = []; viewZones = []; }
-  } else {
-    viewCols = layout.floor.cols; viewRows = layout.floor.rows;
-    viewLabel = "床全体"; viewItems = []; viewRacks = []; viewZones = [];
-  }
-
-  // Apply rotation to a single point (for stacking grouping)
-  function rotateGxGy(gx, gy) {
-    const step = rotStep % 4;
-    if (step === 0) return { rx: gx, ry: gy };
-    if (step === 1) return { rx: viewRows - 1 - gy, ry: gx }; // 90° CW
-    if (step === 2) return { rx: viewCols - 1 - gx, ry: viewRows - 1 - gy }; // 180°
-    return { rx: gy, ry: viewCols - 1 - gx }; // 270° CW
-  }
-
-  // Rotate a rectangle: correctly computes the new top-left anchor + swapped dimensions
-  function rotateRect(gx, gy, w, h) {
-    const step = rotStep % 4;
-    if (step === 0) return { rx: gx, ry: gy, rw: w, rh: h };
-    if (step === 1) return { rx: viewRows - gy - h, ry: gx, rw: h, rh: w };
-    if (step === 2) return { rx: viewCols - gx - w, ry: viewRows - gy - h, rw: w, rh: h };
+// Isometric math helper (used by Iso3DView and inline drag calculations)
+function getIsoMath(viewCols, viewRows, rotStep) {
+  const effCols = (rotStep % 2 === 0) ? viewCols : viewRows;
+  const effRows = (rotStep % 2 === 0) ? viewRows : viewCols;
+  const baseTile = Math.max(16, Math.min(50, Math.floor(600 / Math.max(effCols, effRows))));
+  const tileW = baseTile, tileH = baseTile / 2;
+  const heightScale = baseTile * 0.6;
+  const toIso = (gx, gy) => ({ sx: (gx - gy) * (tileW / 2), sy: (gx + gy) * (tileH / 2) });
+  const rotateGxGy = (gx, gy) => {
+    const s = rotStep % 4;
+    if (s === 0) return { rx: gx, ry: gy };
+    if (s === 1) return { rx: viewRows - 1 - gy, ry: gx };
+    if (s === 2) return { rx: viewCols - 1 - gx, ry: viewRows - 1 - gy };
+    return { rx: gy, ry: viewCols - 1 - gx };
+  };
+  const rotateRect = (gx, gy, w, h) => {
+    const s = rotStep % 4;
+    if (s === 0) return { rx: gx, ry: gy, rw: w, rh: h };
+    if (s === 1) return { rx: viewRows - gy - h, ry: gx, rw: h, rh: w };
+    if (s === 2) return { rx: viewCols - gx - w, ry: viewRows - gy - h, rw: w, rh: h };
     return { rx: gy, ry: viewCols - gx - w, rw: h, rh: w };
-  }
-  const effectiveCols = (rotStep % 2 === 0) ? viewCols : viewRows;
-  const effectiveRows = (rotStep % 2 === 0) ? viewRows : viewCols;
+  };
+  const invRotDelta = (drx, dry) => {
+    const s = rotStep % 4;
+    if (s === 0) return { dgx: drx, dgy: dry };
+    if (s === 1) return { dgx: dry, dgy: -drx };
+    if (s === 2) return { dgx: -drx, dgy: -dry };
+    return { dgx: -dry, dgy: drx };
+  };
+  return { effCols, effRows, tileW, tileH, heightScale, toIso, rotateGxGy, rotateRect, invRotDelta };
+}
 
-  // Group stacks by position (after rotation)
+const isoBoxColors = ["#60a5fa","#34d399","#fbbf24","#f87171","#a78bfa","#fb923c","#38bdf8","#4ade80","#facc15","#f472b6"];
+function isoKindColor(kind, id) {
+  if (kind === "配電盤") return "#fbbf24";
+  if (kind === "パレット") return "#60a5fa";
+  if (kind === "カゴ") return "#34d399";
+  let h = 0; for (let i = 0; i < (id||"").length; i++) h = ((h << 5) - h + id.charCodeAt(i)) | 0;
+  return isoBoxColors[((h % isoBoxColors.length) + isoBoxColors.length) % isoBoxColors.length];
+}
+
+// Shared 3D isometric renderer with built-in pan/zoom
+function Iso3DView({
+  viewCols, viewRows, viewBgColor,
+  viewItems, viewRacks = [], viewZones = [],
+  rotStep, zoom, onZoomChange,
+  blinkingUnitIds,
+  maxHeight = "65vh",
+  onUnitMouseDown, onUnitDoubleClick,
+  draggingId, hasDragMoved,
+  ghostBox, // { gx, gy, fw, fh, h, ok } in rotated coords (optional)
+}) {
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const panDragRef = useRef(null);
+  const containerRef = useRef(null);
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
+
+  const iso = getIsoMath(viewCols, viewRows, rotStep);
+  const { effCols, effRows, tileW, tileH, heightScale, toIso, rotateGxGy, rotateRect } = iso;
+
+  // Reset pan when rotation or view changes
+  useEffect(() => { setPan({ x: 0, y: 0 }); }, [rotStep, viewCols, viewRows]);
+
+  // Wheel zoom (cursor-stable, no modifier key)
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const handleWheel = (e) => {
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.1 : 0.9;
+      const prev = zoomRef.current;
+      const next = Math.min(3, Math.max(0.3, prev * factor));
+      const r = el.getBoundingClientRect();
+      const cx = e.clientX - r.left, cy = e.clientY - r.top;
+      setPan((p) => ({ x: cx - ((cx - p.x) / prev) * next, y: cy - ((cy - p.y) / prev) * next }));
+      onZoomChange(next);
+    };
+    el.addEventListener("wheel", handleWheel, { passive: false });
+    return () => el.removeEventListener("wheel", handleWheel);
+  }, [onZoomChange]);
+
+  // Mouse drag to pan
+  useEffect(() => {
+    const onMove = (e) => { const d = panDragRef.current; if (!d) return; setPan({ x: d.bp.x + (e.clientX - d.sx), y: d.bp.y + (e.clientY - d.sy) }); };
+    const onUp = () => { panDragRef.current = null; };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+  }, []);
+
+  // Stack grouping
   const stacks = {};
   for (const u of viewItems) {
     const { rx, ry } = rotateGxGy(u.gx, u.gy);
@@ -611,375 +527,267 @@ function IsometricView({ units, layout, panels, onClose, blinkingUnitIds }) {
   }
   for (const k of Object.keys(stacks)) stacks[k].sort((a, b) => (a.stackZ || 0) - (b.stackZ || 0));
 
-  // Isometric settings - scale based on view size
-  const baseTile = Math.max(16, Math.min(50, Math.floor(600 / Math.max(effectiveCols, effectiveRows))));
-  const tileW = baseTile;
-  const tileH = baseTile / 2;
-  const heightScale = baseTile * 0.6;
-
-  // Convert grid to isometric screen
-  const toIso = (gx, gy) => ({
-    sx: (gx - gy) * (tileW / 2),
-    sy: (gx + gy) * (tileH / 2),
-  });
-
   // Canvas bounds
-  const allCorners = [
-    toIso(0, 0), toIso(effectiveCols, 0), toIso(0, effectiveRows), toIso(effectiveCols, effectiveRows),
-  ];
+  const allCorners = [toIso(0, 0), toIso(effCols, 0), toIso(0, effRows), toIso(effCols, effRows)];
   const maxStackH = viewItems.reduce((m, u) => Math.max(m, (u.stackZ || 0) + (u.h_m || 1)), 0);
   const minSx = Math.min(...allCorners.map((c) => c.sx)) - 60;
   const maxSx = Math.max(...allCorners.map((c) => c.sx)) + 60;
   const minSy = Math.min(...allCorners.map((c) => c.sy)) - Math.max(200, maxStackH * heightScale + 80);
   const maxSy = Math.max(...allCorners.map((c) => c.sy)) + 60;
-  const svgW = maxSx - minSx;
-  const svgH = maxSy - minSy;
-  const offX = -minSx;
-  const offY = -minSy;
+  const svgW = maxSx - minSx, svgH = maxSy - minSy;
+  const offX = -minSx, offY = -minSy;
 
-  const boxColors = [
-    "#60a5fa", "#34d399", "#fbbf24", "#f87171", "#a78bfa",
-    "#fb923c", "#38bdf8", "#4ade80", "#facc15", "#f472b6",
-  ];
-
-  // Stable hash from string → consistent color index regardless of sort order
-  function stableColorIndex(id) {
-    let h = 0;
-    for (let i = 0; i < id.length; i++) h = ((h << 5) - h + id.charCodeAt(i)) | 0;
-    return ((h % boxColors.length) + boxColors.length) % boxColors.length;
-  }
-
-  // Kind-specific colors (fallback uses stable hash of item id)
-  function kindColor(kind, id) {
-    if (kind === "配電盤") return "#fbbf24";
-    if (kind === "パレット") return "#60a5fa";
-    if (kind === "カゴ") return "#34d399";
-    return boxColors[stableColorIndex(id || "")];
-  }
-
-  // Render order: back to front
+  // Render items (sorted back→front)
   const renderItems = [];
-  for (const [key, stack] of Object.entries(stacks)) {
+  for (const [, stack] of Object.entries(stacks)) {
     for (const u of stack) {
-      const fw_orig = u.fw || 1;
-      const fh_orig = u.fh || 1;
       const isPanel = u.kind === "配電盤";
-      // Use rotateRect to get the correct bounding box anchor + swapped dimensions
-      const { rx: renderGx, ry: renderGy, rw: fw, rh: fh } = rotateRect(u.gx, u.gy, fw_orig, fh_orig);
-      renderItems.push({ u, gx: renderGx, gy: renderGy, fw, fh, zOff: isPanel ? 0 : (u.stackZ || 0), h: u.h_m || 1 });
+      const { rx: gx, ry: gy, rw: fw, rh: fh } = rotateRect(u.gx, u.gy, u.fw || 1, u.fh || 1);
+      renderItems.push({ u, gx, gy, fw, fh, zOff: isPanel ? 0 : (u.stackZ || 0), h: u.h_m || 1 });
     }
   }
-  renderItems.sort((a, b) => {
-    const depthA = a.gx + a.gy;
-    const depthB = b.gx + b.gy;
-    if (depthA !== depthB) return depthA - depthB;
-    return a.zOff - b.zOff;
-  });
+  renderItems.sort((a, b) => { const da = a.gx + a.gy, db = b.gx + b.gy; return da !== db ? da - db : a.zOff - b.zOff; });
 
-  // Draw an isometric box (proper corner-based projection)
-  function IsoBox({ gx, gy, w, d, zOff, h, color, label, isFragile, isBlink }) {
-    // Compute the 4 corners of the base rectangle using toIso for correct projection
-    const p0 = toIso(gx, gy);           // back corner (top in screen)
-    const p1 = toIso(gx + w, gy);       // right corner
-    const p2 = toIso(gx + w, gy + d);   // front corner (bottom in screen)
-    const p3 = toIso(gx, gy + d);       // left corner
+  // Rotated racks/zones
+  const rotatedRacks = viewRacks.map((r) => { const { rx, ry, rw, rh } = rotateRect(r.gx, r.gy, r.w, r.h); return { ...r, gx: rx, gy: ry, w: rw, h: rh }; });
+  const rotatedZones = viewZones.map((z) => { const { rx, ry, rw, rh } = rotateRect(z.gx, z.gy, z.w, z.h); return { ...z, gx: rx, gy: ry, w: rw, h: rh }; });
 
-    const lift = zOff * heightScale;
-    const bH = h * heightScale;
+  // IsoBox helper
+  const ox = (p) => p.sx + offX;
+  const oy = (p, up) => p.sy + offY - up;
 
-    // Screen coordinates with offset
-    const ox = (p) => p.sx + offX;
-    const oy = (p, up) => p.sy + offY - up;
-
-    // Top face (at height lift + bH)
-    const topH = lift + bH;
-    const topPoints = [
-      `${ox(p0)}px ${oy(p0, topH)}px`, `${ox(p1)}px ${oy(p1, topH)}px`,
-      `${ox(p2)}px ${oy(p2, topH)}px`, `${ox(p3)}px ${oy(p3, topH)}px`,
-    ].join(", ");
-
-    // Left face: p3-top → p2-top → p2-bottom → p3-bottom
-    const leftPoints = [
-      `${ox(p3)}px ${oy(p3, topH)}px`, `${ox(p2)}px ${oy(p2, topH)}px`,
-      `${ox(p2)}px ${oy(p2, lift)}px`, `${ox(p3)}px ${oy(p3, lift)}px`,
-    ].join(", ");
-
-    // Right face: p2-top → p1-top → p1-bottom → p2-bottom
-    const rightPoints = [
-      `${ox(p2)}px ${oy(p2, topH)}px`, `${ox(p1)}px ${oy(p1, topH)}px`,
-      `${ox(p1)}px ${oy(p1, lift)}px`, `${ox(p2)}px ${oy(p2, lift)}px`,
-    ].join(", ");
-
-    // Label position: center of top face
-    const cx = (ox(p0) + ox(p1) + ox(p2) + ox(p3)) / 4;
-    const cy = (oy(p0, topH) + oy(p1, topH) + oy(p2, topH) + oy(p3, topH)) / 4;
-
+  function renderIsoBox(gx, gy, fw, fh, zOff, h, color, label, isFragile, isBlink, opacity) {
+    const p0 = toIso(gx, gy), p1 = toIso(gx + fw, gy), p2 = toIso(gx + fw, gy + fh), p3 = toIso(gx, gy + fh);
+    const lift = zOff * heightScale, bH = h * heightScale, topH = lift + bH;
+    const topPts = [`${ox(p0)}px ${oy(p0,topH)}px`,`${ox(p1)}px ${oy(p1,topH)}px`,`${ox(p2)}px ${oy(p2,topH)}px`,`${ox(p3)}px ${oy(p3,topH)}px`].join(", ");
+    const leftPts = [`${ox(p3)}px ${oy(p3,topH)}px`,`${ox(p2)}px ${oy(p2,topH)}px`,`${ox(p2)}px ${oy(p2,lift)}px`,`${ox(p3)}px ${oy(p3,lift)}px`].join(", ");
+    const rightPts = [`${ox(p2)}px ${oy(p2,topH)}px`,`${ox(p1)}px ${oy(p1,topH)}px`,`${ox(p1)}px ${oy(p1,lift)}px`,`${ox(p2)}px ${oy(p2,lift)}px`].join(", ");
+    const cx = (ox(p0)+ox(p1)+ox(p2)+ox(p3))/4, cy = (oy(p0,topH)+oy(p1,topH)+oy(p2,topH)+oy(p3,topH))/4;
+    const op = opacity != null ? opacity : 1;
     return (
-      <g>
-        <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${leftPoints})`, background: color, filter: "brightness(0.7)" }} />
-        <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${rightPoints})`, background: color, filter: "brightness(0.85)" }} />
-        <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${topPoints})`, background: color }} />
-        {isBlink && (
+      <>
+        <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${leftPts})`, background: color, filter: "brightness(0.7)", opacity: op }} />
+        <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${rightPts})`, background: color, filter: "brightness(0.85)", opacity: op }} />
+        <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${topPts})`, background: color, opacity: op }} />
+        {isBlink && op > 0.5 && (
           <>
-            <div className="wh-3d-blink-overlay" style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${leftPoints})` }} />
-            <div className="wh-3d-blink-overlay" style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${rightPoints})` }} />
-            <div className="wh-3d-blink-overlay" style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${topPoints})` }} />
+            <div className="wh-3d-blink-overlay" style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${leftPts})` }} />
+            <div className="wh-3d-blink-overlay" style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${rightPts})` }} />
+            <div className="wh-3d-blink-overlay" style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${topPts})` }} />
           </>
         )}
-        {label && (
-          <div style={{ position: "absolute", left: cx - 30, top: cy - 8, width: 60, textAlign: "center", fontSize: 9, fontWeight: 700, color: "#1e293b", pointerEvents: "none", textShadow: "0 0 3px rgba(255,255,255,0.9)" }}>
-            {label}
-          </div>
-        )}
-        {isFragile && (
-          <div style={{ position: "absolute", left: cx - 6, top: cy - 14, fontSize: 11, pointerEvents: "none" }}>⚠</div>
-        )}
-      </g>
+        {label && op > 0.5 && <div style={{ position: "absolute", left: cx-30, top: cy-8, width: 60, textAlign: "center", fontSize: 9, fontWeight: 700, color: "#1e293b", pointerEvents: "none", textShadow: "0 0 3px rgba(255,255,255,0.9)" }}>{label}</div>}
+        {isFragile && op > 0.5 && <div style={{ position: "absolute", left: cx-6, top: cy-14, fontSize: 11, pointerEvents: "none" }}>⚠</div>}
+      </>
     );
   }
 
-  // Rotate racks/zones grid coords using rotateRect for correct anchor
-  const rotatedRacks = viewRacks.map((r) => {
-    const { rx, ry, rw, rh } = rotateRect(r.gx, r.gy, r.w, r.h);
-    return { ...r, gx: rx, gy: ry, w: rw, h: rh };
-  });
-  const rotatedZones = viewZones.map((z) => {
-    const { rx, ry, rw, rh } = rotateRect(z.gx, z.gy, z.w, z.h);
-    return { ...z, gx: rx, gy: ry, w: rw, h: rh };
-  });
-
-  const rotLabels = ["0°", "90°", "180°", "270°"];
-
-  // Reset pan when view target or rotation changes
-  useEffect(() => { setPan({ x: 0, y: 0 }); }, [viewTarget, rotStep]);
-
-  // Wheel zoom (no modifier key required, cursor-stable)
-  useEffect(() => {
-    const el = isoContainerRef.current;
-    if (!el) return;
-    const handleWheel = (e) => {
-      e.preventDefault();
-      const factor = e.deltaY < 0 ? 1.1 : 0.9;
-      setZoomLevel((prevZoom) => {
-        const nextZoom = Math.min(3, Math.max(0.3, prevZoom * factor));
-        const r = el.getBoundingClientRect();
-        const cx = e.clientX - r.left;
-        const cy = e.clientY - r.top;
-        setPan((prevPan) => {
-          const wx = (cx - prevPan.x) / prevZoom;
-          const wy = (cy - prevPan.y) / prevZoom;
-          return { x: cx - wx * nextZoom, y: cy - wy * nextZoom };
-        });
-        return nextZoom;
-      });
+  // Hit area bounds for a rendered box
+  function boxBounds(gx, gy, fw, fh, zOff, h) {
+    const p0 = toIso(gx, gy), p1 = toIso(gx+fw, gy), p2 = toIso(gx+fw, gy+fh), p3 = toIso(gx, gy+fh);
+    const topH = (zOff + h) * heightScale;
+    const lift = zOff * heightScale;
+    return {
+      x: Math.min(ox(p0),ox(p1),ox(p2),ox(p3)),
+      y: Math.min(oy(p0,topH),oy(p1,topH),oy(p2,topH),oy(p3,topH)),
+      w: Math.max(ox(p0),ox(p1),ox(p2),ox(p3)) - Math.min(ox(p0),ox(p1),ox(p2),ox(p3)),
+      h: Math.max(oy(p0,lift),oy(p1,lift),oy(p2,lift),oy(p3,lift)) - Math.min(oy(p0,topH),oy(p1,topH),oy(p2,topH),oy(p3,topH)),
     };
-    el.addEventListener("wheel", handleWheel, { passive: false });
-    return () => el.removeEventListener("wheel", handleWheel);
-  }, []);
+  }
 
-  // Mouse drag to pan
-  useEffect(() => {
-    const onMove = (e) => {
-      const d = panDragRef.current;
-      if (!d) return;
-      setPan({ x: d.basePan.x + (e.clientX - d.startX), y: d.basePan.y + (e.clientY - d.startY) });
-    };
-    const onUp = () => { panDragRef.current = null; };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
-  }, []);
+  const stackCount = Object.values(stacks).filter((s) => s.length > 1).length;
 
   return (
-    <div style={{
-      position: "fixed", inset: 0, zIndex: 50000,
-      background: "rgba(0,0,0,0.5)",
-      display: "flex", alignItems: "center", justifyContent: "center",
-    }} onClick={onClose}>
-      <div
-        style={{
-          background: "#fff",
-          borderRadius: 24,
-          boxShadow: "0 25px 60px rgba(0,0,0,0.3)",
-          padding: 24,
-          maxWidth: "90vw",
-          maxHeight: "90vh",
-          overflow: "auto",
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
+    <div
+      ref={containerRef}
+      style={{ overflow: "hidden", maxWidth: "85vw", maxHeight: maxHeight, cursor: panDragRef.current ? "grabbing" : "grab" }}
+      onMouseDown={(e) => { if (e.button === 0) panDragRef.current = { sx: e.clientX, sy: e.clientY, bp: { ...pan } }; }}
+    >
+      <div style={{ position: "relative", width: "100%", height: maxHeight }}>
+        <div style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: "0 0", position: "relative", width: svgW, height: svgH }}>
+          {/* Floor tiles */}
+          {Array.from({ length: effRows }, (_, gy) =>
+            Array.from({ length: effCols }, (_, gx) => {
+              const { sx, sy } = toIso(gx, gy);
+              const x = sx + offX, y = sy + offY;
+              const points = [`${x}px ${y}px`,`${x+tileW/2}px ${y+tileH/2}px`,`${x}px ${y+tileH}px`,`${x-tileW/2}px ${y+tileH/2}px`].join(", ");
+              const bgRgb = hexToRgb(viewBgColor || "#ffffff");
+              return <div key={`f-${gx}-${gy}`} style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${points})`, background: (gx+gy)%2===0 ? `rgba(${bgRgb.map(c=>Math.max(0,c-20)).join(",")},0.9)` : `rgba(${bgRgb.join(",")},0.9)` }} />;
+            })
+          )}
+
+          {/* Zone outlines */}
+          {rotatedZones.map((zone) => {
+            const zp0 = toIso(zone.gx, zone.gy), zp1 = toIso(zone.gx+zone.w, zone.gy), zp2 = toIso(zone.gx+zone.w, zone.gy+zone.h), zp3 = toIso(zone.gx, zone.gy+zone.h);
+            const pts = [`${zp0.sx+offX}px ${zp0.sy+offY}px`,`${zp1.sx+offX}px ${zp1.sy+offY}px`,`${zp2.sx+offX}px ${zp2.sy+offY}px`,`${zp3.sx+offX}px ${zp3.sy+offY}px`].join(", ");
+            const zcx = (zp0.sx+zp1.sx+zp2.sx+zp3.sx)/4+offX, zcy = (zp0.sy+zp1.sy+zp2.sy+zp3.sy)/4+offY;
+            const bgRgb = hexToRgb(zone.bgColor||"#d1fae5");
+            return (
+              <div key={`zone-${zone.id}`}>
+                <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${pts})`, background: `rgba(${bgRgb.join(",")},${(zone.bgOpacity??90)/100})` }} />
+                <div style={{ position: "absolute", left: zcx-30, top: zcy-6, width: 60, textAlign: "center", fontSize: 9, fontWeight: 700, color: zone.labelColor||"#334155", textShadow: "0 0 3px #fff" }}>{zone.name}</div>
+              </div>
+            );
+          })}
+
+          {/* Rack outlines */}
+          {rotatedRacks.map((rack) => {
+            const rp0 = toIso(rack.gx, rack.gy), rp1 = toIso(rack.gx+rack.w, rack.gy), rp2 = toIso(rack.gx+rack.w, rack.gy+rack.h), rp3 = toIso(rack.gx, rack.gy+rack.h);
+            const rH = 2*heightScale;
+            const rox = (p) => p.sx+offX, roy = (p, up) => p.sy+offY-up;
+            const topPts = [`${rox(rp0)}px ${roy(rp0,rH)}px`,`${rox(rp1)}px ${roy(rp1,rH)}px`,`${rox(rp2)}px ${roy(rp2,rH)}px`,`${rox(rp3)}px ${roy(rp3,rH)}px`].join(", ");
+            const leftPts = [`${rox(rp3)}px ${roy(rp3,rH)}px`,`${rox(rp2)}px ${roy(rp2,rH)}px`,`${rox(rp2)}px ${roy(rp2,0)}px`,`${rox(rp3)}px ${roy(rp3,0)}px`].join(", ");
+            const rightPts = [`${rox(rp2)}px ${roy(rp2,rH)}px`,`${rox(rp1)}px ${roy(rp1,rH)}px`,`${rox(rp1)}px ${roy(rp1,0)}px`,`${rox(rp2)}px ${roy(rp2,0)}px`].join(", ");
+            const rcx = (rox(rp0)+rox(rp1)+rox(rp2)+rox(rp3))/4, rcy = (roy(rp0,rH)+roy(rp1,rH)+roy(rp2,rH)+roy(rp3,rH))/4;
+            const col = rack.bgColor||"#94a3b8";
+            return (
+              <div key={`rack-${rack.id}`}>
+                <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${leftPts})`, background: col, filter: "brightness(0.7)" }} />
+                <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${rightPts})`, background: col, filter: "brightness(0.85)" }} />
+                <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${topPts})`, background: col }} />
+                <div style={{ position: "absolute", left: rcx-20, top: rcy-8, width: 40, textAlign: "center", fontSize: 8, fontWeight: 700, color: rack.labelColor||"#334155", textShadow: "0 0 3px #fff" }}>{rack.name||"棚"}</div>
+              </div>
+            );
+          })}
+
+          {/* Isometric boxes for units */}
+          {renderItems.map(({ u, gx, gy, fw, fh, zOff, h }, idx) => {
+            const isDrag = u.id === draggingId && hasDragMoved;
+            const color = u.bgColor || isoKindColor(u.kind, u.id);
+            const bb = (onUnitMouseDown || onUnitDoubleClick) ? boxBounds(gx, gy, fw, fh, zOff, h) : null;
+            return (
+              <g key={u.id+"-"+idx}>
+                {renderIsoBox(gx, gy, fw, fh, zOff, h, color, u.name || u.kind, u.fragile, blinkingUnitIds?.has(u.id), isDrag ? 0.3 : 1)}
+                {bb && (
+                  <div
+                    style={{ position: "absolute", left: bb.x, top: bb.y, width: bb.w, height: Math.max(bb.h, 16), cursor: "grab", zIndex: 20 }}
+                    onMouseDown={onUnitMouseDown ? (e) => { e.stopPropagation(); onUnitMouseDown(e, u); } : undefined}
+                    onDoubleClick={onUnitDoubleClick ? (e) => { e.stopPropagation(); onUnitDoubleClick(e, u); } : undefined}
+                    title={u.name || u.kind}
+                  />
+                )}
+              </g>
+            );
+          })}
+
+          {/* Ghost overlay */}
+          {ghostBox && renderIsoBox(ghostBox.gx, ghostBox.gy, ghostBox.fw, ghostBox.fh, 0, ghostBox.h, ghostBox.ok ? "rgba(59,130,246,0.35)" : "rgba(239,68,68,0.35)", null, false, false, 1)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// === Popup IsometricView (uses Iso3DView) ===
+
+function IsometricView({ units, layout, panels, onClose, blinkingUnitIds }) {
+  const [viewTarget, setViewTarget] = useState("floor");
+  const [rotStep, setRotStep] = useState(0);
+  const [zoomLevel, setZoomLevel] = useState(1);
+
+  const fx = layout.floor.x || 0;
+  const fy = layout.floor.y || 0;
+  const cellMW = layout.floor.cell_m_w || 1.2;
+  const cellMD = layout.floor.cell_m_d || 1.0;
+
+  function realFootprint(u) {
+    const fw = Math.max(0.2, (u.w_m || cellMW) / cellMW);
+    const fd = Math.max(0.2, (u.d_m || cellMD) / cellMD);
+    return u.rot ? { w: fd, h: fw } : { w: fw, h: fd };
+  }
+  function panelAsUnit(p) {
+    return {
+      id: p.id, kind: "配電盤", name: p.name || "配電盤",
+      w_m: p.w_m || (p.w || 2) * cellMW, d_m: p.d_m || (p.h || 2) * cellMD, h_m: p.h_m || 1.8,
+      rot: false, bgColor: p.bgColor || "#fef3c7", fragile: false,
+      loc: p.loc?.kind === "shelf" ? { kind: "shelf", shelfId: p.loc.shelfId, x: p.loc.x, y: p.loc.y } : { kind: "floor", x: p.x, y: p.y },
+    };
+  }
+
+  // Determine visible area & items based on viewTarget
+  let viewCols, viewRows, viewLabel, viewItems, viewRacks, viewZones, viewBgColor;
+  if (viewTarget === "floor") {
+    viewCols = layout.floor.cols; viewRows = layout.floor.rows; viewLabel = "床全体";
+    viewBgColor = layout.floor.floorBgColor || "#ffffff";
+    viewItems = units.filter((u) => u.loc?.kind === "floor").map((u) => { const fp = realFootprint(u); return { ...u, gx: (u.loc.x||0)-fx, gy: (u.loc.y||0)-fy, fw: fp.w, fh: fp.h }; });
+    for (const p of (panels||[])) { if (p.loc?.kind==="shelf") continue; const pu=panelAsUnit(p); const fp=realFootprint(pu); viewItems.push({...pu, gx:(p.x||0)-fx, gy:(p.y||0)-fy, fw:fp.w, fh:fp.h}); }
+    viewRacks = layout.racks.map((r) => ({ ...r, gx: r.x-fx, gy: r.y-fy }));
+    viewZones = layout.zones.filter((z) => !z.loc||z.loc.kind==="floor").map((z) => ({ ...z, gx: z.x-fx, gy: z.y-fy }));
+  } else if (viewTarget.startsWith("zone-")) {
+    const zoneId = viewTarget.slice(5); const zone = layout.zones.find((z) => z.id === zoneId);
+    if (zone) {
+      viewCols = zone.w; viewRows = zone.h; viewLabel = zone.name; viewBgColor = zone.bgColor || "#d1fae5";
+      if (zone.loc?.kind === "shelf") {
+        const shelfId = zone.loc.shelfId, zx = zone.loc.x||0, zy = zone.loc.y||0;
+        viewItems = units.filter((u) => u.loc?.kind==="shelf"&&u.loc.shelfId===shelfId).map((u) => { const fp=realFootprint(u); return {...u, gx:(u.loc.x||0)-zx, gy:(u.loc.y||0)-zy, fw:fp.w, fh:fp.h}; }).filter((u) => u.gx>=0&&u.gy>=0&&u.gx<zone.w&&u.gy<zone.h);
+        for (const p of (panels||[])) { if (p.loc?.kind!=="shelf"||p.loc.shelfId!==shelfId) continue; const pgx=(p.loc.x||0)-zx,pgy=(p.loc.y||0)-zy; if(pgx<0||pgy<0||pgx>=zone.w||pgy>=zone.h) continue; const pu=panelAsUnit(p); const fp=realFootprint(pu); viewItems.push({...pu,gx:pgx,gy:pgy,fw:fp.w,fh:fp.h}); }
+      } else {
+        viewItems = units.filter((u) => u.loc?.kind==="floor").map((u) => { const fp=realFootprint(u); return {...u, gx:(u.loc.x||0)-zone.x, gy:(u.loc.y||0)-zone.y, fw:fp.w, fh:fp.h}; }).filter((u) => u.gx>=0&&u.gy>=0&&u.gx<zone.w&&u.gy<zone.h);
+        for (const p of (panels||[])) { if(p.loc?.kind==="shelf") continue; const pgx=(p.x||0)-zone.x,pgy=(p.y||0)-zone.y; if(pgx<0||pgy<0||pgx>=zone.w||pgy>=zone.h) continue; const pu=panelAsUnit(p); const fp=realFootprint(pu); viewItems.push({...pu,gx:pgx,gy:pgy,fw:fp.w,fh:fp.h}); }
+      }
+      viewRacks = []; viewZones = [];
+    } else { viewCols=1;viewRows=1;viewLabel="?";viewItems=[];viewRacks=[];viewZones=[]; }
+  } else if (viewTarget.startsWith("rack-")) {
+    const rackId = viewTarget.slice(5); const rack = layout.racks.find((r) => r.id === rackId);
+    if (rack) {
+      viewCols=rack.w; viewRows=rack.h; viewLabel=rack.name; viewBgColor=rack.bgColor||"#f1f5f9";
+      viewItems = units.filter((u) => u.loc?.kind==="rack"&&u.loc.rackId===rackId).map((u) => { const slot=u.loc.slot||0; const rCols=rack.cols||1; const col=slot%rCols; const row=Math.floor(slot/rCols); return {...u, gx:col*Math.floor(rack.w/rCols), gy:row*Math.floor(rack.h/(rack.rows||1)), fw:Math.floor(rack.w/rCols), fh:Math.floor(rack.h/(rack.rows||1))}; });
+      viewRacks=[]; viewZones=[];
+    } else { viewCols=1;viewRows=1;viewLabel="?";viewItems=[];viewRacks=[];viewZones=[]; }
+  } else if (viewTarget.startsWith("shelf-")) {
+    const shelfId = viewTarget.slice(6); const shelf = (layout.shelves||[]).find((s) => s.id === shelfId);
+    if (shelf) {
+      viewCols=shelf.w; viewRows=shelf.h; viewLabel=shelf.name||"棚"; viewBgColor=shelf.bgColor||"#f0fdfa";
+      viewItems = units.filter((u) => u.loc?.kind==="shelf"&&u.loc.shelfId===shelfId).map((u) => { const fp=realFootprint(u); return {...u, gx:u.loc.x||0, gy:u.loc.y||0, fw:fp.w, fh:fp.h}; });
+      for (const p of (panels||[])) { if(p.loc?.kind!=="shelf"||p.loc.shelfId!==shelfId) continue; const pu=panelAsUnit(p); const fp=realFootprint(pu); viewItems.push({...pu,gx:p.loc.x||0,gy:p.loc.y||0,fw:fp.w,fh:fp.h}); }
+      viewRacks=[];
+      viewZones = layout.zones.filter((z) => z.loc?.kind==="shelf"&&z.loc.shelfId===shelfId).map((z) => ({...z, gx:z.loc.x||0, gy:z.loc.y||0}));
+    } else { viewCols=1;viewRows=1;viewLabel="?";viewItems=[];viewRacks=[];viewZones=[]; }
+  } else { viewCols=layout.floor.cols; viewRows=layout.floor.rows; viewLabel="床全体"; viewItems=[]; viewRacks=[]; viewZones=[]; }
+
+  const { effCols, effRows } = getIsoMath(viewCols, viewRows, rotStep);
+  const rotLabels = ["0°", "90°", "180°", "270°"];
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 50000, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onClose}>
+      <div style={{ background: "#fff", borderRadius: 24, boxShadow: "0 25px 60px rgba(0,0,0,0.3)", padding: 24, maxWidth: "90vw", maxHeight: "90vh", overflow: "auto" }} onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
           <div style={{ fontSize: 18, fontWeight: 800, color: "#1e293b" }}>3D ビュー</div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <select
-              value={viewTarget}
-              onChange={(e) => setViewTarget(e.target.value)}
-              style={{ borderRadius: 12, border: "2px solid #e2e8f0", padding: "8px 12px", fontSize: 13, fontWeight: 600, background: "#f8fafc", cursor: "pointer" }}
-            >
+            <select value={viewTarget} onChange={(e) => setViewTarget(e.target.value)} style={{ borderRadius: 12, border: "2px solid #e2e8f0", padding: "8px 12px", fontSize: 13, fontWeight: 600, background: "#f8fafc", cursor: "pointer" }}>
               <option value="floor">床全体</option>
-              {layout.zones.map((z) => (
-                <option key={z.id} value={`zone-${z.id}`}>区画: {z.name}</option>
-              ))}
-              {layout.racks.map((r) => (
-                <option key={r.id} value={`rack-${r.id}`}>ラック: {r.name}</option>
-              ))}
-              {(layout.shelves || []).map((s) => (
-                <option key={s.id} value={`shelf-${s.id}`}>棚: {s.name || s.id}</option>
-              ))}
+              {layout.zones.map((z) => <option key={z.id} value={`zone-${z.id}`}>区画: {z.name}</option>)}
+              {layout.racks.map((r) => <option key={r.id} value={`rack-${r.id}`}>ラック: {r.name}</option>)}
+              {(layout.shelves||[]).map((s) => <option key={s.id} value={`shelf-${s.id}`}>棚: {s.name||s.id}</option>)}
             </select>
-            <button type="button" onClick={onClose} style={{ background: "#f1f5f9", border: "none", borderRadius: 12, padding: "8px 16px", fontWeight: 700, cursor: "pointer" }}>
-              閉じる
-            </button>
+            <button type="button" onClick={onClose} style={{ background: "#f1f5f9", border: "none", borderRadius: 12, padding: "8px 16px", fontWeight: 700, cursor: "pointer" }}>閉じる</button>
           </div>
         </div>
-
-        {/* Controls: rotation + zoom */}
+        {/* Controls */}
         <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 12, flexWrap: "wrap" }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#64748b" }}>
-            {viewLabel} ({effectiveCols} x {effectiveRows} セル)
-          </div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#64748b" }}>{viewLabel} ({effCols} x {effRows} セル)</div>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <button
-              type="button"
-              onClick={() => setRotStep((r) => (r + 3) % 4)}
-              style={{ background: "#f1f5f9", border: "2px solid #e2e8f0", borderRadius: 10, padding: "4px 10px", fontSize: 16, cursor: "pointer", fontWeight: 700 }}
-              title="左に90°回転"
-            >↶</button>
+            <button type="button" onClick={() => setRotStep((r) => (r+3)%4)} style={{ background: "#f1f5f9", border: "2px solid #e2e8f0", borderRadius: 10, padding: "4px 10px", fontSize: 16, cursor: "pointer", fontWeight: 700 }} title="左に90°回転">↶</button>
             <span style={{ fontSize: 12, fontWeight: 600, color: "#64748b", minWidth: 30, textAlign: "center" }}>{rotLabels[rotStep]}</span>
-            <button
-              type="button"
-              onClick={() => setRotStep((r) => (r + 1) % 4)}
-              style={{ background: "#f1f5f9", border: "2px solid #e2e8f0", borderRadius: 10, padding: "4px 10px", fontSize: 16, cursor: "pointer", fontWeight: 700 }}
-              title="右に90°回転"
-            >↷</button>
+            <button type="button" onClick={() => setRotStep((r) => (r+1)%4)} style={{ background: "#f1f5f9", border: "2px solid #e2e8f0", borderRadius: 10, padding: "4px 10px", fontSize: 16, cursor: "pointer", fontWeight: 700 }} title="右に90°回転">↷</button>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <button
-              type="button"
-              onClick={() => setZoomLevel((z) => Math.max(0.3, z - 0.2))}
-              style={{ background: "#f1f5f9", border: "2px solid #e2e8f0", borderRadius: 10, padding: "4px 10px", fontSize: 16, cursor: "pointer", fontWeight: 700 }}
-            >−</button>
-            <span style={{ fontSize: 12, fontWeight: 600, color: "#64748b", minWidth: 40, textAlign: "center" }}>{Math.round(zoomLevel * 100)}%</span>
-            <button
-              type="button"
-              onClick={() => setZoomLevel((z) => Math.min(3, z + 0.2))}
-              style={{ background: "#f1f5f9", border: "2px solid #e2e8f0", borderRadius: 10, padding: "4px 10px", fontSize: 16, cursor: "pointer", fontWeight: 700 }}
-            >+</button>
+            <button type="button" onClick={() => setZoomLevel((z) => Math.max(0.3,z-0.2))} style={{ background: "#f1f5f9", border: "2px solid #e2e8f0", borderRadius: 10, padding: "4px 10px", fontSize: 16, cursor: "pointer", fontWeight: 700 }}>−</button>
+            <span style={{ fontSize: 12, fontWeight: 600, color: "#64748b", minWidth: 40, textAlign: "center" }}>{Math.round(zoomLevel*100)}%</span>
+            <button type="button" onClick={() => setZoomLevel((z) => Math.min(3,z+0.2))} style={{ background: "#f1f5f9", border: "2px solid #e2e8f0", borderRadius: 10, padding: "4px 10px", fontSize: 16, cursor: "pointer", fontWeight: 700 }}>+</button>
           </div>
         </div>
-
-        {/* Floor grid + boxes */}
-        <div
-          ref={isoContainerRef}
-          style={{ overflow: "hidden", maxWidth: "85vw", maxHeight: "65vh", cursor: panDragRef.current ? "grabbing" : "grab" }}
-          onMouseDown={(e) => {
-            if (e.button === 0) {
-              panDragRef.current = { startX: e.clientX, startY: e.clientY, basePan: { ...pan } };
-            }
-          }}
-        >
-          <div style={{ position: "relative", width: "100%", height: "65vh" }}>
-            <div style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoomLevel})`, transformOrigin: "0 0", position: "relative", width: svgW, height: svgH }}>
-              {/* Floor tiles */}
-              {Array.from({ length: effectiveRows }, (_, gy) =>
-                Array.from({ length: effectiveCols }, (_, gx) => {
-                  const { sx, sy } = toIso(gx, gy);
-                  const x = sx + offX;
-                  const y = sy + offY;
-                  const points = [
-                    `${x}px ${y}px`, `${x + tileW / 2}px ${y + tileH / 2}px`,
-                    `${x}px ${y + tileH}px`, `${x - tileW / 2}px ${y + tileH / 2}px`,
-                  ].join(", ");
-                  const baseBg = viewBgColor || "#ffffff";
-                  const baseBgRgb = hexToRgb(baseBg);
-                  const tileLight = `rgba(${baseBgRgb.join(",")}, 0.9)`;
-                  const tileDark = `rgba(${baseBgRgb.map((c) => Math.max(0, c - 20)).join(",")}, 0.9)`;
-                  return (
-                    <div key={`f-${gx}-${gy}`} style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${points})`, background: (gx + gy) % 2 === 0 ? tileDark : tileLight }} />
-                  );
-                })
-              )}
-
-              {/* Zone outlines */}
-              {rotatedZones.map((zone) => {
-                const zp0 = toIso(zone.gx, zone.gy);
-                const zp1 = toIso(zone.gx + zone.w, zone.gy);
-                const zp2 = toIso(zone.gx + zone.w, zone.gy + zone.h);
-                const zp3 = toIso(zone.gx, zone.gy + zone.h);
-                const pts = [
-                  `${zp0.sx + offX}px ${zp0.sy + offY}px`, `${zp1.sx + offX}px ${zp1.sy + offY}px`,
-                  `${zp2.sx + offX}px ${zp2.sy + offY}px`, `${zp3.sx + offX}px ${zp3.sy + offY}px`,
-                ].join(", ");
-                const zcx = (zp0.sx + zp1.sx + zp2.sx + zp3.sx) / 4 + offX;
-                const zcy = (zp0.sy + zp1.sy + zp2.sy + zp3.sy) / 4 + offY;
-                const zoneBgRgb = hexToRgb(zone.bgColor || "#d1fae5");
-                const zoneOpacity = (zone.bgOpacity ?? 90) / 100;
-                return (
-                  <div key={`zone-${zone.id}`}>
-                    <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${pts})`, background: `rgba(${zoneBgRgb.join(",")}, ${zoneOpacity})` }} />
-                    <div style={{ position: "absolute", left: zcx - 30, top: zcy - 6, width: 60, textAlign: "center", fontSize: 9, fontWeight: 700, color: zone.labelColor || "#334155", textShadow: "0 0 3px #fff" }}>{zone.name}</div>
-                  </div>
-                );
-              })}
-
-              {/* Rack outlines */}
-              {rotatedRacks.map((rack) => {
-                const rp0 = toIso(rack.gx, rack.gy);
-                const rp1 = toIso(rack.gx + rack.w, rack.gy);
-                const rp2 = toIso(rack.gx + rack.w, rack.gy + rack.h);
-                const rp3 = toIso(rack.gx, rack.gy + rack.h);
-                const rH = 2 * heightScale;
-                const rox = (p) => p.sx + offX;
-                const roy = (p, up) => p.sy + offY - up;
-                const topPts = [
-                  `${rox(rp0)}px ${roy(rp0, rH)}px`, `${rox(rp1)}px ${roy(rp1, rH)}px`,
-                  `${rox(rp2)}px ${roy(rp2, rH)}px`, `${rox(rp3)}px ${roy(rp3, rH)}px`,
-                ].join(", ");
-                const leftPts = [
-                  `${rox(rp3)}px ${roy(rp3, rH)}px`, `${rox(rp2)}px ${roy(rp2, rH)}px`,
-                  `${rox(rp2)}px ${roy(rp2, 0)}px`, `${rox(rp3)}px ${roy(rp3, 0)}px`,
-                ].join(", ");
-                const rightPts = [
-                  `${rox(rp2)}px ${roy(rp2, rH)}px`, `${rox(rp1)}px ${roy(rp1, rH)}px`,
-                  `${rox(rp1)}px ${roy(rp1, 0)}px`, `${rox(rp2)}px ${roy(rp2, 0)}px`,
-                ].join(", ");
-                const rcx = (rox(rp0) + rox(rp1) + rox(rp2) + rox(rp3)) / 4;
-                const rcy = (roy(rp0, rH) + roy(rp1, rH) + roy(rp2, rH) + roy(rp3, rH)) / 4;
-                const rackColor = rack.bgColor || "#94a3b8";
-                return (
-                  <div key={`rack-${rack.id}`}>
-                    <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${leftPts})`, background: rackColor, filter: "brightness(0.7)" }} />
-                    <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${rightPts})`, background: rackColor, filter: "brightness(0.85)" }} />
-                    <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${topPts})`, background: rackColor }} />
-                    <div style={{ position: "absolute", left: rcx - 20, top: rcy - 8, width: 40, textAlign: "center", fontSize: 8, fontWeight: 700, color: rack.labelColor || "#334155", textShadow: "0 0 3px #fff" }}>{rack.name || "棚"}</div>
-                  </div>
-                );
-              })}
-
-              {/* Isometric boxes for units */}
-              {renderItems.map(({ u, gx, gy, fw, fh, zOff, h }, idx) => (
-                <IsoBox
-                  key={u.id + "-" + idx}
-                  gx={gx} gy={gy}
-                  w={fw} d={fh}
-                  zOff={zOff} h={h}
-                  color={u.bgColor || kindColor(u.kind, u.id)}
-                  label={u.kind}
-                  isFragile={u.fragile}
-                  isBlink={blinkingUnitIds?.has(u.id)}
-                />
-              ))}
-            </div>
-          </div>
-        </div>
-
+        {/* 3D View */}
+        <Iso3DView
+          viewCols={viewCols} viewRows={viewRows} viewBgColor={viewBgColor}
+          viewItems={viewItems} viewRacks={viewRacks} viewZones={viewZones}
+          rotStep={rotStep} zoom={zoomLevel} onZoomChange={setZoomLevel}
+          blinkingUnitIds={blinkingUnitIds} maxHeight="65vh"
+        />
         {/* Legend */}
         <div style={{ marginTop: 16, display: "flex", flexWrap: "wrap", gap: 12, fontSize: 12, color: "#64748b", alignItems: "center" }}>
           <span>荷物: {viewItems.length}個</span>
-          <span>スタック: {Object.values(stacks).filter((s) => s.length > 1).length}箇所</span>
-          {rotatedRacks.length > 0 && <><span style={{ color: "#94a3b8" }}>■</span><span>ラック {rotatedRacks.length}</span></>}
-          {rotatedZones.length > 0 && <><span style={{ color: "#86efac" }}>■</span><span>区画 {rotatedZones.length}</span></>}
           <span style={{ color: "#94a3b8", fontSize: 11 }}>※ ドラッグでスクロール / ホイールで拡大縮小</span>
         </div>
       </div>
@@ -1584,9 +1392,6 @@ const [zoneDetailDrag, setZoneDetailDrag] = useState(null);
 const [zoneDetail3D, setZoneDetail3D] = useState(false);
 const [zoneDetailRotStep, setZoneDetailRotStep] = useState(0);
 const [zoneDetailZoom, setZoneDetailZoom] = useState(1);
-const [zoneDetailPan, setZoneDetailPan] = useState({ x: 0, y: 0 });
-const zoneDetailPanRef = useRef(null); // { startX, startY, basePan }
-const zoneDetail3DContainerRef = useRef(null);
 
 function openZoneDetailModal(zone) {
   setZoneDetailZone(zone);
@@ -1594,7 +1399,6 @@ function openZoneDetailModal(zone) {
   setZoneDetail3D(false);
   setZoneDetailRotStep(0);
   setZoneDetailZoom(1);
-  setZoneDetailPan({ x: 0, y: 0 });
   setZoneDetailOpen(true);
 }
 function closeZoneDetailModal() {
@@ -1603,46 +1407,6 @@ function closeZoneDetailModal() {
   setZoneDetailDrag(null);
   setZoneDetail3D(false);
 }
-
-// Reset zone detail pan on rotation change
-useEffect(() => { setZoneDetailPan({ x: 0, y: 0 }); }, [zoneDetailRotStep]);
-
-// Zone detail 3D: wheel zoom (cursor-stable, no modifier key)
-useEffect(() => {
-  const el = zoneDetail3DContainerRef.current;
-  if (!el) return;
-  const handleWheel = (e) => {
-    e.preventDefault();
-    const factor = e.deltaY < 0 ? 1.1 : 0.9;
-    setZoneDetailZoom((prevZoom) => {
-      const nextZoom = Math.min(3, Math.max(0.3, prevZoom * factor));
-      const r = el.getBoundingClientRect();
-      const cx = e.clientX - r.left;
-      const cy = e.clientY - r.top;
-      setZoneDetailPan((prevPan) => {
-        const wx = (cx - prevPan.x) / prevZoom;
-        const wy = (cy - prevPan.y) / prevZoom;
-        return { x: cx - wx * nextZoom, y: cy - wy * nextZoom };
-      });
-      return nextZoom;
-    });
-  };
-  el.addEventListener("wheel", handleWheel, { passive: false });
-  return () => el.removeEventListener("wheel", handleWheel);
-}, [zoneDetail3D, zoneDetailOpen]);
-
-// Zone detail 3D: mouse drag to pan
-useEffect(() => {
-  const onMove = (e) => {
-    const d = zoneDetailPanRef.current;
-    if (!d) return;
-    setZoneDetailPan({ x: d.basePan.x + (e.clientX - d.startX), y: d.basePan.y + (e.clientY - d.startY) });
-  };
-  const onUp = () => { zoneDetailPanRef.current = null; };
-  window.addEventListener("mousemove", onMove);
-  window.addEventListener("mouseup", onUp);
-  return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
-}, []);
 
 // 担当者管理モーダル
 const [personModalOpen, setPersonModalOpen] = useState(false);
@@ -7099,95 +6863,15 @@ const personList = site?.personList || [];
         const gridW = z.w * zoneCellPx;
         const gridH = z.h * zoneCellPx;
 
-        // === 3Dビュー用の計算 ===
-        const iso3d = (() => {
-          if (!zoneDetail3D) return null;
-
-          const rotStep = zoneDetailRotStep;
-          const viewCols = z.w, viewRows = z.h;
-
-          // viewItems with local coords and real footprint
-          const viewItems = zoneUnits.map((u) => ({ ...u, gx: u._localX, gy: u._localY, fw: u._realW, fh: u._realH }));
-
-          // Rotation helpers
-          const rotateGxGy = (gx, gy) => {
-            const s = rotStep % 4;
-            if (s === 0) return { rx: gx, ry: gy };
-            if (s === 1) return { rx: viewRows - 1 - gy, ry: gx };
-            if (s === 2) return { rx: viewCols - 1 - gx, ry: viewRows - 1 - gy };
-            return { rx: gy, ry: viewCols - 1 - gx };
-          };
-          const rotateRect = (gx, gy, w, h) => {
-            const s = rotStep % 4;
-            if (s === 0) return { rx: gx, ry: gy, rw: w, rh: h };
-            if (s === 1) return { rx: viewRows - gy - h, ry: gx, rw: h, rh: w };
-            if (s === 2) return { rx: viewCols - gx - w, ry: viewRows - gy - h, rw: w, rh: h };
-            return { rx: gy, ry: viewCols - gx - w, rw: h, rh: w };
-          };
-          // 逆回転（スクリーン差分→ローカル座標差分）
-          const invRotDelta = (drx, dry) => {
-            const s = rotStep % 4;
-            if (s === 0) return { dgx: drx, dgy: dry };
-            if (s === 1) return { dgx: dry, dgy: -drx };
-            if (s === 2) return { dgx: -drx, dgy: -dry };
-            return { dgx: -dry, dgy: drx };
-          };
-
-          const effCols = (rotStep % 2 === 0) ? viewCols : viewRows;
-          const effRows = (rotStep % 2 === 0) ? viewRows : viewCols;
-
-          // Group stacks
-          const stacks = {};
-          for (const u of viewItems) {
-            const { rx, ry } = rotateGxGy(u.gx, u.gy);
-            const key = `${rx},${ry}`;
-            if (!stacks[key]) stacks[key] = [];
-            stacks[key].push({ ...u, rx, ry });
-          }
-          for (const k of Object.keys(stacks)) stacks[k].sort((a, b) => (a.stackZ || 0) - (b.stackZ || 0));
-
-          // Tile sizing
-          const baseTile = Math.max(16, Math.min(50, Math.floor(600 / Math.max(effCols, effRows))));
-          const tileW = baseTile, tileH = baseTile / 2;
-          const heightScale = baseTile * 0.6;
-          const toIso = (gx, gy) => ({ sx: (gx - gy) * (tileW / 2), sy: (gx + gy) * (tileH / 2) });
-
-          // Canvas bounds
-          const allCorners = [toIso(0, 0), toIso(effCols, 0), toIso(0, effRows), toIso(effCols, effRows)];
-          const maxStackH = viewItems.reduce((m, u) => Math.max(m, (u.stackZ || 0) + (u.h_m || 1)), 0);
-          const minSx = Math.min(...allCorners.map((c) => c.sx)) - 60;
-          const maxSx = Math.max(...allCorners.map((c) => c.sx)) + 60;
-          const minSy = Math.min(...allCorners.map((c) => c.sy)) - Math.max(200, maxStackH * heightScale + 80);
-          const maxSy = Math.max(...allCorners.map((c) => c.sy)) + 60;
-          const svgW = maxSx - minSx;
-          const svgH = maxSy - minSy;
-          const offX = -minSx;
-          const offY = -minSy;
-
-          // Colors
-          const boxColors = ["#60a5fa","#34d399","#fbbf24","#f87171","#a78bfa","#fb923c","#38bdf8","#4ade80","#facc15","#f472b6"];
-          const stableColorIdx = (id) => { let h=0; for(let i=0;i<id.length;i++) h=((h<<5)-h+id.charCodeAt(i))|0; return ((h%boxColors.length)+boxColors.length)%boxColors.length; };
-          const kindCol = (kind, id) => kind==="配電盤"?"#fbbf24":kind==="パレット"?"#60a5fa":kind==="カゴ"?"#34d399":boxColors[stableColorIdx(id||"")];
-
-          // Render items
-          const renderItems = [];
-          for (const [, stack] of Object.entries(stacks)) {
-            for (const u of stack) {
-              const isPanel = u.kind === "配電盤";
-              const { rx: rgx, ry: rgy, rw: fw, rh: fh } = rotateRect(u.gx, u.gy, u.fw || 1, u.fh || 1);
-              renderItems.push({ u, gx: rgx, gy: rgy, fw, fh, zOff: isPanel ? 0 : (u.stackZ || 0), h: u.h_m || 1 });
-            }
-          }
-          renderItems.sort((a, b) => { const da=a.gx+a.gy, db=b.gx+b.gy; return da!==db ? da-db : a.zOff-b.zOff; });
-
-          return { effCols, effRows, tileW, tileH, heightScale, toIso, svgW, svgH, offX, offY, renderItems, kindCol, stacks, viewItems, rotateRect, invRotDelta };
-        })();
+        // === 3Dビュー用の計算（getIsoMathで統合） ===
+        const isoMath = zoneDetail3D ? getIsoMath(z.w, z.h, zoneDetailRotStep) : null;
+        const isoViewItems = zoneUnits.map((u) => ({ ...u, gx: u._localX, gy: u._localY, fw: u._realW, fh: u._realH }));
 
         // ドラッグ中の移動先ローカル座標を計算するヘルパー
         const SUB = 4; // 4分割サブグリッド（0.25セル刻み）
         const calcDragTarget = (d) => {
-          if (zoneDetail3D && iso3d) {
-            const { tileW, tileH, invRotDelta } = iso3d;
+          if (zoneDetail3D && isoMath) {
+            const { tileW, tileH, invRotDelta } = isoMath;
             const zm = zoneDetailZoom;
             const dsx = (d.pointerX - d.startX) / zm;
             const dsy = (d.pointerY - d.startY) / zm;
@@ -7438,108 +7122,29 @@ const personList = site?.personList || [];
                 </div>
               )}
 
-              {/* === 3Dアイソメトリックビュー === */}
-              {zoneDetail3D && iso3d && (() => {
-                const { effCols, effRows, tileW, tileH, heightScale, toIso, svgW, svgH, offX, offY, renderItems, kindCol, stacks, rotateRect } = iso3d;
-                const zm = zoneDetailZoom;
-                const bgRgb = hexToRgb(z.bgColor || "#d1fae5");
-
-                // 3Dゴースト用の回転座標計算
-                const isoGhost = (() => {
-                  if (!ghost || !hasDragMoved) return null;
+              {/* === 3Dアイソメトリックビュー（Iso3DView統合） === */}
+              {zoneDetail3D && isoMath && (() => {
+                // ゴースト計算
+                const isoGhost = (ghost && hasDragMoved) ? (() => {
                   const u = units.find((uu) => uu.id === ghost.unitId);
                   if (!u) return null;
                   const rfp = realFP(u);
-                  const { rx, ry, rw, rh } = rotateRect(ghost.x, ghost.y, rfp.w, rfp.h);
+                  const { rx, ry, rw, rh } = isoMath.rotateRect(ghost.x, ghost.y, rfp.w, rfp.h);
                   return { gx: rx, gy: ry, fw: rw, fh: rh, ok: ghost.ok, h: u.h_m || 1 };
-                })();
+                })() : null;
 
                 return (
                   <div className="px-5 py-4 flex justify-center">
-                    <div
-                      ref={zoneDetail3DContainerRef}
-                      style={{ overflow: "hidden", maxWidth: "85vw", maxHeight: "60vh", cursor: zoneDetailPanRef.current ? "grabbing" : "grab" }}
-                      onMouseDown={(e) => {
-                        if (e.button === 0 && !zoneDetailDrag) {
-                          zoneDetailPanRef.current = { startX: e.clientX, startY: e.clientY, basePan: { ...zoneDetailPan } };
-                        }
-                      }}
-                    >
-                      <div style={{ position: "relative", width: "100%", height: "60vh" }}>
-                        <div style={{ transform: `translate(${zoneDetailPan.x}px, ${zoneDetailPan.y}px) scale(${zm})`, transformOrigin: "0 0", position: "relative", width: svgW, height: svgH }}>
-                          {/* Floor tiles */}
-                          {Array.from({ length: effRows }, (_, gy) =>
-                            Array.from({ length: effCols }, (_, gx) => {
-                              const { sx, sy } = toIso(gx, gy);
-                              const x = sx + offX, y = sy + offY;
-                              const points = [`${x}px ${y}px`,`${x+tileW/2}px ${y+tileH/2}px`,`${x}px ${y+tileH}px`,`${x-tileW/2}px ${y+tileH/2}px`].join(", ");
-                              const tileLight = `rgba(${bgRgb.join(",")}, 0.9)`;
-                              const tileDark = `rgba(${bgRgb.map((c) => Math.max(0, c - 20)).join(",")}, 0.9)`;
-                              return <div key={`f-${gx}-${gy}`} style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${points})`, background: (gx+gy)%2===0 ? tileDark : tileLight }} />;
-                            })
-                          )}
-
-                          {/* Isometric boxes for units */}
-                          {renderItems.map(({ u, gx, gy, fw, fh, zOff, h }, idx) => {
-                            const isDrag3D = u.id === draggingId && hasDragMoved;
-                            const p0 = toIso(gx, gy), p1 = toIso(gx+fw, gy), p2 = toIso(gx+fw, gy+fh), p3 = toIso(gx, gy+fh);
-                            const lift = zOff * heightScale, bH = h * heightScale;
-                            const ox = (p) => p.sx + offX, oy = (p, up) => p.sy + offY - up;
-                            const topH = lift + bH;
-                            const topPts = [`${ox(p0)}px ${oy(p0,topH)}px`,`${ox(p1)}px ${oy(p1,topH)}px`,`${ox(p2)}px ${oy(p2,topH)}px`,`${ox(p3)}px ${oy(p3,topH)}px`].join(", ");
-                            const leftPts = [`${ox(p3)}px ${oy(p3,topH)}px`,`${ox(p2)}px ${oy(p2,topH)}px`,`${ox(p2)}px ${oy(p2,lift)}px`,`${ox(p3)}px ${oy(p3,lift)}px`].join(", ");
-                            const rightPts = [`${ox(p2)}px ${oy(p2,topH)}px`,`${ox(p1)}px ${oy(p1,topH)}px`,`${ox(p1)}px ${oy(p1,lift)}px`,`${ox(p2)}px ${oy(p2,lift)}px`].join(", ");
-                            const cx = (ox(p0)+ox(p1)+ox(p2)+ox(p3))/4, cy = (oy(p0,topH)+oy(p1,topH)+oy(p2,topH)+oy(p3,topH))/4;
-                            const color = u.bgColor || kindCol(u.kind, u.id);
-                            // クリック/ドラッグ領域
-                            const bx0 = Math.min(ox(p0),ox(p1),ox(p2),ox(p3)), bx1 = Math.max(ox(p0),ox(p1),ox(p2),ox(p3));
-                            const by0 = Math.min(oy(p0,topH),oy(p1,topH),oy(p2,topH),oy(p3,topH)), by1 = Math.max(oy(p0,lift),oy(p1,lift),oy(p2,lift),oy(p3,lift));
-                            return (
-                              <g key={u.id + "-" + idx}>
-                                <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${leftPts})`, background: color, filter: "brightness(0.7)", opacity: isDrag3D ? 0.3 : 1 }} />
-                                <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${rightPts})`, background: color, filter: "brightness(0.85)", opacity: isDrag3D ? 0.3 : 1 }} />
-                                <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${topPts})`, background: color, opacity: isDrag3D ? 0.3 : 1 }} />
-                                {blinkingUnitIds.has(u.id) && !isDrag3D && (
-                                  <>
-                                    <div className="wh-3d-blink-overlay" style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${leftPts})` }} />
-                                    <div className="wh-3d-blink-overlay" style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${rightPts})` }} />
-                                    <div className="wh-3d-blink-overlay" style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${topPts})` }} />
-                                  </>
-                                )}
-                                {!isDrag3D && <div style={{ position: "absolute", left: cx-30, top: cy-8, width: 60, textAlign: "center", fontSize: 9, fontWeight: 700, color: "#1e293b", pointerEvents: "none", textShadow: "0 0 3px rgba(255,255,255,0.9)" }}>{u.name || u.kind}</div>}
-                                {u.fragile && !isDrag3D && <div style={{ position: "absolute", left: cx-6, top: cy-14, fontSize: 11, pointerEvents: "none" }}>⚠</div>}
-                                {/* 透明ドラッグ/クリック領域（ボックス全体） */}
-                                <div
-                                  style={{ position: "absolute", left: bx0, top: by0, width: bx1-bx0, height: Math.max(by1-by0, 16), cursor: "grab", zIndex: 20 }}
-                                  onMouseDown={(e) => startDragUnit(e, u)}
-                                  onDoubleClick={(e) => { e.stopPropagation(); openDetailModal(u); }}
-                                  title={`${u.name} (ドラッグで移動 / ダブルクリックで詳細)`}
-                                />
-                              </g>
-                            );
-                          })}
-
-                          {/* 3Dゴーストプレビュー */}
-                          {isoGhost && (() => {
-                            const { gx, gy, fw: gfw, fh: gfh, ok, h: gh } = isoGhost;
-                            const gp0 = toIso(gx, gy), gp1 = toIso(gx+gfw, gy), gp2 = toIso(gx+gfw, gy+gfh), gp3 = toIso(gx, gy+gfh);
-                            const gbH = gh * heightScale;
-                            const gox = (p) => p.sx + offX, goy = (p, up) => p.sy + offY - up;
-                            const gTopPts = [`${gox(gp0)}px ${goy(gp0,gbH)}px`,`${gox(gp1)}px ${goy(gp1,gbH)}px`,`${gox(gp2)}px ${goy(gp2,gbH)}px`,`${gox(gp3)}px ${goy(gp3,gbH)}px`].join(", ");
-                            const gLeftPts = [`${gox(gp3)}px ${goy(gp3,gbH)}px`,`${gox(gp2)}px ${goy(gp2,gbH)}px`,`${gox(gp2)}px ${goy(gp2,0)}px`,`${gox(gp3)}px ${goy(gp3,0)}px`].join(", ");
-                            const gRightPts = [`${gox(gp2)}px ${goy(gp2,gbH)}px`,`${gox(gp1)}px ${goy(gp1,gbH)}px`,`${gox(gp1)}px ${goy(gp1,0)}px`,`${gox(gp2)}px ${goy(gp2,0)}px`].join(", ");
-                            const ghostColor = ok ? "rgba(59,130,246,0.35)" : "rgba(239,68,68,0.35)";
-                            return (
-                              <g>
-                                <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${gLeftPts})`, background: ghostColor, filter: "brightness(0.8)", pointerEvents: "none", zIndex: 30 }} />
-                                <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${gRightPts})`, background: ghostColor, filter: "brightness(0.9)", pointerEvents: "none", zIndex: 30 }} />
-                                <div style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${gTopPts})`, background: ghostColor, pointerEvents: "none", zIndex: 30 }} />
-                              </g>
-                            );
-                          })()}
-                        </div>
-                      </div>
-                    </div>
+                    <Iso3DView
+                      viewCols={z.w} viewRows={z.h} viewBgColor={z.bgColor || "#d1fae5"}
+                      viewItems={isoViewItems}
+                      rotStep={zoneDetailRotStep} zoom={zoneDetailZoom} onZoomChange={setZoneDetailZoom}
+                      blinkingUnitIds={blinkingUnitIds} maxHeight="60vh"
+                      onUnitMouseDown={(e, u) => startDragUnit(e, u)}
+                      onUnitDoubleClick={(e, u) => openDetailModal(u)}
+                      draggingId={draggingId} hasDragMoved={hasDragMoved}
+                      ghostBox={isoGhost}
+                    />
                   </div>
                 );
               })()}
@@ -7547,7 +7152,7 @@ const personList = site?.personList || [];
               {/* フッター情報 */}
               <div className="border-t px-5 py-3 text-xs text-gray-500 flex justify-between">
                 <span>ドラッグで移動 / ダブルクリックで詳細</span>
-                <span>{zoneUnits.length} 個の荷物{zoneDetail3D && iso3d ? ` / スタック ${Object.values(iso3d.stacks).filter((s) => s.length > 1).length} 箇所` : ""}</span>
+                <span>{zoneUnits.length} 個の荷物</span>
               </div>
             </div>
           </div>
