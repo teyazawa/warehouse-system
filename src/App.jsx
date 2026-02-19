@@ -428,6 +428,9 @@ function IsometricView({ units, layout, panels, onClose, blinkingUnitIds }) {
   const [viewTarget, setViewTarget] = useState("floor"); // "floor" | "zone-<id>" | "rack-<id>" | "shelf-<id>"
   const [rotStep, setRotStep] = useState(0); // 0=default, 1=90°, 2=180°, 3=270°
   const [zoomLevel, setZoomLevel] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const panDragRef = useRef(null); // { startX, startY, basePan }
+  const isoContainerRef = useRef(null);
 
   const fx = layout.floor.x || 0;
   const fy = layout.floor.y || 0;
@@ -747,6 +750,46 @@ function IsometricView({ units, layout, panels, onClose, blinkingUnitIds }) {
 
   const rotLabels = ["0°", "90°", "180°", "270°"];
 
+  // Reset pan when view target or rotation changes
+  useEffect(() => { setPan({ x: 0, y: 0 }); }, [viewTarget, rotStep]);
+
+  // Wheel zoom (no modifier key required, cursor-stable)
+  useEffect(() => {
+    const el = isoContainerRef.current;
+    if (!el) return;
+    const handleWheel = (e) => {
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.1 : 0.9;
+      setZoomLevel((prevZoom) => {
+        const nextZoom = Math.min(3, Math.max(0.3, prevZoom * factor));
+        const r = el.getBoundingClientRect();
+        const cx = e.clientX - r.left;
+        const cy = e.clientY - r.top;
+        setPan((prevPan) => {
+          const wx = (cx - prevPan.x) / prevZoom;
+          const wy = (cy - prevPan.y) / prevZoom;
+          return { x: cx - wx * nextZoom, y: cy - wy * nextZoom };
+        });
+        return nextZoom;
+      });
+    };
+    el.addEventListener("wheel", handleWheel, { passive: false });
+    return () => el.removeEventListener("wheel", handleWheel);
+  }, []);
+
+  // Mouse drag to pan
+  useEffect(() => {
+    const onMove = (e) => {
+      const d = panDragRef.current;
+      if (!d) return;
+      setPan({ x: d.basePan.x + (e.clientX - d.startX), y: d.basePan.y + (e.clientY - d.startY) });
+    };
+    const onUp = () => { panDragRef.current = null; };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+  }, []);
+
   return (
     <div style={{
       position: "fixed", inset: 0, zIndex: 50000,
@@ -828,16 +871,16 @@ function IsometricView({ units, layout, panels, onClose, blinkingUnitIds }) {
 
         {/* Floor grid + boxes */}
         <div
-          style={{ overflow: "auto", maxWidth: "85vw", maxHeight: "65vh" }}
-          onWheel={(e) => {
-            if (e.ctrlKey || e.metaKey) {
-              e.preventDefault();
-              setZoomLevel((z) => Math.min(3, Math.max(0.3, z + (e.deltaY < 0 ? 0.1 : -0.1))));
+          ref={isoContainerRef}
+          style={{ overflow: "hidden", maxWidth: "85vw", maxHeight: "65vh", cursor: panDragRef.current ? "grabbing" : "grab" }}
+          onMouseDown={(e) => {
+            if (e.button === 0) {
+              panDragRef.current = { startX: e.clientX, startY: e.clientY, basePan: { ...pan } };
             }
           }}
         >
-          <div style={{ position: "relative", width: svgW * zoomLevel, height: svgH * zoomLevel, margin: "0 auto" }}>
-            <div style={{ transform: `scale(${zoomLevel})`, transformOrigin: "top left", position: "relative", width: svgW, height: svgH }}>
+          <div style={{ position: "relative", width: "100%", height: "65vh" }}>
+            <div style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoomLevel})`, transformOrigin: "0 0", position: "relative", width: svgW, height: svgH }}>
               {/* Floor tiles */}
               {Array.from({ length: effectiveRows }, (_, gy) =>
                 Array.from({ length: effectiveCols }, (_, gx) => {
@@ -937,7 +980,7 @@ function IsometricView({ units, layout, panels, onClose, blinkingUnitIds }) {
           <span>スタック: {Object.values(stacks).filter((s) => s.length > 1).length}箇所</span>
           {rotatedRacks.length > 0 && <><span style={{ color: "#94a3b8" }}>■</span><span>ラック {rotatedRacks.length}</span></>}
           {rotatedZones.length > 0 && <><span style={{ color: "#86efac" }}>■</span><span>区画 {rotatedZones.length}</span></>}
-          <span style={{ color: "#94a3b8", fontSize: 11 }}>※ Ctrl+ホイールで拡大縮小</span>
+          <span style={{ color: "#94a3b8", fontSize: 11 }}>※ ドラッグでスクロール / ホイールで拡大縮小</span>
         </div>
       </div>
     </div>
