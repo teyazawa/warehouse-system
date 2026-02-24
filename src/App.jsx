@@ -3515,7 +3515,10 @@ const personList = site?.personList || [];
 
   // 出庫予定一覧（selectedDate と一致）
   const shippingSchedule = useMemo(() => {
-    const selDateStr = selectedDate.toISOString().slice(0, 10);
+    const y = selectedDate.getFullYear();
+    const m = String(selectedDate.getMonth() + 1).padStart(2, "0");
+    const d = String(selectedDate.getDate()).padStart(2, "0");
+    const selDateStr = `${y}-${m}-${d}`;
     return units
       .filter((u) => u.departureDate && u.departureDate.slice(0, 10) === selDateStr)
       .sort((a, b) => (a.departureDate || "").localeCompare(b.departureDate || ""));
@@ -3523,7 +3526,10 @@ const personList = site?.personList || [];
 
   // 入庫予定一覧（selectedDate と一致）
   const arrivalSchedule = useMemo(() => {
-    const selDateStr = selectedDate.toISOString().slice(0, 10);
+    const y = selectedDate.getFullYear();
+    const m = String(selectedDate.getMonth() + 1).padStart(2, "0");
+    const d = String(selectedDate.getDate()).padStart(2, "0");
+    const selDateStr = `${y}-${m}-${d}`;
     return units
       .filter((u) => u.arrivalDate && u.arrivalDate.slice(0, 10) === selDateStr)
       .sort((a, b) => (a.arrivalDate || "").localeCompare(b.arrivalDate || ""));
@@ -4014,12 +4020,14 @@ const personList = site?.personList || [];
                     <div className="font-medium flex items-center gap-1">
                       <span className="text-red-500">●</span> {u.name}
                     </div>
-                    <div className="mt-1 flex flex-wrap gap-1">
-                      <Badge>{u.client}</Badge>
-                      <Badge>数量 {u.qty}</Badge>
-                      {u.departureDate && u.departureDate.length > 10 && (
-                        <Badge>{u.departureDate.slice(11, 16)}</Badge>
-                      )}
+                    <div className="mt-1 text-xs text-gray-600 space-y-0.5">
+                      {u.client && <div>顧客: {u.client}</div>}
+                      <div className="flex gap-3">
+                        {u.qty && <span>数量: {u.qty}</span>}
+                        {u.departureDate && u.departureDate.length > 10 && (
+                          <span>時間: {u.departureDate.slice(11, 16)}</span>
+                        )}
+                      </div>
                     </div>
                     {u.personInCharge && (
                       <div className="mt-1 text-xs text-gray-500">担当: {u.personInCharge}</div>
@@ -4062,10 +4070,10 @@ const personList = site?.personList || [];
                     <div className="font-medium flex items-center gap-1">
                       <span className="text-blue-500">●</span> {u.name}
                     </div>
-                    <div className="mt-1 flex flex-wrap gap-1">
-                      {u.client && <Badge>{u.client}</Badge>}
+                    <div className="mt-1 text-xs text-gray-600 space-y-0.5">
+                      {u.client && <div>顧客: {u.client}</div>}
                       {u.arrivalDate && u.arrivalDate.length > 10 && (
-                        <Badge color="blue">{u.arrivalDate.slice(11, 16)}</Badge>
+                        <div>時間: {u.arrivalDate.slice(11, 16)}</div>
                       )}
                     </div>
                     {u.personInCharge && (
