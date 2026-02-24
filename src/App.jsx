@@ -4022,12 +4022,10 @@ const personList = site?.personList || [];
                     </div>
                     <div className="mt-1 text-xs text-gray-600 space-y-0.5">
                       {u.client && <div>顧客: {u.client}</div>}
-                      <div className="flex gap-3">
-                        {u.qty && <span>数量: {u.qty}</span>}
-                        {u.departureDate && u.departureDate.length > 10 && (
-                          <span>時間: {u.departureDate.slice(11, 16)}</span>
-                        )}
-                      </div>
+                      {u.qty && <div>数量: {u.qty}</div>}
+                      {u.departureDate && u.departureDate.length > 10 && (
+                        <div>時間: {u.departureDate.slice(11, 16)}</div>
+                      )}
                     </div>
                     {u.personInCharge && (
                       <div className="mt-1 text-xs text-gray-500">担当: {u.personInCharge}</div>
