@@ -576,7 +576,6 @@ function Iso3DView({
             <div className="wh-3d-blink-overlay" style={{ position: "absolute", left: 0, top: 0, width: svgW, height: svgH, clipPath: `polygon(${topPts})` }} />
           </>
         )}
-        {label && op > 0.5 && <div style={{ position: "absolute", left: cx-30, top: cy-8, width: 60, textAlign: "center", fontSize: 9, fontWeight: 700, color: "#1e293b", pointerEvents: "none", textShadow: "0 0 3px rgba(255,255,255,0.9)" }}>{label}</div>}
         {isFragile && op > 0.5 && <div style={{ position: "absolute", left: cx-6, top: cy-14, fontSize: 11, pointerEvents: "none" }}>⚠</div>}
       </>
     );
@@ -657,7 +656,7 @@ function Iso3DView({
             const bb = (onUnitMouseDown || onUnitDoubleClick) ? boxBounds(gx, gy, fw, fh, zOff, h) : null;
             return (
               <g key={u.id+"-"+idx}>
-                {renderIsoBox(gx, gy, fw, fh, zOff, h, color, u.name || u.kind, u.fragile, blinkingUnitIds?.has(u.id), isDrag ? 0.3 : 1)}
+                {renderIsoBox(gx, gy, fw, fh, zOff, h, color, null, u.fragile, blinkingUnitIds?.has(u.id), isDrag ? 0.3 : 1)}
                 {bb && (
                   <div
                     style={{ position: "absolute", left: bb.x, top: bb.y, width: bb.w, height: Math.max(bb.h, 16), cursor: "grab", zIndex: 20 }}
@@ -1360,7 +1359,7 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
   const [transferDest, setTransferDest] = useState("");
-  const [panelSections, setPanelSections] = useState({ size: false, appearance: false, detail: true });
+  const [panelSections, setPanelSections] = useState({ size: false, appearance: false, detail: true, editHistory: false });
 
   const unitsRef = useRef(units);
   useEffect(() => { unitsRef.current = units; }, [units]);
@@ -1432,24 +1431,62 @@ const personList = site?.personList || [];
   // Creation panel form
   const [template, setTemplate] = useState("パレット");
   const [form, setForm] = useState({
-  client: "取引先A",
+  personInCharge: "",
+  client: "",
+  department: "",
+  clientContact: "",
   name: "",
-  qty: "1",
+  notes: "",
+  arrivalDate: "",
+  departureDate: "",
   w: "1.2",
   d: "1.0",
   h: "1.6",
-  // ========== 新規フィールド ==========
-  sku: "",
-  barcode: "",
-  batch_number: "",
   weight_kg: "",
-  temperature_zone: "ambient",
-  fragile: false,
-  stackable: true,
-  max_stack_height: "3",
-  expires_at: "",
-  notes: "",
+  kintoneRecordId: "",
+  qty: "1",
 });
+  const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [listModalOpen, setListModalOpen] = useState(false);
+  const [listSearchKey, setListSearchKey] = useState("personInCharge"); // 検索キー
+  const [listSearchValue, setListSearchValue] = useState(""); // 検索値
+
+  // 全倉庫のユニット＋倉庫名を取得（リスト出力用）
+  const allWarehouseUnits = useMemo(() => {
+    const result = [];
+    for (const w of warehouses) {
+      let wUnits;
+      if (w.id === wh.id) {
+        wUnits = units;
+      } else {
+        try {
+          wUnits = JSON.parse(localStorage.getItem(`wh_demo_units_${w.id}_v1`)) || [];
+        } catch { wUnits = []; }
+      }
+      for (const u of wUnits) {
+        result.push({ ...u, _whName: w.name, _whId: w.id });
+      }
+    }
+    return result;
+  }, [warehouses, wh.id, units]);
+
+  // 検索キーごとのプルダウン候補（全倉庫横断）
+  const listSearchOptions = useMemo(() => {
+    const collect = (field) => {
+      const set = new Set();
+      for (const u of allWarehouseUnits) {
+        const v = u[field];
+        if (v && typeof v === "string" && v.trim()) set.add(v.trim());
+      }
+      return [...set].sort();
+    };
+    return {
+      personInCharge: collect("personInCharge"),
+      client: collect("client"),
+      department: collect("department"),
+      name: collect("name"),
+    };
+  }, [allWarehouseUnits]);
 
   // Planned lists (stub)
   const inboundPlanned = useMemo(
@@ -1562,81 +1599,13 @@ const personList = site?.personList || [];
     const destWh = warehouses.find((w) => w.id === destWarehouseId);
     if (!destWh) return;
 
-    // 移動先の layout を読み込み、仮置き場を探す
-    const layoutKey = `wh_demo_layout_${destWarehouseId}_v1`;
     const unitsKey = `wh_demo_units_${destWarehouseId}_v1`;
-    let destLayout;
     let destUnits;
     try {
-      destLayout = JSON.parse(localStorage.getItem(layoutKey)) || null;
       destUnits = JSON.parse(localStorage.getItem(unitsKey)) || [];
     } catch {
-      destLayout = null;
       destUnits = [];
     }
-
-    // 移動先のレイアウトが無い場合はデフォルトを作成
-    if (!destLayout) {
-      destLayout = {
-        floor: { cols: 34, rows: 22, cellPx: 32, cell_m_w: 1.2, cell_m_d: 1.0, x: 0, y: 0 },
-        zones: [],
-        racks: [],
-        shelves: [],
-      };
-    }
-    // 仮置き場が無ければ作成（既存オブジェクトと重ならない空き位置を探索）
-    let staging = destLayout.zones.find((z) => z.isStagingArea);
-    if (!staging) {
-      const fl = destLayout.floor;
-      const dfx = fl.x || 0;
-      const dfy = fl.y || 0;
-      const sw = Math.max(6, Math.floor(fl.cols * 0.2));
-      const sh = Math.max(4, Math.floor(fl.rows * 0.3));
-      const obs = [
-        { x: dfx, y: dfy, w: fl.cols, h: fl.rows },
-        ...destLayout.zones.map((zz) => ({ x: zz.x, y: zz.y, w: zz.w, h: zz.h })),
-        ...(destLayout.racks || []).map((r) => ({ x: r.x, y: r.y, w: r.w, h: r.h })),
-        ...((destLayout.shelves || []).map((s) => ({ x: s.x, y: s.y, w: s.w, h: s.h }))),
-      ];
-      function ovl(cx, cy, cw, ch) { for (const o of obs) { if (cx < o.x + o.w && cx + cw > o.x && cy < o.y + o.h && cy + ch > o.y) return true; } return false; }
-      let ssx = null, ssy = null;
-      for (let tx = dfx + fl.cols + 2; tx <= dfx + fl.cols + 30; tx += 2) {
-        for (let ty = dfy; ty <= dfy + fl.rows; ty += 2) {
-          if (!ovl(tx, ty, sw, sh)) { ssx = tx; ssy = ty; break; }
-        }
-        if (ssx !== null) break;
-      }
-      if (ssx === null) {
-        for (let ty = dfy + fl.rows + 2; ty <= dfy + fl.rows + 30; ty += 2) {
-          for (let tx = dfx; tx <= dfx + fl.cols; tx += 2) {
-            if (!ovl(tx, ty, sw, sh)) { ssx = tx; ssy = ty; break; }
-          }
-          if (ssx !== null) break;
-        }
-      }
-      if (ssx === null) { ssx = dfx + fl.cols + 20; ssy = dfy; }
-      staging = {
-        id: "z-staging-" + uid(),
-        name: "仮置き場",
-        client: "",
-        x: ssx,
-        y: ssy,
-        w: sw,
-        h: sh,
-        labelColor: "#000000",
-        bgColor: "#fef9c3",
-        bgOpacity: 70,
-        isStagingArea: true,
-        loc: { kind: "floor" },
-      };
-      destLayout = { ...destLayout, zones: [...destLayout.zones, staging] };
-      // レイアウトも保存
-      try { localStorage.setItem(layoutKey, JSON.stringify(destLayout)); } catch {}
-      if (supabase) {
-        supabase.from("app_state").upsert({ key: layoutKey, value: destLayout, updated_at: new Date().toISOString() }).then(() => {});
-      }
-    }
-    const newLoc = { kind: "floor", x: staging.x, y: staging.y };
 
     // 編集履歴を追加
     const hist = (unit.editHistory || []).slice();
@@ -1649,9 +1618,15 @@ const personList = site?.personList || [];
     });
     if (hist.length > 200) hist.splice(0, hist.length - 200);
 
-    const movedUnit = { ...unit, loc: newLoc, editHistory: hist };
+    // 未配置として移動先に追加（移動元情報を付与）
+    const movedUnit = {
+      ...unit,
+      loc: { kind: "unplaced" },
+      transferredFrom: wh.name,
+      transferredAt: new Date().toISOString(),
+      editHistory: hist,
+    };
 
-    // 移動先に追加
     const newDestUnits = [...destUnits, movedUnit];
     try {
       localStorage.setItem(unitsKey, JSON.stringify(newDestUnits));
@@ -1663,7 +1638,7 @@ const personList = site?.personList || [];
     // 元倉庫から削除
     setUnits((prev) => prev.filter((u) => u.id !== unitId));
     setSelected(null);
-    showToast(`${unit.name || "荷物"} を ${destWh.name} の仮置き場に移動しました`);
+    showToast(`${unit.name || "荷物"} を ${destWh.name} に移動しました（未配置リストに表示されます）`);
   }
 
   function toWorld(clientX, clientY) {
@@ -3205,67 +3180,190 @@ const personList = site?.personList || [];
     }
   }
 
+  // 保管場所を文字列で取得するヘルパー（現在の倉庫用）
+  function getStorageLocationText(u) {
+    const loc = u.loc;
+    if (!loc || loc.kind === "unplaced") return "未配置";
+    if (loc.kind === "floor") {
+      const zone = (layout.zones || []).find((z) => (!z.loc || z.loc.kind === "floor") && loc.x >= z.x && loc.y >= z.y && loc.x < z.x + z.w && loc.y < z.y + z.h);
+      return `${wh.name} 床${zone ? ` ${zone.name}` : ""}`;
+    }
+    if (loc.kind === "shelf") {
+      const shelf = (layout.shelves || []).find((s) => s.id === loc.shelfId);
+      const shelfZone = (layout.zones || []).find((z) => z.loc?.kind === "shelf" && z.loc.shelfId === loc.shelfId && loc.x >= (z.loc.x || 0) && loc.y >= (z.loc.y || 0) && loc.x < (z.loc.x || 0) + z.w && loc.y < (z.loc.y || 0) + z.h);
+      return `${wh.name} ${shelf?.name || "棚"}${shelfZone ? ` ${shelfZone.name}` : ""}`;
+    }
+    if (loc.kind === "rack") {
+      const rack = layout.racks.find((r) => r.id === loc.rackId);
+      return `${wh.name} ラック${rack?.name || loc.rackId}`;
+    }
+    return "不明";
+  }
+
+  // 保管場所を文字列で取得（全倉庫対応版: _whId, _whName付きunit用）
+  function getStorageLocationTextAllWh(u) {
+    const loc = u.loc;
+    const whName = u._whName || "不明倉庫";
+    if (!loc || loc.kind === "unplaced") return "未配置";
+    if (u._whId === wh.id) return getStorageLocationText(u);
+    // 他の倉庫の場合はレイアウトをlocalStorageから読む
+    let wLayout;
+    try {
+      wLayout = JSON.parse(localStorage.getItem(`wh_demo_layout_${u._whId}_v1`)) || null;
+    } catch { wLayout = null; }
+    if (!wLayout) return `${whName}`;
+    if (loc.kind === "floor") {
+      const zone = (wLayout.zones || []).find((z) => (!z.loc || z.loc.kind === "floor") && loc.x >= z.x && loc.y >= z.y && loc.x < z.x + z.w && loc.y < z.y + z.h);
+      return `${whName} 床${zone ? ` ${zone.name}` : ""}`;
+    }
+    if (loc.kind === "shelf") {
+      const shelf = (wLayout.shelves || []).find((s) => s.id === loc.shelfId);
+      return `${whName} ${shelf?.name || "棚"}`;
+    }
+    if (loc.kind === "rack") {
+      const rack = (wLayout.racks || []).find((r) => r.id === loc.rackId);
+      return `${whName} ラック${rack?.name || loc.rackId}`;
+    }
+    return whName;
+  }
+
+  function exportListAsPdf() {
+    const keyField = listSearchKey;
+    const query = listSearchValue.trim();
+    const effectiveField = (keyField === "department" && !query) ? "client" : keyField;
+
+    // 全倉庫データからフィルタ
+    const filtered = query
+      ? allWarehouseUnits.filter((u) => String(u[effectiveField] || "") === query)
+      : allWarehouseUnits;
+
+    if (filtered.length === 0) {
+      showToast("該当する荷物がありません");
+      return;
+    }
+
+    const allColumns = [
+      { key: "personInCharge", label: "社内担当者名" },
+      { key: "client", label: "顧客名" },
+      { key: "department", label: "部署名" },
+      { key: "clientContact", label: "顧客担当者名" },
+      { key: "name", label: "荷物名" },
+      { key: "arrivalDate", label: "入庫日" },
+      { key: "departureDate", label: "出庫予定日" },
+      { key: "storageLocation", label: "保管場所" },
+    ];
+    const columns = allColumns.filter((c) => c.key !== keyField);
+    const keyLabel = allColumns.find((c) => c.key === keyField)?.label || keyField;
+
+    const rows = filtered.map((u) => {
+      const row = {};
+      for (const col of columns) {
+        if (col.key === "storageLocation") {
+          row[col.key] = getStorageLocationTextAllWh(u);
+        } else if (col.key === "arrivalDate" || col.key === "departureDate") {
+          row[col.key] = u[col.key] ? new Date(u[col.key]).toLocaleString("ja-JP") : "-";
+        } else {
+          row[col.key] = u[col.key] || "-";
+        }
+      }
+      return row;
+    });
+
+    const now = new Date().toLocaleString("ja-JP");
+    const whNames = warehouses.map((w) => w.name).join("・");
+    const html = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>荷物リスト</title>
+<style>
+  @page { size: A4 landscape; margin: 15mm; }
+  body { font-family: "Hiragino Sans", "Yu Gothic", sans-serif; font-size: 11px; color: #1e293b; }
+  h1 { font-size: 16px; margin-bottom: 4px; }
+  .meta { font-size: 10px; color: #64748b; margin-bottom: 12px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { background: #f1f5f9; border: 1px solid #cbd5e1; padding: 6px 8px; text-align: left; font-size: 10px; font-weight: 700; }
+  td { border: 1px solid #e2e8f0; padding: 5px 8px; font-size: 10px; }
+  tr:nth-child(even) { background: #f8fafc; }
+  @media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+</style></head><body>
+<h1>荷物リスト（全倉庫）</h1>
+<div class="meta">対象: ${whNames} / 検索条件: ${keyLabel}「${query || "(全件)"}」 / ${filtered.length}件 / 出力日時: ${now}</div>
+<table>
+<thead><tr>${columns.map((c) => `<th>${c.label}</th>`).join("")}</tr></thead>
+<tbody>${rows.map((r) => `<tr>${columns.map((c) => `<td>${r[c.key]}</td>`).join("")}</tr>`).join("")}</tbody>
+</table>
+</body></html>`;
+
+    const w = window.open("", "_blank");
+    if (w) {
+      w.document.write(html);
+      w.document.close();
+      setTimeout(() => w.print(), 300);
+    }
+  }
+
   function createUnitFromForm() {
     const w = Number(form.w);
     const d = Number(form.d);
     const h = Number(form.h);
     const qty = Math.max(1, Number(form.qty) || 1);
-    const name = form.name || `${template}（${form.client || "取引先"}）`;
+    const name = form.name || `${template}（${form.client || "顧客"}）`;
     if (!Number.isFinite(w) || !Number.isFinite(d) || !Number.isFinite(h)) {
       showToast("サイズ（W/D/H）を数値で入力してください");
       return;
     }
     const u = {
-  id: "u-" + uid(),
-  kind: template,
-  client: form.client || "(未設定)",
-  name,
-  w_m: w,
-  d_m: d,
-  h_m: h,
-  qty,
-  status: "draft",
-  condition: "good",
-  rot: false,
-  loc: { kind: "unplaced" },
-  stackZ: 0,
+      id: "u-" + uid(),
+      kind: template,
+      client: form.client || "(未設定)",
+      name,
+      w_m: w,
+      d_m: d,
+      h_m: h,
+      qty,
+      status: "draft",
+      condition: "good",
+      rot: false,
+      loc: { kind: "unplaced" },
+      stackZ: 0,
 
-  // ========== 基本情報 ==========
-  sku: form.sku || "",
-  barcode: form.barcode || "",
-  batch_number: form.batch_number || "",
-  weight_kg: Number(form.weight_kg) || 0,
-  temperature_zone: form.temperature_zone || "ambient",
-  fragile: form.fragile || false,
-  stackable: form.stackable !== false,
-  max_stack_height: Number(form.max_stack_height) || 1,
-  expires_at: form.expires_at || null,
-  notes: form.notes || "",
-  arrived_at: null,
-  moves: [],
-  tags: [],
+      // ========== 基本情報（後方互換） ==========
+      sku: "",
+      barcode: "",
+      batch_number: "",
+      weight_kg: Number(form.weight_kg) || 0,
+      temperature_zone: "ambient",
+      fragile: false,
+      stackable: true,
+      max_stack_height: 1,
+      expires_at: null,
+      notes: form.notes || "",
+      arrived_at: null,
+      moves: [],
+      tags: [],
 
-  // ========== 拡張フィールド ==========
-  kintoneRecordId: "",
-  projectName: "",
-  arrivalDate: null,
-  departureDate: null,
-  departureHistory: [],  // [{date, quantity, destination, notes}]
-  contents: [],          // [{name, quantity}]
-  personInCharge: "",
-  editHistory: [{
-    timestamp: new Date().toISOString(),
-    action: "created",
-  }],
+      // ========== 拡張フィールド ==========
+      kintoneRecordId: form.kintoneRecordId || "",
+      projectName: "",
+      arrivalDate: form.arrivalDate || null,
+      departureDate: form.departureDate || null,
+      departureHistory: [],
+      contents: [],
+      personInCharge: form.personInCharge || "",
+      department: form.department || "",
+      clientContact: form.clientContact || "",
+      editHistory: [{
+        timestamp: new Date().toISOString(),
+        action: "created",
+      }],
 
-  // ========== 見た目 ==========
-  bgColor: "",
-  bgOpacity: 100,
-  labelColor: "",
-};
+      // ========== 見た目 ==========
+      bgColor: "",
+      bgOpacity: 100,
+      labelColor: "",
+    };
     setUnits((prev) => [u, ...prev]);
     setSelected({ kind: "unit", id: u.id });
-    showToast("作成しました（「床に配置」で配置できます）");
+    setCreateModalOpen(false);
+    showToast("作成しました（未配置リストから配置できます）");
   }
 
   function placeOnFloorAuto(unitId) {
@@ -3423,6 +3521,14 @@ const personList = site?.personList || [];
       .sort((a, b) => (a.departureDate || "").localeCompare(b.departureDate || ""));
   }, [units, selectedDate]);
 
+  // 入庫予定一覧（selectedDate と一致）
+  const arrivalSchedule = useMemo(() => {
+    const selDateStr = selectedDate.toISOString().slice(0, 10);
+    return units
+      .filter((u) => u.arrivalDate && u.arrivalDate.slice(0, 10) === selDateStr)
+      .sort((a, b) => (a.arrivalDate || "").localeCompare(b.arrivalDate || ""));
+  }, [units, selectedDate]);
+
   // Group move visual offset (in screen px, not zoomed)
   const groupMoveDx = drag?.type === "group_move" ? (drag.pointerX - drag.startX) / zoom : 0;
   const groupMoveDy = drag?.type === "group_move" ? (drag.pointerY - drag.startY) / zoom : 0;
@@ -3474,6 +3580,26 @@ const personList = site?.personList || [];
         </div>
 
         <div className="flex items-center gap-2">
+          {mode === "operate" && (
+            <>
+              <button
+                className="rounded-xl border px-3 py-2 text-sm shadow-sm font-bold"
+                style={{ background: "#dbeafe", color: "#2563eb", borderColor: "#93c5fd" }}
+                onClick={() => setCreateModalOpen(true)}
+                type="button"
+              >
+                ＋新規作成
+              </button>
+              <button
+                className="rounded-xl border px-3 py-2 text-sm shadow-sm font-bold"
+                style={{ background: "#f0fdf4", color: "#15803d", borderColor: "#86efac" }}
+                onClick={() => setListModalOpen(true)}
+                type="button"
+              >
+                荷物リスト
+              </button>
+            </>
+          )}
           <button
             className="rounded-xl border px-3 py-2 text-sm shadow-sm font-bold"
             style={{ background: "#ede9fe", color: "#7c3aed", borderColor: "#c4b5fd" }}
@@ -3529,6 +3655,305 @@ const personList = site?.personList || [];
           {toast}
         </div>
       )}
+
+      {/* 荷物リスト作成モーダル */}
+      <Modal title="荷物リスト作成" open={listModalOpen} onClose={() => setListModalOpen(false)}>
+        <div className="space-y-4">
+          <div>
+            <div className="text-xs font-semibold mb-2" style={{ color: "#64748b" }}>検索キー</div>
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { key: "personInCharge", label: "社内担当者名" },
+                { key: "client", label: "顧客名" },
+                { key: "department", label: "部署名" },
+                { key: "name", label: "荷物名" },
+              ].map((opt) => (
+                <button
+                  key={opt.key}
+                  type="button"
+                  className="rounded-xl border-2 px-3 py-2 text-sm font-medium"
+                  style={{
+                    background: listSearchKey === opt.key ? "#1e293b" : "#fff",
+                    color: listSearchKey === opt.key ? "#fff" : "#334155",
+                    borderColor: listSearchKey === opt.key ? "#1e293b" : "#e2e8f0",
+                    transition: "all 0.15s",
+                  }}
+                  onClick={() => { setListSearchKey(opt.key); setListSearchValue(""); }}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div className="text-xs font-semibold mb-1" style={{ color: "#64748b" }}>
+              検索値
+              {listSearchKey === "department" && (
+                <span className="text-[10px] text-gray-400 ml-1">（空欄の場合は顧客名で検索）</span>
+              )}
+            </div>
+            <select
+              className="w-full rounded-xl border-2 px-3 py-2 text-sm"
+              style={{ borderColor: "#e2e8f0" }}
+              value={listSearchValue}
+              onChange={(e) => setListSearchValue(e.target.value)}
+            >
+              <option value="">（全件）</option>
+              {(listSearchKey === "personInCharge"
+                ? personList.map((p) => p.name)
+                : (listSearchOptions[listSearchKey] || [])
+              ).map((v) => (
+                <option key={v} value={v}>{v}</option>
+              ))}
+            </select>
+          </div>
+          <div className="text-xs text-gray-500">
+            {(() => {
+              const keyField = listSearchKey;
+              const query = listSearchValue.trim();
+              const effectiveField = (keyField === "department" && !query) ? "client" : keyField;
+              const count = query
+                ? allWarehouseUnits.filter((u) => String(u[effectiveField] || "") === query).length
+                : allWarehouseUnits.length;
+              return `該当: ${count}件 / 全${allWarehouseUnits.length}件（全倉庫）`;
+            })()}
+          </div>
+          <div className="text-xs text-gray-500 rounded-xl border bg-gray-50 p-3">
+            <div className="font-semibold mb-1">出力項目（検索キー以外）:</div>
+            {[
+              { key: "personInCharge", label: "社内担当者名" },
+              { key: "client", label: "顧客名" },
+              { key: "department", label: "部署名" },
+              { key: "clientContact", label: "顧客担当者名" },
+              { key: "name", label: "荷物名" },
+              { key: "arrivalDate", label: "入庫日" },
+              { key: "departureDate", label: "出庫予定日" },
+              { key: "storageLocation", label: "保管場所" },
+            ].filter((c) => c.key !== listSearchKey).map((c) => (
+              <span key={c.key} className="inline-block mr-2">{c.label}</span>
+            ))}
+          </div>
+          <button
+            className="w-full rounded-2xl px-4 py-3 text-sm font-bold"
+            type="button"
+            onClick={exportListAsPdf}
+            style={{ background: "#15803d", color: "#fff", boxShadow: "0 4px 14px rgba(21,128,61,0.3)" }}
+          >
+            PDF出力（印刷）
+          </button>
+        </div>
+      </Modal>
+
+      {/* 新規作成モーダル */}
+      <Modal title="新規荷物作成" open={createModalOpen} onClose={() => setCreateModalOpen(false)}>
+        <div className="space-y-4">
+          {/* テンプレート選択 */}
+          <div>
+            <div className="text-xs font-semibold mb-2" style={{ color: "#64748b" }}>テンプレート</div>
+            <div className="grid grid-cols-4 gap-2">
+              {[
+                { k: "パレット", icon: "\u{1f4e6}", w: "1.2", d: "1.0", h: "1.6", color: "#dbeafe", activeColor: "#3b82f6" },
+                { k: "カゴ", icon: "\u{1f6d2}", w: "0.8", d: "0.6", h: "0.7", color: "#d1fae5", activeColor: "#10b981" },
+                { k: "単体荷物", icon: "\u{1f4e6}", w: "0.4", d: "0.3", h: "0.25", color: "#fef3c7", activeColor: "#f59e0b" },
+                { k: "配電盤", icon: "\u{26a1}", w: "1.0", d: "0.5", h: "1.8", color: "#fef9c3", activeColor: "#eab308" },
+              ].map((t) => {
+                const isActive = template === t.k;
+                return (
+                  <button
+                    key={t.k}
+                    type="button"
+                    className="flex flex-col items-center rounded-xl border-2 p-2 select-none"
+                    style={{
+                      background: isActive ? t.activeColor : t.color,
+                      borderColor: isActive ? t.activeColor : "transparent",
+                      color: isActive ? "#fff" : "#334155",
+                      transition: "all 0.15s",
+                    }}
+                    onClick={() => {
+                      setTemplate(t.k);
+                      setForm((s) => ({ ...s, w: t.w, d: t.d, h: t.h }));
+                    }}
+                  >
+                    <span style={{ fontSize: 22 }}>{t.icon}</span>
+                    <span className="mt-0.5 text-xs font-bold">{t.k}</span>
+                    <span className="text-[10px]" style={{ opacity: 0.7 }}>{t.w}x{t.d}x{t.h}m</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* 入力フィールド */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="col-span-2">
+              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>① 社内担当者名</div>
+              <select
+                className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
+                style={{ borderColor: "#e2e8f0" }}
+                value={form.personInCharge}
+                onChange={(e) => setForm((s) => ({ ...s, personInCharge: e.target.value }))}
+              >
+                <option value="">（未設定）</option>
+                {personList.map((p) => (
+                  <option key={p.id} value={p.name}>{p.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>② 顧客名</div>
+              <input
+                className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
+                style={{ borderColor: "#e2e8f0" }}
+                value={form.client}
+                onChange={(e) => setForm((s) => ({ ...s, client: e.target.value }))}
+                placeholder="顧客名"
+              />
+            </div>
+            <div>
+              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>③ 部署名</div>
+              <input
+                className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
+                style={{ borderColor: "#e2e8f0" }}
+                value={form.department}
+                onChange={(e) => setForm((s) => ({ ...s, department: e.target.value }))}
+                placeholder="部署名"
+              />
+            </div>
+            <div className="col-span-2">
+              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>④ 顧客担当者名</div>
+              <input
+                className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
+                style={{ borderColor: "#e2e8f0" }}
+                value={form.clientContact}
+                onChange={(e) => setForm((s) => ({ ...s, clientContact: e.target.value }))}
+                placeholder="顧客担当者名"
+              />
+            </div>
+            <div className="col-span-2">
+              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>⑤ 荷物名(イベント名)</div>
+              <input
+                className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
+                style={{ borderColor: "#e2e8f0" }}
+                value={form.name}
+                onChange={(e) => setForm((s) => ({ ...s, name: e.target.value }))}
+                placeholder="荷物名やイベント名"
+              />
+            </div>
+            <div className="col-span-2">
+              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>⑥ 荷物詳細</div>
+              <textarea
+                className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
+                style={{ borderColor: "#e2e8f0" }}
+                value={form.notes}
+                onChange={(e) => setForm((s) => ({ ...s, notes: e.target.value }))}
+                placeholder="荷物の詳細情報"
+                rows={2}
+              />
+            </div>
+            <div>
+              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>⑦ 入庫日</div>
+              <input
+                type="datetime-local"
+                className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
+                style={{ borderColor: "#e2e8f0" }}
+                value={form.arrivalDate}
+                onChange={(e) => setForm((s) => ({ ...s, arrivalDate: e.target.value }))}
+              />
+            </div>
+            <div>
+              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>⑧ 出庫予定日</div>
+              <input
+                type="datetime-local"
+                className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
+                style={{ borderColor: "#e2e8f0" }}
+                value={form.departureDate}
+                onChange={(e) => setForm((s) => ({ ...s, departureDate: e.target.value }))}
+              />
+            </div>
+          </div>
+
+          {/* サイズ・重量 */}
+          <div className="grid grid-cols-4 gap-2">
+            <div>
+              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>W(m)</div>
+              <input
+                className="mt-1 w-full rounded-xl border-2 px-2 py-2 text-sm"
+                style={{ borderColor: "#e2e8f0" }}
+                value={form.w}
+                onChange={(e) => setForm((s) => ({ ...s, w: e.target.value }))}
+                inputMode="decimal"
+              />
+            </div>
+            <div>
+              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>D(m)</div>
+              <input
+                className="mt-1 w-full rounded-xl border-2 px-2 py-2 text-sm"
+                style={{ borderColor: "#e2e8f0" }}
+                value={form.d}
+                onChange={(e) => setForm((s) => ({ ...s, d: e.target.value }))}
+                inputMode="decimal"
+              />
+            </div>
+            <div>
+              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>H(m)</div>
+              <input
+                className="mt-1 w-full rounded-xl border-2 px-2 py-2 text-sm"
+                style={{ borderColor: "#e2e8f0" }}
+                value={form.h}
+                onChange={(e) => setForm((s) => ({ ...s, h: e.target.value }))}
+                inputMode="decimal"
+              />
+            </div>
+            <div>
+              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>数量</div>
+              <input
+                className="mt-1 w-full rounded-xl border-2 px-2 py-2 text-sm"
+                style={{ borderColor: "#e2e8f0" }}
+                value={form.qty}
+                onChange={(e) => setForm((s) => ({ ...s, qty: e.target.value }))}
+                inputMode="numeric"
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>⑪ 重量(kg)</div>
+              <input
+                className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
+                style={{ borderColor: "#e2e8f0" }}
+                value={form.weight_kg}
+                onChange={(e) => setForm((s) => ({ ...s, weight_kg: e.target.value }))}
+                inputMode="decimal"
+                placeholder="0"
+              />
+            </div>
+            <div>
+              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>⑫ kintoneレコードID</div>
+              <input
+                className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
+                style={{ borderColor: "#e2e8f0" }}
+                value={form.kintoneRecordId}
+                onChange={(e) => setForm((s) => ({ ...s, kintoneRecordId: e.target.value }))}
+                placeholder="レコードID"
+              />
+            </div>
+          </div>
+
+          {/* 作成ボタン */}
+          <button
+            className="w-full rounded-2xl px-4 py-3 text-sm font-bold"
+            type="button"
+            onClick={createUnitFromForm}
+            style={{
+              background: "#1e293b",
+              color: "#fff",
+              boxShadow: "0 4px 14px rgba(30,41,59,0.3)",
+            }}
+          >
+            作成
+          </button>
+        </div>
+      </Modal>
 
       {isoViewOpen && (
         <IsometricView
@@ -3605,60 +4030,51 @@ const personList = site?.personList || [];
             )}
           </div>
 
+          {/* 入庫予定セクション */}
           <div className="rounded-2xl border bg-white p-3 shadow-sm">
             <SectionTitle
-              right={
-                <div className="flex gap-2">
-                  <Badge>ドラッグで配置</Badge>
-                </div>
-              }
+              right={<Badge color="blue">{arrivalSchedule.length} 件</Badge>}
             >
-              入出荷予定（サンプル）
+              入庫予定（{selectedDate.toLocaleDateString("ja-JP")}）
             </SectionTitle>
-
-            <div className="mb-2 text-xs font-semibold text-gray-500">入荷予定</div>
-            <div className="space-y-2">
-              {inboundPlanned.map((p) => (
-                <div
-                  key={p.id}
-                  className="rounded-xl border p-2 text-sm hover:bg-gray-50"
-                  onMouseDown={(e) => startDragPlanned(e, p, "planned_in")}
-                  role="button"
-                >
-                  <div className="font-medium">{p.name}</div>
-                  <div className="mt-1 flex flex-wrap gap-1">
-                    <Badge>{p.client}</Badge>
-                    <Badge>
-                      {p.w}×{p.d}×{p.h}m / qty {p.qty}
-                    </Badge>
-                    <Badge>予定 {p.eta}</Badge>
+            {arrivalSchedule.length === 0 ? (
+              <div className="text-sm text-gray-500">この日の入庫予定はありません。</div>
+            ) : (
+              <div className="space-y-2 max-h-48 overflow-y-auto">
+                {arrivalSchedule.map((u) => (
+                  <div
+                    key={u.id}
+                    className="rounded-xl border p-2 text-sm hover:bg-blue-50 cursor-pointer transition-colors"
+                    onClick={() => {
+                      setSelected({ kind: "unit", id: u.id });
+                      if (u.loc?.kind === "floor") {
+                        const fp = unitFootprintCells(u);
+                        const centerX = (u.loc.x + fp.w / 2) * cellPx;
+                        const centerY = (u.loc.y + fp.h / 2) * cellPx;
+                        const el = canvasRef.current;
+                        if (el) {
+                          const r = el.getBoundingClientRect();
+                          setPan({ x: r.width / 2 - centerX * zoom, y: r.height / 2 - centerY * zoom });
+                        }
+                      }
+                    }}
+                  >
+                    <div className="font-medium flex items-center gap-1">
+                      <span className="text-blue-500">●</span> {u.name}
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {u.client && <Badge>{u.client}</Badge>}
+                      {u.arrivalDate && u.arrivalDate.length > 10 && (
+                        <Badge color="blue">{u.arrivalDate.slice(11, 16)}</Badge>
+                      )}
+                    </div>
+                    {u.personInCharge && (
+                      <div className="mt-1 text-xs text-gray-500">担当: {u.personInCharge}</div>
+                    )}
                   </div>
-                  <div className="mt-1 text-xs text-gray-500">（押したままドラッグして倉庫に配置）</div>
-                </div>
-              ))}
-            </div>
-
-            <div className="mt-3 mb-2 text-xs font-semibold text-gray-500">出荷予定</div>
-            <div className="space-y-2">
-              {outboundPlanned.map((p) => (
-                <div
-                  key={p.id}
-                  className="rounded-xl border p-2 text-sm hover:bg-gray-50"
-                  onMouseDown={(e) => startDragPlanned(e, p, "planned_out")}
-                  role="button"
-                >
-                  <div className="font-medium">{p.name}</div>
-                  <div className="mt-1 flex flex-wrap gap-1">
-                    <Badge>{p.client}</Badge>
-                    <Badge>
-                      {p.w}×{p.d}×{p.h}m / qty {p.qty}
-                    </Badge>
-                    <Badge>予定 {p.eta}</Badge>
-                  </div>
-                  <div className="mt-1 text-xs text-gray-500">（押したままドラッグして倉庫に配置）</div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="rounded-2xl border bg-white p-3 shadow-sm">
@@ -4217,16 +4633,8 @@ const personList = site?.personList || [];
                             e.stopPropagation();
                             openDetailModal(u);
                           }}
+                          title={u.name}
                         >
-                          {/* Unit name - watermark style */}
-                          <div
-                            className="absolute pointer-events-none"
-                            style={{ top: 0, left: 0, right: 0, bottom: 0, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, overflow: "hidden" }}
-                          >
-                            <div style={{ fontSize: `${u.labelFontSize || 0.7}rem`, fontWeight: 900, color: `rgba(${hexToRgb(u.labelColor || "#000000").join(",")}, 0.15)`, userSelect: "none", textAlign: "center", lineHeight: 1.2 }}>
-                              {u.name}
-                            </div>
-                          </div>
                           {/* 右下リサイズハンドル */}
                           {mode === "operate" && (
                             <div
@@ -4291,15 +4699,8 @@ const personList = site?.personList || [];
                             e.stopPropagation();
                             openPanelDetailModal(p);
                           }}
+                          title={p.name}
                         >
-                          <div
-                            className="absolute pointer-events-none"
-                            style={{ top: 0, left: 0, right: 0, bottom: 0, display: "flex", alignItems: "center", justifyContent: "center" }}
-                          >
-                            <div style={{ fontSize: `${p.labelFontSize || 0.6}rem`, fontWeight: 700, color: `rgba(${panelLabelRgb.join(",")}, 0.7)`, userSelect: "none", textAlign: "center" }}>
-                              {p.name}
-                            </div>
-                          </div>
                         </div>
                       );
                     })}
@@ -4442,16 +4843,8 @@ const personList = site?.personList || [];
                       e.stopPropagation();
                       openDetailModal(u);
                     }}
+                    title={u.name}
                   >
-                    {/* Unit name - watermark style */}
-                    <div
-                      className="absolute pointer-events-none"
-                      style={{ top: 0, left: 0, right: 0, bottom: 0, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, overflow: "hidden" }}
-                    >
-                      <div style={{ fontSize: `${u.labelFontSize || 1.2}rem`, fontWeight: 900, color: `rgba(${unitLabelRgb.join(",")}, 0.15)`, userSelect: "none", textAlign: "center", lineHeight: 1.2 }}>
-                        {u.name}
-                      </div>
-                    </div>
                     {/* 右下リサイズハンドル（三角形） */}
                     {mode === "operate" && (
                       <div
@@ -4514,29 +4907,8 @@ const personList = site?.personList || [];
                       e.stopPropagation();
                       openPanelDetailModal(p);
                     }}
+                    title={p.name}
                   >
-                    {/* Panel label - watermark style */}
-                    <div
-                      className="absolute pointer-events-none"
-                      style={{
-                        top: 0, left: 0, right: 0, bottom: 0,
-                        display: "flex", alignItems: "center", justifyContent: "center",
-                        zIndex: 50,
-                      }}
-                    >
-                      <div
-                        style={{
-                          fontSize: `${p.labelFontSize || 0.75}rem`,
-                          fontWeight: 700,
-                          color: `rgba(${labelRgb.join(",")}, 0.7)`,
-                          userSelect: "none",
-                          textAlign: "center",
-                          lineHeight: 1.2,
-                        }}
-                      >
-                        {p.name}
-                      </div>
-                    </div>
                     {/* 右下リサイズハンドル（三角形） */}
                     {mode === "operate" && (
                       <div
@@ -5542,299 +5914,130 @@ const personList = site?.personList || [];
               </div>
             </div>
           ) : (
-            <div className="rounded-3xl border-2 bg-white p-4 shadow-md">
-              <SectionTitle>オブジェクト作成</SectionTitle>
+            <div>
+              {/* 倉庫間移動受入 */}
+              {(() => {
+                const transferred = unplaced.filter((u) => u.transferredFrom);
+                if (transferred.length === 0) return null;
+                return (
+                  <div className="rounded-3xl border-2 border-indigo-200 p-4 shadow-md mb-3" style={{ background: "#eef2ff" }}>
+                    <SectionTitle>倉庫間移動 受入（{transferred.length}件）</SectionTitle>
+                    <div className="space-y-3">
+                      {transferred.map((u) => {
+                        const isSel = isItemSelected("unit", u.id);
+                        const kindIcon = u.kind === "パレット" ? "\u{1f4e6}" : u.kind === "カゴ" ? "\u{1f6d2}" : u.kind === "配電盤" ? "\u{26a1}" : "\u{1f4e6}";
+                        const kindColor = u.kind === "パレット" ? "#dbeafe" : u.kind === "カゴ" ? "#d1fae5" : u.kind === "配電盤" ? "#fef9c3" : "#fef3c7";
+                        return (
+                          <div
+                            key={u.id}
+                            className="rounded-2xl border-2 p-3 select-none"
+                            style={{
+                              background: "#fff",
+                              borderColor: isSel ? "#6366f1" : "#c7d2fe",
+                              boxShadow: isSel ? "0 0 0 3px rgba(99,102,241,0.2), 0 4px 12px rgba(0,0,0,0.08)" : "0 2px 8px rgba(0,0,0,0.05)",
+                              transition: "all 0.2s",
+                            }}
+                            onClick={(e) => handleItemClick(e, "unit", u.id)}
+                            onDoubleClick={(e) => { e.stopPropagation(); openDetailModal(u); }}
+                            role="button"
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="flex-shrink-0 flex items-center justify-center rounded-xl" style={{ width: 44, height: 44, background: kindColor, fontSize: 22 }}>
+                                {kindIcon}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <div className="truncate text-sm font-bold" style={{ color: "#1e293b" }}>{u.name || u.kind}</div>
+                                <div className="truncate text-xs" style={{ color: "#6366f1" }}>{u.transferredFrom} から移動</div>
+                                {u.transferredAt && (
+                                  <div className="truncate text-[10px]" style={{ color: "#94a3b8" }}>{new Date(u.transferredAt).toLocaleString("ja-JP")}</div>
+                                )}
+                              </div>
+                            </div>
+                            <div className="mt-2 flex flex-wrap gap-1">
+                              {u.client && <Badge>{u.client}</Badge>}
+                              {u.weight_kg > 0 && <Badge>{u.weight_kg}kg</Badge>}
+                            </div>
+                            <div className="mt-3 flex gap-2">
+                              <select
+                                className="flex-1 rounded-xl border px-2 py-2 text-xs"
+                                defaultValue="floor"
+                                id={`place-target-${u.id}`}
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <option value="floor">床</option>
+                                {(layout.shelves || []).map((s) => (
+                                  <option key={s.id} value={`shelf-${s.id}`}>棚: {s.name || s.id}</option>
+                                ))}
+                                {layout.racks.map((r) => (
+                                  <option key={r.id} value={`rack-${r.id}`}>ラック: {r.name || r.id}</option>
+                                ))}
+                              </select>
+                              <button
+                                type="button"
+                                className="rounded-xl px-3 py-2 text-xs font-bold"
+                                style={{ background: "#4f46e5", color: "#fff", whiteSpace: "nowrap" }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const sel = document.getElementById(`place-target-${u.id}`);
+                                  placeAutoByTarget(u.id, sel?.value || "floor");
+                                  // 配置後にtransferredFromをクリア
+                                  setUnits((prev) => prev.map((x) => x.id === u.id ? { ...x, transferredFrom: undefined, transferredAt: undefined } : x));
+                                }}
+                              >
+                                配置
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
 
-              {/* テンプレート選択 */}
-              <div className="rounded-2xl border-2 p-4" style={{ background: "#f8fafc" }}>
-                <div className="text-sm font-bold" style={{ color: "#334155" }}>テンプレート</div>
-                <div className="mt-3 grid grid-cols-4 gap-3">
-                  {[
-                    { k: "パレット", icon: "\u{1f4e6}", w: "1.2", d: "1.0", h: "1.6", color: "#dbeafe", activeColor: "#3b82f6" },
-                    { k: "カゴ", icon: "\u{1f6d2}", w: "0.8", d: "0.6", h: "0.7", color: "#d1fae5", activeColor: "#10b981" },
-                    { k: "単体荷物", icon: "\u{1f4e6}", w: "0.4", d: "0.3", h: "0.25", color: "#fef3c7", activeColor: "#f59e0b" },
-                    { k: "配電盤", icon: "\u{26a1}", w: "1.0", d: "0.5", h: "1.8", color: "#fef9c3", activeColor: "#eab308" },
-                  ].map((t) => {
-                    const isActive = template === t.k;
-                    return (
-                      <button
-                        key={t.k}
-                        type="button"
-                        className="flex flex-col items-center rounded-2xl border-2 p-3 select-none"
-                        style={{
-                          background: isActive ? t.activeColor : t.color,
-                          borderColor: isActive ? t.activeColor : "transparent",
-                          color: isActive ? "#fff" : "#334155",
-                          boxShadow: isActive ? "0 4px 14px " + t.activeColor + "66" : "0 2px 6px rgba(0,0,0,0.06)",
-                          transform: isActive ? "scale(1.05)" : "scale(1)",
-                          transition: "all 0.2s cubic-bezier(.34,1.56,.64,1)",
-                        }}
-                        onClick={() => {
-                          setTemplate(t.k);
-                          setForm((s) => ({ ...s, w: t.w, d: t.d, h: t.h }));
-                        }}
-                      >
-                        <span style={{ fontSize: 28 }}>{t.icon}</span>
-                        <span className="mt-1 text-xs font-bold">{t.k}</span>
-                        <span className="mt-0.5 text-xs" style={{ opacity: 0.7, fontSize: 10 }}>{t.w}x{t.d}x{t.h}m</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* 情報入力 */}
-              <div className="mt-4 rounded-2xl border-2 p-4" style={{ background: "#f8fafc" }}>
-                <div className="text-sm font-bold" style={{ color: "#334155" }}>情報</div>
-                <div className="mt-3 grid grid-cols-2 gap-3">
-                  <div>
-                    <div className="text-xs font-semibold" style={{ color: "#64748b" }}>取引先</div>
-                    <input
-                      className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
-                      style={{ borderColor: "#e2e8f0" }}
-                      value={form.client}
-                      onChange={(e) => setForm((s) => ({ ...s, client: e.target.value }))}
-                      placeholder="取引先A"
-                    />
-                  </div>
-                  <div>
-                    <div className="text-xs font-semibold" style={{ color: "#64748b" }}>数量</div>
-                    <input
-                      className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
-                      style={{ borderColor: "#e2e8f0" }}
-                      value={form.qty}
-                      onChange={(e) => setForm((s) => ({ ...s, qty: e.target.value }))}
-                      inputMode="numeric"
-                      placeholder="1"
-                    />
-                  </div>
-                  <div className="col-span-2">
-                    <div className="text-xs font-semibold" style={{ color: "#64748b" }}>名称（任意）</div>
-                    <input
-                      className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
-                      style={{ borderColor: "#e2e8f0" }}
-                      value={form.name}
-                      onChange={(e) => setForm((s) => ({ ...s, name: e.target.value }))}
-                      placeholder="品目や伝票番号など"
-                    />
-                  </div>
-                </div>
-
-                {/* サイズ */}
-                <div className="mt-4 text-sm font-bold" style={{ color: "#334155" }}>サイズ</div>
-                <div className="mt-2 grid grid-cols-3 gap-3">
-                  <div>
-                    <div className="text-xs font-semibold" style={{ color: "#64748b" }}>W(m)</div>
-                    <input
-                      className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
-                      style={{ borderColor: "#e2e8f0" }}
-                      value={form.w}
-                      onChange={(e) => setForm((s) => ({ ...s, w: e.target.value }))}
-                      inputMode="decimal"
-                    />
-                  </div>
-                  <div>
-                    <div className="text-xs font-semibold" style={{ color: "#64748b" }}>D(m)</div>
-                    <input
-                      className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
-                      style={{ borderColor: "#e2e8f0" }}
-                      value={form.d}
-                      onChange={(e) => setForm((s) => ({ ...s, d: e.target.value }))}
-                      inputMode="decimal"
-                    />
-                  </div>
-                  <div>
-                    <div className="text-xs font-semibold" style={{ color: "#64748b" }}>H(m)</div>
-                    <input
-                      className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
-                      style={{ borderColor: "#e2e8f0" }}
-                      value={form.h}
-                      onChange={(e) => setForm((s) => ({ ...s, h: e.target.value }))}
-                      inputMode="decimal"
-                    />
-                  </div>
-                </div>
-
-                {/* 追加情報 */}
-                <div className="mt-4 text-sm font-bold" style={{ color: "#334155" }}>追加情報</div>
-                <div className="mt-2 grid grid-cols-2 gap-3">
-                  <div>
-                    <div className="text-xs font-semibold" style={{ color: "#64748b" }}>SKU</div>
-                    <input
-                      className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
-                      style={{ borderColor: "#e2e8f0" }}
-                      value={form.sku}
-                      onChange={(e) => setForm((s) => ({ ...s, sku: e.target.value }))}
-                      placeholder="商品コード"
-                    />
-                  </div>
-                  <div>
-                    <div className="text-xs font-semibold" style={{ color: "#64748b" }}>バーコード</div>
-                    <input
-                      className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
-                      style={{ borderColor: "#e2e8f0" }}
-                      value={form.barcode}
-                      onChange={(e) => setForm((s) => ({ ...s, barcode: e.target.value }))}
-                      placeholder="JAN等"
-                    />
-                  </div>
-                  <div>
-                    <div className="text-xs font-semibold" style={{ color: "#64748b" }}>ロット番号</div>
-                    <input
-                      className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
-                      style={{ borderColor: "#e2e8f0" }}
-                      value={form.batch_number}
-                      onChange={(e) => setForm((s) => ({ ...s, batch_number: e.target.value }))}
-                      placeholder="LOT-001"
-                    />
-                  </div>
-                  <div>
-                    <div className="text-xs font-semibold" style={{ color: "#64748b" }}>重量(kg)</div>
-                    <input
-                      className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
-                      style={{ borderColor: "#e2e8f0" }}
-                      value={form.weight_kg}
-                      onChange={(e) => setForm((s) => ({ ...s, weight_kg: e.target.value }))}
-                      inputMode="decimal"
-                      placeholder="0"
-                    />
-                  </div>
-                  <div>
-                    <div className="text-xs font-semibold" style={{ color: "#64748b" }}>温度ゾーン</div>
-                    <select
-                      className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
-                      style={{ borderColor: "#e2e8f0" }}
-                      value={form.temperature_zone}
-                      onChange={(e) => setForm((s) => ({ ...s, temperature_zone: e.target.value }))}
-                    >
-                      <option value="ambient">常温</option>
-                      <option value="chilled">冷蔵</option>
-                      <option value="frozen">冷凍</option>
-                    </select>
-                  </div>
-                  <div>
-                    <div className="text-xs font-semibold" style={{ color: "#64748b" }}>最大積み段数</div>
-                    <input
-                      className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
-                      style={{ borderColor: "#e2e8f0" }}
-                      value={form.max_stack_height}
-                      onChange={(e) => setForm((s) => ({ ...s, max_stack_height: e.target.value }))}
-                      inputMode="numeric"
-                      placeholder="1"
-                    />
-                  </div>
-                  <div>
-                    <div className="text-xs font-semibold" style={{ color: "#64748b" }}>賞味期限</div>
-                    <input
-                      type="date"
-                      className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
-                      style={{ borderColor: "#e2e8f0" }}
-                      value={form.expires_at}
-                      onChange={(e) => setForm((s) => ({ ...s, expires_at: e.target.value }))}
-                    />
-                  </div>
-                </div>
-
-                {/* チェックボックス */}
-                <div className="mt-3 flex gap-4">
-                  <label className="flex items-center gap-2 rounded-xl border-2 px-3 py-2 text-sm" style={{ borderColor: "#e2e8f0", background: form.fragile ? "#fef2f2" : "transparent" }}>
-                    <input
-                      type="checkbox"
-                      checked={form.fragile}
-                      onChange={(e) => setForm((s) => ({ ...s, fragile: e.target.checked }))}
-                      className="rounded"
-                    />
-                    <span className="text-xs font-semibold">壊れやすい</span>
-                  </label>
-                  <label className="flex items-center gap-2 rounded-xl border-2 px-3 py-2 text-sm" style={{ borderColor: "#e2e8f0", background: form.stackable ? "#f0fdf4" : "transparent" }}>
-                    <input
-                      type="checkbox"
-                      checked={form.stackable}
-                      onChange={(e) => setForm((s) => ({ ...s, stackable: e.target.checked }))}
-                      className="rounded"
-                    />
-                    <span className="text-xs font-semibold">積み重ね可能</span>
-                  </label>
-                </div>
-
-                {/* メモ */}
-                <div className="mt-3">
-                  <div className="text-xs font-semibold" style={{ color: "#64748b" }}>メモ</div>
-                  <textarea
-                    className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm"
-                    style={{ borderColor: "#e2e8f0" }}
-                    value={form.notes}
-                    onChange={(e) => setForm((s) => ({ ...s, notes: e.target.value }))}
-                    placeholder="特記事項など"
-                    rows={2}
-                  />
-                </div>
-
-                {/* 作成ボタン */}
-                <button
-                  className="mt-4 w-full rounded-2xl px-4 py-3 text-sm font-bold"
-                  type="button"
-                  onClick={createUnitFromForm}
-                  style={{
-                    background: "#1e293b",
-                    color: "#fff",
-                    boxShadow: "0 4px 14px rgba(30,41,59,0.3)",
-                    transition: "transform 0.15s, box-shadow 0.15s",
-                    fontSize: 14,
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.transform = "scale(1.02)"; e.currentTarget.style.boxShadow = "0 6px 20px rgba(30,41,59,0.35)"; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.transform = "scale(1)"; e.currentTarget.style.boxShadow = "0 4px 14px rgba(30,41,59,0.3)"; }}
-                >
-                  作成
-                </button>
-              </div>
-
-              <div className="mt-4 rounded-3xl border-2 p-4 shadow-md" style={{ background: "#f8fafc" }}>
+              {/* 未配置 */}
+              <div className="rounded-3xl border-2 p-4 shadow-md" style={{ background: "#f8fafc" }}>
                 <SectionTitle>未配置</SectionTitle>
                 <div className="space-y-3">
-                  {unplaced.length === 0 && (
-                    <div className="rounded-2xl p-4 text-center text-sm" style={{ background: "#f0f9ff", color: "#64748b" }}>
-                      未配置の荷物はありません
-                    </div>
-                  )}
-                  {unplaced.map((u) => {
-                    const isSel = isItemSelected("unit", u.id);
-                    const kindIcon = u.kind === "パレット" ? "\u{1f4e6}" : u.kind === "カゴ" ? "\u{1f6d2}" : u.kind === "配電盤" ? "\u{26a1}" : "\u{1f4e6}";
-                    const kindColor = u.kind === "パレット" ? "#dbeafe" : u.kind === "カゴ" ? "#d1fae5" : u.kind === "配電盤" ? "#fef9c3" : "#fef3c7";
-                    return (
-                      <div
-                        key={u.id}
-                        className="rounded-2xl border-2 p-3 select-none"
-                        style={{
-                          background: "#fff",
-                          borderColor: isSel ? "#3b82f6" : "#e2e8f0",
-                          boxShadow: isSel ? "0 0 0 3px rgba(59,130,246,0.2), 0 4px 12px rgba(0,0,0,0.08)" : "0 2px 8px rgba(0,0,0,0.05)",
-                          transition: "all 0.2s",
-                        }}
-                        onClick={(e) => handleItemClick(e, "unit", u.id)}
-                        onDoubleClick={(e) => { e.stopPropagation(); openDetailModal(u); }}
-                        role="button"
-                      >
-                        <div className="flex items-center gap-3">
-                          <div className="flex-shrink-0 flex items-center justify-center rounded-xl" style={{ width: 44, height: 44, background: kindColor, fontSize: 22 }}>
-                            {kindIcon}
+                  {(() => {
+                    const normalUnplaced = unplaced.filter((u) => !u.transferredFrom);
+                    if (normalUnplaced.length === 0) return (
+                      <div className="rounded-2xl p-4 text-center text-sm" style={{ background: "#f0f9ff", color: "#64748b" }}>
+                        未配置の荷物はありません
+                      </div>
+                    );
+                    return normalUnplaced.map((u) => {
+                      const isSel = isItemSelected("unit", u.id);
+                      const kindIcon = u.kind === "パレット" ? "\u{1f4e6}" : u.kind === "カゴ" ? "\u{1f6d2}" : u.kind === "配電盤" ? "\u{26a1}" : "\u{1f4e6}";
+                      const kindColor = u.kind === "パレット" ? "#dbeafe" : u.kind === "カゴ" ? "#d1fae5" : u.kind === "配電盤" ? "#fef9c3" : "#fef3c7";
+                      return (
+                        <div
+                          key={u.id}
+                          className="rounded-2xl border-2 p-3 select-none"
+                          style={{
+                            background: "#fff",
+                            borderColor: isSel ? "#3b82f6" : "#e2e8f0",
+                            boxShadow: isSel ? "0 0 0 3px rgba(59,130,246,0.2), 0 4px 12px rgba(0,0,0,0.08)" : "0 2px 8px rgba(0,0,0,0.05)",
+                            transition: "all 0.2s",
+                          }}
+                          onClick={(e) => handleItemClick(e, "unit", u.id)}
+                          onDoubleClick={(e) => { e.stopPropagation(); openDetailModal(u); }}
+                          role="button"
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className="flex-shrink-0 flex items-center justify-center rounded-xl" style={{ width: 44, height: 44, background: kindColor, fontSize: 22 }}>
+                              {kindIcon}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate text-sm font-bold" style={{ color: "#1e293b" }}>{u.kind}</div>
+                              <div className="truncate text-xs" style={{ color: "#64748b" }}>{u.name}</div>
+                            </div>
                           </div>
-                          <div className="min-w-0 flex-1">
-                            <div className="truncate text-sm font-bold" style={{ color: "#1e293b" }}>{u.kind}</div>
-                            <div className="truncate text-xs" style={{ color: "#64748b" }}>{u.name}</div>
+                          <div className="mt-2 flex flex-wrap gap-1">
+                            {u.client && <Badge>{u.client}</Badge>}
+                            {u.weight_kg > 0 && <Badge>{u.weight_kg}kg</Badge>}
                           </div>
-                        </div>
-                        <div className="mt-2 flex flex-wrap gap-1">
-                          <Badge>{u.client}</Badge>
-                          <Badge color={getStatusColor(u.status)}>{getStatusLabel(u.status)}</Badge>
-                          {u.sku && <Badge>SKU: {u.sku}</Badge>}
-                          {u.weight_kg > 0 && <Badge>{u.weight_kg}kg</Badge>}
-                          {u.temperature_zone && u.temperature_zone !== "ambient" && (
-                            <Badge color={getTempZoneColor(u.temperature_zone)}>{getTempZoneLabel(u.temperature_zone)}</Badge>
-                          )}
-                        </div>
-                        <div className="mt-3 space-y-2">
-                          <div className="flex gap-2">
+                          <div className="mt-3 flex gap-2">
                             <select
                               className="flex-1 rounded-xl border px-2 py-2 text-xs"
                               defaultValue="floor"
@@ -5852,9 +6055,7 @@ const personList = site?.personList || [];
                             <button
                               type="button"
                               className="rounded-xl px-3 py-2 text-xs font-bold"
-                              style={{ background: "#1e293b", color: "#fff", boxShadow: "0 2px 8px rgba(30,41,59,0.2)", transition: "transform 0.15s", whiteSpace: "nowrap" }}
-                              onMouseEnter={(e) => { e.currentTarget.style.transform = "scale(1.03)"; }}
-                              onMouseLeave={(e) => { e.currentTarget.style.transform = "scale(1)"; }}
+                              style={{ background: "#1e293b", color: "#fff", whiteSpace: "nowrap" }}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 const sel = document.getElementById(`place-target-${u.id}`);
@@ -5864,13 +6065,11 @@ const personList = site?.personList || [];
                               配置
                             </button>
                           </div>
-                          <div className="flex justify-end">
+                          <div className="mt-2 flex justify-end">
                             <button
                               type="button"
                               className="rounded-xl px-3 py-1.5 text-xs font-bold"
-                              style={{ background: "#fee2e2", color: "#dc2626", transition: "transform 0.15s" }}
-                              onMouseEnter={(e) => { e.currentTarget.style.transform = "scale(1.03)"; }}
-                              onMouseLeave={(e) => { e.currentTarget.style.transform = "scale(1)"; }}
+                              style={{ background: "#fee2e2", color: "#dc2626" }}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setUnits((prev) => prev.filter((x) => x.id !== u.id));
@@ -5881,9 +6080,9 @@ const personList = site?.personList || [];
                             </button>
                           </div>
                         </div>
-                      </div>
-                    );
-                  })}
+                      );
+                    });
+                  })()}
                 </div>
               </div>
 
@@ -6016,32 +6215,9 @@ const personList = site?.personList || [];
                   </div>
                 ) : (
                   <div className="space-y-2">
-                    {/* ===== 基本情報（常に展開） ===== */}
+                    {/* ===== 操作ボタン（常に表示） ===== */}
                     <div className="text-sm font-semibold">{selectedEntity.kind}</div>
-                    <div>
-                      <div className="text-xs text-gray-500">名前</div>
-                      <input
-                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                        value={selectedEntity.name || ""}
-                        onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "name", e.target.value)}
-                        onBlur={(e) => updateUnitField(selectedEntity.id, "name", e.target.value, "名前変更")}
-                      />
-                    </div>
-                    <div>
-                      <div className="text-xs text-gray-500">取引先</div>
-                      <input
-                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                        value={selectedEntity.client || ""}
-                        onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "client", e.target.value)}
-                        onBlur={(e) => updateUnitField(selectedEntity.id, "client", e.target.value, "取引先変更")}
-                      />
-                    </div>
-                    <div className="text-xs text-gray-500">
-                      {selectedEntity.w_m} x {selectedEntity.d_m} x {selectedEntity.h_m} m
-                    </div>
-
-                    {/* ===== 操作ボタン（常に展開） ===== */}
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
                       <button
                         className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
                         type="button"
@@ -6062,7 +6238,7 @@ const personList = site?.personList || [];
                         未配置へ
                       </button>
                       <button
-                        className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
+                        className="rounded-xl border px-3 py-2 text-sm hover:bg-red-50 text-red-600"
                         type="button"
                         onClick={() => {
                           setUnits((prev) => prev.filter((u) => u.id !== selectedEntity.id));
@@ -6074,7 +6250,7 @@ const personList = site?.personList || [];
                       </button>
                     </div>
 
-                    {/* ===== 倉庫間移動（カード風） ===== */}
+                    {/* ===== 倉庫間移動 ===== */}
                     {warehouses.filter((w) => w.id !== wh.id).length > 0 && (
                       <div className="rounded-xl border-2 border-indigo-200 bg-indigo-50 p-3">
                         <div className="text-xs font-bold text-indigo-700 mb-2">倉庫間移動</div>
@@ -6104,107 +6280,35 @@ const personList = site?.personList || [];
                       </div>
                     )}
 
-                    {/* ===== サイズ（実寸）— 折りたたみ（デフォルト閉） ===== */}
-                    <div className="border-t">
-                      <button
-                        type="button"
-                        className="flex w-full items-center justify-between py-2 text-xs font-semibold text-gray-700 hover:text-gray-900"
-                        onClick={() => setPanelSections((s) => ({ ...s, size: !s.size }))}
-                      >
-                        <span>サイズ（実寸）</span>
-                        <span className="text-gray-400">{panelSections.size ? "\u25BC" : "\u25B6"}</span>
-                      </button>
-                      {panelSections.size && (
-                        <div className="pb-2">
-                          <div className="grid grid-cols-3 gap-2">
-                            <div>
-                              <div className="text-xs text-gray-500">幅(m)</div>
-                              <input
-                                className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                                type="number"
-                                min="0.1"
-                                step="0.1"
-                                value={selectedEntity.w_m}
-                                onChange={(e) => {
-                                  const v = Math.max(0.1, Number(e.target.value) || 0.1);
-                                  const cells = Math.max(1, Math.ceil(v / (layout.floor.cell_m_w || 1.2)));
-                                  updateUnitFieldSilent(selectedEntity.id, "w_m", +v.toFixed(2));
-                                  updateUnitFieldSilent(selectedEntity.id, "w_cells", cells);
-                                }}
-                                onBlur={() => updateUnitFieldSilent(selectedEntity.id, "w_m", selectedEntity.w_m)}
-                              />
-                            </div>
-                            <div>
-                              <div className="text-xs text-gray-500">奥行(m)</div>
-                              <input
-                                className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                                type="number"
-                                min="0.1"
-                                step="0.1"
-                                value={selectedEntity.d_m}
-                                onChange={(e) => {
-                                  const v = Math.max(0.1, Number(e.target.value) || 0.1);
-                                  const cells = Math.max(1, Math.ceil(v / (layout.floor.cell_m_d || 1.0)));
-                                  updateUnitFieldSilent(selectedEntity.id, "d_m", +v.toFixed(2));
-                                  updateUnitFieldSilent(selectedEntity.id, "h_cells", cells);
-                                }}
-                                onBlur={() => updateUnitFieldSilent(selectedEntity.id, "d_m", selectedEntity.d_m)}
-                              />
-                            </div>
-                            <div>
-                              <div className="text-xs text-gray-500">高さ(m)</div>
-                              <input
-                                className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                                type="number"
-                                min="0.1"
-                                step="0.1"
-                                value={selectedEntity.h_m}
-                                onChange={(e) => {
-                                  const v = Math.max(0.1, Number(e.target.value) || 0.1);
-                                  updateUnitFieldSilent(selectedEntity.id, "h_m", +v.toFixed(2));
-                                }}
-                                onBlur={() => updateUnitFieldSilent(selectedEntity.id, "h_m", selectedEntity.h_m)}
-                              />
-                            </div>
-                          </div>
-                          <div className="mt-1 text-xs text-gray-500">
-                            右下の三角ハンドルでもリサイズ可能
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* ===== 見た目（色・透明度・ラベル）— 折りたたみ（デフォルト閉） ===== */}
+                    {/* ===== 見た目（色・透明度）— 折りたたみ（デフォルト閉） ===== */}
                     <div className="border-t">
                       <button
                         type="button"
                         className="flex w-full items-center justify-between py-2 text-xs font-semibold text-gray-700 hover:text-gray-900"
                         onClick={() => setPanelSections((s) => ({ ...s, appearance: !s.appearance }))}
                       >
-                        <span>見た目（色・透明度・ラベル）</span>
+                        <span>見た目（色・透明度）</span>
                         <span className="text-gray-400">{panelSections.appearance ? "\u25BC" : "\u25B6"}</span>
                       </button>
                       {panelSections.appearance && (
                         <div className="pb-2 space-y-3">
-                          <div className="space-y-2">
-                            <div className="flex items-center gap-2">
-                              <input
-                                type="color"
-                                value={selectedEntity.bgColor || "#ffffff"}
-                                onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "bgColor", e.target.value)}
-                                className="w-8 h-8 rounded cursor-pointer border"
-                              />
-                              <span className="text-xs text-gray-600">背景色</span>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <input
-                                type="color"
-                                value={selectedEntity.labelColor || "#000000"}
-                                onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "labelColor", e.target.value)}
-                                className="w-8 h-8 rounded cursor-pointer border"
-                              />
-                              <span className="text-xs text-gray-600">ラベル色</span>
-                            </div>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="color"
+                              value={selectedEntity.bgColor || "#ffffff"}
+                              onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "bgColor", e.target.value)}
+                              className="w-8 h-8 rounded cursor-pointer border"
+                            />
+                            <span className="text-xs text-gray-600">背景色</span>
+                            {selectedEntity.bgColor && (
+                              <button
+                                type="button"
+                                className="text-xs text-gray-400 hover:text-gray-600"
+                                onClick={() => updateUnitFieldSilent(selectedEntity.id, "bgColor", "")}
+                              >
+                                リセット
+                              </button>
+                            )}
                           </div>
                           <div>
                             <label className="text-[10px] text-gray-500">背景透明度: {selectedEntity.bgOpacity ?? 100}%</label>
@@ -6214,20 +6318,6 @@ const personList = site?.personList || [];
                               max="100"
                               value={selectedEntity.bgOpacity ?? 100}
                               onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "bgOpacity", Number(e.target.value))}
-                              onMouseUp={(e) => updateUnitFieldSilent(selectedEntity.id, "bgOpacity", Number(e.target.value))}
-                              className="w-full h-2 bg-gray-300 rounded-lg cursor-pointer accent-blue-500"
-                            />
-                          </div>
-                          <div>
-                            <label className="text-[10px] text-gray-500">フォント: {selectedEntity.labelFontSize || 1.2}rem</label>
-                            <input
-                              type="range"
-                              min="0.3"
-                              max="5"
-                              step="0.1"
-                              value={selectedEntity.labelFontSize || 1.2}
-                              onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "labelFontSize", Number(e.target.value))}
-                              onMouseUp={(e) => updateUnitFieldSilent(selectedEntity.id, "labelFontSize", Number(e.target.value))}
                               className="w-full h-2 bg-gray-300 rounded-lg cursor-pointer accent-blue-500"
                             />
                           </div>
@@ -6235,21 +6325,21 @@ const personList = site?.personList || [];
                       )}
                     </div>
 
-                    {/* ===== 詳細情報 — 折りたたみ（デフォルト開） ===== */}
+                    {/* ===== 荷物詳細（折りたたみ、デフォルト開） ===== */}
                     <div className="border-t">
                       <button
                         type="button"
                         className="flex w-full items-center justify-between py-2 text-xs font-semibold text-gray-700 hover:text-gray-900"
                         onClick={() => setPanelSections((s) => ({ ...s, detail: !s.detail }))}
                       >
-                        <span>詳細情報</span>
+                        <span>荷物詳細</span>
                         <span className="text-gray-400">{panelSections.detail ? "\u25BC" : "\u25B6"}</span>
                       </button>
                       {panelSections.detail && (
                         <div className="pb-2 space-y-2">
-                          {/* 担当者 */}
+                          {/* ① 社内担当者名 */}
                           <div>
-                            <div className="text-xs text-gray-500">担当者</div>
+                            <div className="text-xs text-gray-500">① 社内担当者名</div>
                             <select
                               className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
                               value={selectedEntity.personInCharge || ""}
@@ -6261,71 +6351,174 @@ const personList = site?.personList || [];
                               ))}
                             </select>
                           </div>
-                          {/* 案件名 */}
+                          {/* ② 顧客名 */}
                           <div>
-                            <div className="text-xs text-gray-500">案件名</div>
+                            <div className="text-xs text-gray-500">② 顧客名</div>
                             <input
                               className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
-                              value={selectedEntity.projectName || ""}
-                              onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "projectName", e.target.value)}
-                              onBlur={(e) => updateUnitField(selectedEntity.id, "projectName", e.target.value, "案件名変更")}
-                              placeholder="案件名を入力"
+                              value={selectedEntity.client || ""}
+                              onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "client", e.target.value)}
+                              onBlur={(e) => updateUnitField(selectedEntity.id, "client", e.target.value, "顧客名変更")}
+                              placeholder="顧客名"
                             />
                           </div>
-                          {/* 入庫日時 */}
+                          {/* ③ 部署名 */}
                           <div>
-                            <div className="text-xs text-gray-500">入庫日時</div>
+                            <div className="text-xs text-gray-500">③ 部署名</div>
+                            <input
+                              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                              value={selectedEntity.department || ""}
+                              onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "department", e.target.value)}
+                              onBlur={(e) => updateUnitField(selectedEntity.id, "department", e.target.value, "部署名変更")}
+                              placeholder="部署名"
+                            />
+                          </div>
+                          {/* ④ 顧客担当者名 */}
+                          <div>
+                            <div className="text-xs text-gray-500">④ 顧客担当者名</div>
+                            <input
+                              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                              value={selectedEntity.clientContact || ""}
+                              onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "clientContact", e.target.value)}
+                              onBlur={(e) => updateUnitField(selectedEntity.id, "clientContact", e.target.value, "顧客担当者名変更")}
+                              placeholder="顧客担当者名"
+                            />
+                          </div>
+                          {/* ⑤ 荷物名(イベント名) */}
+                          <div>
+                            <div className="text-xs text-gray-500">⑤ 荷物名(イベント名)</div>
+                            <input
+                              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                              value={selectedEntity.name || ""}
+                              onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "name", e.target.value)}
+                              onBlur={(e) => updateUnitField(selectedEntity.id, "name", e.target.value, "荷物名変更")}
+                              placeholder="荷物名"
+                            />
+                          </div>
+                          {/* ⑥ 荷物詳細 */}
+                          <div>
+                            <div className="text-xs text-gray-500">⑥ 荷物詳細</div>
+                            <textarea
+                              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm resize-none"
+                              rows={2}
+                              value={selectedEntity.notes || ""}
+                              onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "notes", e.target.value)}
+                              onBlur={(e) => updateUnitField(selectedEntity.id, "notes", e.target.value, "荷物詳細変更")}
+                              placeholder="荷物の詳細情報"
+                            />
+                          </div>
+                          {/* ⑦ 入庫日 */}
+                          <div>
+                            <div className="text-xs text-gray-500">⑦ 入庫日</div>
                             <input
                               type="datetime-local"
                               className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
                               value={selectedEntity.arrivalDate || ""}
                               onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "arrivalDate", e.target.value)}
-                              onBlur={(e) => updateUnitField(selectedEntity.id, "arrivalDate", e.target.value, "入庫日時変更")}
+                              onBlur={(e) => updateUnitField(selectedEntity.id, "arrivalDate", e.target.value, "入庫日変更")}
                             />
                           </div>
-                          {/* 出庫予定日時 */}
+                          {/* ⑧ 出庫予定日 */}
                           <div>
-                            <div className="text-xs text-gray-500">出庫予定日時</div>
+                            <div className="text-xs text-gray-500">⑧ 出庫予定日</div>
                             <input
                               type="datetime-local"
                               className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
                               value={selectedEntity.departureDate || ""}
                               onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "departureDate", e.target.value)}
-                              onBlur={(e) => updateUnitField(selectedEntity.id, "departureDate", e.target.value, "出庫予定日時変更")}
+                              onBlur={(e) => updateUnitField(selectedEntity.id, "departureDate", e.target.value, "出庫予定日変更")}
                             />
                           </div>
-                          {/* 保管場所（表示のみ） */}
+                          {/* ⑨ 保管場所（表示のみ） */}
                           <div>
-                            <div className="text-xs text-gray-500">保管場所</div>
+                            <div className="text-xs text-gray-500">⑨ 保管場所</div>
                             <div className="mt-1 text-sm text-gray-700">
-                              {selectedEntity.loc?.kind === "floor"
-                                ? `${wh.name} > 床 > (${selectedEntity.loc.x}, ${selectedEntity.loc.y})`
-                                : selectedEntity.loc?.kind === "rack"
-                                ? `${wh.name} > 棚 ${selectedEntity.loc.rackId} > スロット ${selectedEntity.loc.slot}`
-                                : "未配置"}
+                              {(() => {
+                                const loc = selectedEntity.loc;
+                                if (!loc || loc.kind === "unplaced") return "未配置";
+                                if (loc.kind === "floor") {
+                                  const zone = (layout.zones || []).find((z) => (!z.loc || z.loc.kind === "floor") && loc.x >= z.x && loc.y >= z.y && loc.x < z.x + z.w && loc.y < z.y + z.h);
+                                  return `${wh.name} 床${zone ? ` ${zone.name}` : ""}`;
+                                }
+                                if (loc.kind === "shelf") {
+                                  const shelf = (layout.shelves || []).find((s) => s.id === loc.shelfId);
+                                  const shelfZone = (layout.zones || []).find((z) => z.loc?.kind === "shelf" && z.loc.shelfId === loc.shelfId && loc.x >= (z.loc.x || 0) && loc.y >= (z.loc.y || 0) && loc.x < (z.loc.x || 0) + z.w && loc.y < (z.loc.y || 0) + z.h);
+                                  return `${wh.name} ${shelf?.name || "棚"}${shelfZone ? ` ${shelfZone.name}` : ""}`;
+                                }
+                                if (loc.kind === "rack") {
+                                  const rack = layout.racks.find((r) => r.id === loc.rackId);
+                                  return `${wh.name} ラック${rack?.name || loc.rackId}`;
+                                }
+                                return "不明";
+                              })()}
                             </div>
                           </div>
-                          {/* kintoneレコードID */}
+                          {/* ⑩ サイズ */}
                           <div>
-                            <div className="text-xs text-gray-500">kintoneレコードID</div>
+                            <div className="text-xs text-gray-500">⑩ サイズ</div>
+                            <div className="grid grid-cols-3 gap-2 mt-1">
+                              <div>
+                                <div className="text-[10px] text-gray-400">幅(m)</div>
+                                <input
+                                  className="w-full rounded-lg border px-2 py-1 text-sm"
+                                  type="number" min="0.1" step="0.1"
+                                  value={selectedEntity.w_m}
+                                  onChange={(e) => {
+                                    const v = Math.max(0.1, Number(e.target.value) || 0.1);
+                                    const cells = Math.max(1, Math.ceil(v / (layout.floor.cell_m_w || 1.2)));
+                                    updateUnitFieldSilent(selectedEntity.id, "w_m", +v.toFixed(2));
+                                    updateUnitFieldSilent(selectedEntity.id, "w_cells", cells);
+                                  }}
+                                />
+                              </div>
+                              <div>
+                                <div className="text-[10px] text-gray-400">奥行(m)</div>
+                                <input
+                                  className="w-full rounded-lg border px-2 py-1 text-sm"
+                                  type="number" min="0.1" step="0.1"
+                                  value={selectedEntity.d_m}
+                                  onChange={(e) => {
+                                    const v = Math.max(0.1, Number(e.target.value) || 0.1);
+                                    const cells = Math.max(1, Math.ceil(v / (layout.floor.cell_m_d || 1.0)));
+                                    updateUnitFieldSilent(selectedEntity.id, "d_m", +v.toFixed(2));
+                                    updateUnitFieldSilent(selectedEntity.id, "h_cells", cells);
+                                  }}
+                                />
+                              </div>
+                              <div>
+                                <div className="text-[10px] text-gray-400">高さ(m)</div>
+                                <input
+                                  className="w-full rounded-lg border px-2 py-1 text-sm"
+                                  type="number" min="0.1" step="0.1"
+                                  value={selectedEntity.h_m}
+                                  onChange={(e) => {
+                                    const v = Math.max(0.1, Number(e.target.value) || 0.1);
+                                    updateUnitFieldSilent(selectedEntity.id, "h_m", +v.toFixed(2));
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          </div>
+                          {/* ⑪ 重量(kg) */}
+                          <div>
+                            <div className="text-xs text-gray-500">⑪ 重量(kg)</div>
+                            <input
+                              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                              type="number" min="0" step="0.1"
+                              value={selectedEntity.weight_kg || ""}
+                              onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "weight_kg", Number(e.target.value) || 0)}
+                              placeholder="0"
+                            />
+                          </div>
+                          {/* ⑫ kintoneレコードID */}
+                          <div>
+                            <div className="text-xs text-gray-500">⑫ kintoneレコードID</div>
                             <input
                               className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
                               value={selectedEntity.kintoneRecordId || ""}
                               onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "kintoneRecordId", e.target.value)}
                               onBlur={(e) => updateUnitFieldSilent(selectedEntity.id, "kintoneRecordId", e.target.value)}
                               placeholder="レコードID"
-                            />
-                          </div>
-                          {/* 備考 */}
-                          <div>
-                            <div className="text-xs text-gray-500">備考</div>
-                            <textarea
-                              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm resize-none"
-                              rows={2}
-                              value={selectedEntity.notes || ""}
-                              onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "notes", e.target.value)}
-                              onBlur={(e) => updateUnitField(selectedEntity.id, "notes", e.target.value, "備考変更")}
-                              placeholder="備考を入力"
                             />
                           </div>
                           {/* 詳細モーダルボタン */}
@@ -6336,6 +6529,38 @@ const personList = site?.personList || [];
                           >
                             詳細モーダルを開く
                           </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* ===== 編集履歴（折りたたみ、デフォルト閉） ===== */}
+                    <div className="border-t">
+                      <button
+                        type="button"
+                        className="flex w-full items-center justify-between py-2 text-xs font-semibold text-gray-700 hover:text-gray-900"
+                        onClick={() => setPanelSections((s) => ({ ...s, editHistory: !s.editHistory }))}
+                      >
+                        <span>編集履歴（{(selectedEntity.editHistory || []).length}件）</span>
+                        <span className="text-gray-400">{panelSections.editHistory ? "\u25BC" : "\u25B6"}</span>
+                      </button>
+                      {panelSections.editHistory && (
+                        <div className="pb-2 space-y-1 max-h-48 overflow-y-auto">
+                          {[...(selectedEntity.editHistory || [])].reverse().map((h, idx) => (
+                            <div key={idx} className="rounded-lg border p-1.5 text-xs">
+                              <div className="flex justify-between text-gray-500">
+                                <span>{new Date(h.timestamp).toLocaleString("ja-JP")}</span>
+                                <span className="font-medium text-gray-700">{h.action}</span>
+                              </div>
+                              {h.field && (
+                                <div className="mt-0.5">
+                                  <span className="text-gray-600">{h.field}: </span>
+                                  <span className="text-red-500">{h.oldValue == null || h.oldValue === "" ? "(空)" : String(h.oldValue)}</span>
+                                  <span className="text-gray-400"> → </span>
+                                  <span className="text-green-600">{h.newValue == null || h.newValue === "" ? "(空)" : String(h.newValue)}</span>
+                                </div>
+                              )}
+                            </div>
+                          ))}
                         </div>
                       )}
                     </div>
@@ -6366,107 +6591,49 @@ const personList = site?.personList || [];
             <div>
               <div className="text-lg font-semibold">{detailUnit.name}</div>
               <div className="mt-2 flex flex-wrap gap-2">
-                <Badge>{detailUnit.client}</Badge>
+                <Badge>{detailUnit.kind}</Badge>
                 <Badge color={getStatusColor(detailUnit.status)}>
                   {getStatusLabel(detailUnit.status)}
                 </Badge>
-                <Badge color={getConditionColor(detailUnit.condition)}>
-                  {getConditionLabel(detailUnit.condition)}
-                </Badge>
-                {detailUnit.temperature_zone && detailUnit.temperature_zone !== "ambient" && (
-                  <Badge color={getTempZoneColor(detailUnit.temperature_zone)}>
-                    {getTempZoneLabel(detailUnit.temperature_zone)}
-                  </Badge>
-                )}
-                {detailUnit.fragile && <Badge color="red">壊れやすい</Badge>}
-                {detailUnit.stackable && <Badge color="green">積重可</Badge>}
+                {detailUnit.weight_kg > 0 && <Badge>{detailUnit.weight_kg}kg</Badge>}
               </div>
             </div>
 
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <div className="text-xs text-gray-500">種別</div>
-                <div className="text-sm">{detailUnit.kind}</div>
+                <div className="text-xs text-gray-500">① 社内担当者名</div>
+                <div className="text-sm">{detailUnit.personInCharge || "-"}</div>
               </div>
               <div>
-                <div className="text-xs text-gray-500">数量</div>
-                <div className="text-sm">{detailUnit.qty}</div>
+                <div className="text-xs text-gray-500">② 顧客名</div>
+                <div className="text-sm">{detailUnit.client || "-"}</div>
               </div>
               <div>
-                <div className="text-xs text-gray-500">SKU</div>
-                <div className="text-sm">{detailUnit.sku || "-"}</div>
+                <div className="text-xs text-gray-500">③ 部署名</div>
+                <div className="text-sm">{detailUnit.department || "-"}</div>
               </div>
               <div>
-                <div className="text-xs text-gray-500">バーコード</div>
-                <div className="text-sm">{detailUnit.barcode || "-"}</div>
+                <div className="text-xs text-gray-500">④ 顧客担当者名</div>
+                <div className="text-sm">{detailUnit.clientContact || "-"}</div>
               </div>
-              <div>
-                <div className="text-xs text-gray-500">ロット番号</div>
-                <div className="text-sm">{detailUnit.batch_number || "-"}</div>
-              </div>
-              <div>
-                <div className="text-xs text-gray-500">重量</div>
-                <div className="text-sm">{detailUnit.weight_kg}kg</div>
-              </div>
-              <div>
-                <div className="text-xs text-gray-500">サイズ(W×D×H)</div>
-                <div className="text-sm">
-                  {detailUnit.w_m}×{detailUnit.d_m}×{detailUnit.h_m}m
-                </div>
-              </div>
-              <div>
-                <div className="text-xs text-gray-500">体積</div>
-                <div className="text-sm">
-                  {(detailUnit.w_m * detailUnit.d_m * detailUnit.h_m).toFixed(3)}m³
-                </div>
-              </div>
-              <div>
-                <div className="text-xs text-gray-500">入荷日時</div>
-                <div className="text-sm">
-                  {detailUnit.arrived_at
-                    ? new Date(detailUnit.arrived_at).toLocaleString("ja-JP")
-                    : "-"}
-                </div>
-              </div>
-              <div>
-                <div className="text-xs text-gray-500">賞味期限</div>
-                <div className="text-sm">
-                  {detailUnit.expires_at
-                    ? new Date(detailUnit.expires_at).toLocaleDateString("ja-JP")
-                    : "-"}
-                </div>
+              <div className="col-span-2">
+                <div className="text-xs text-gray-500">⑤ 荷物名(イベント名)</div>
+                <div className="text-sm">{detailUnit.name || "-"}</div>
               </div>
             </div>
 
             {detailUnit.notes && (
               <div>
-                <div className="text-xs text-gray-500">メモ</div>
+                <div className="text-xs text-gray-500">⑥ 荷物詳細</div>
                 <div className="mt-1 rounded-xl border bg-gray-50 p-3 text-sm">
                   {detailUnit.notes}
                 </div>
               </div>
             )}
 
-            {/* 拡張フィールド */}
             <div className="grid grid-cols-2 gap-4 border-t pt-4">
               <div>
-                <div className="text-xs text-gray-500">担当者</div>
-                <div className="text-sm">{detailUnit.personInCharge || "-"}</div>
-              </div>
-              <div>
-                <div className="text-xs text-gray-500">kintoneレコードID</div>
-                <div className="text-sm">{detailUnit.kintoneRecordId || "-"}</div>
-              </div>
-              <div>
-                <div className="text-xs text-gray-500">案件名</div>
-                <div className="text-sm">{detailUnit.projectName || "-"}</div>
-              </div>
-              <div className="col-span-2">
-                <div className="text-xs text-gray-500">備考</div>
-                <div className="text-sm">{detailUnit.notes || "-"}</div>
-              </div>
-              <div>
-                <div className="text-xs text-gray-500">入庫日時</div>
+                <div className="text-xs text-gray-500">⑦ 入庫日</div>
                 <div className="text-sm">
                   {detailUnit.arrivalDate
                     ? new Date(detailUnit.arrivalDate).toLocaleString("ja-JP")
@@ -6474,29 +6641,56 @@ const personList = site?.personList || [];
                 </div>
               </div>
               <div>
-                <div className="text-xs text-gray-500">出庫予定日時</div>
+                <div className="text-xs text-gray-500">⑧ 出庫予定日</div>
                 <div className="text-sm">
                   {detailUnit.departureDate
                     ? new Date(detailUnit.departureDate).toLocaleString("ja-JP")
                     : "-"}
                 </div>
               </div>
-            </div>
-
-            {/* 内容物 */}
-            {detailUnit.contents && detailUnit.contents.length > 0 && (
-              <div className="border-t pt-4">
-                <div className="text-sm font-semibold mb-2">内容物</div>
-                <div className="space-y-1">
-                  {detailUnit.contents.map((c, idx) => (
-                    <div key={idx} className="flex justify-between rounded-lg border bg-gray-50 px-3 py-2 text-sm">
-                      <span>{c.name}</span>
-                      <span className="text-gray-600">× {c.quantity}</span>
-                    </div>
-                  ))}
+              <div className="col-span-2">
+                <div className="text-xs text-gray-500">⑨ 保管場所</div>
+                <div className="text-sm">
+                  {(() => {
+                    const loc = detailUnit.loc;
+                    if (!loc || loc.kind === "unplaced") return "未配置";
+                    if (loc.kind === "floor") {
+                      const zone = (layout.zones || []).find((z) => (!z.loc || z.loc.kind === "floor") && loc.x >= z.x && loc.y >= z.y && loc.x < z.x + z.w && loc.y < z.y + z.h);
+                      return `${wh.name} 床${zone ? ` ${zone.name}` : ""}`;
+                    }
+                    if (loc.kind === "shelf") {
+                      const shelf = (layout.shelves || []).find((s) => s.id === loc.shelfId);
+                      const shelfZone = (layout.zones || []).find((z) => z.loc?.kind === "shelf" && z.loc.shelfId === loc.shelfId && loc.x >= (z.loc.x || 0) && loc.y >= (z.loc.y || 0) && loc.x < (z.loc.x || 0) + z.w && loc.y < (z.loc.y || 0) + z.h);
+                      return `${wh.name} ${shelf?.name || "棚"}${shelfZone ? ` ${shelfZone.name}` : ""}`;
+                    }
+                    if (loc.kind === "rack") {
+                      const rack = layout.racks.find((r) => r.id === loc.rackId);
+                      return `${wh.name} ラック${rack?.name || loc.rackId}`;
+                    }
+                    return "不明";
+                  })()}
                 </div>
               </div>
-            )}
+              <div>
+                <div className="text-xs text-gray-500">⑩ サイズ(W×D×H)</div>
+                <div className="text-sm">
+                  {detailUnit.w_m}×{detailUnit.d_m}×{detailUnit.h_m}m
+                  ({(detailUnit.w_m * detailUnit.d_m * detailUnit.h_m).toFixed(3)}m³)
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-gray-500">⑪ 重量(kg)</div>
+                <div className="text-sm">{detailUnit.weight_kg || 0}kg</div>
+              </div>
+              <div>
+                <div className="text-xs text-gray-500">⑫ kintoneレコードID</div>
+                <div className="text-sm">{detailUnit.kintoneRecordId || "-"}</div>
+              </div>
+              <div>
+                <div className="text-xs text-gray-500">数量</div>
+                <div className="text-sm">{detailUnit.qty}</div>
+              </div>
+            </div>
 
             {/* 出庫履歴 */}
             {detailUnit.departureHistory && detailUnit.departureHistory.length > 0 && (
@@ -6523,26 +6717,6 @@ const personList = site?.personList || [];
               </div>
             )}
 
-            {/* 移動履歴 */}
-            {detailUnit.moves && detailUnit.moves.length > 0 && (
-              <div className="border-t pt-4">
-                <div className="text-sm font-semibold mb-2">移動履歴</div>
-                <div className="space-y-2 max-h-40 overflow-y-auto">
-                  {detailUnit.moves.map((m, idx) => (
-                    <div key={idx} className="rounded-xl border p-2 text-xs">
-                      <div className="text-gray-500">
-                        {new Date(m.timestamp).toLocaleString("ja-JP")}
-                      </div>
-                      <div className="mt-1">
-                        {JSON.stringify(m.from)} → {JSON.stringify(m.to)}
-                      </div>
-                      <div className="text-gray-600">理由: {m.reason}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
             {/* 編集履歴 */}
             {detailUnit.editHistory && detailUnit.editHistory.length > 0 && (
               <div className="border-t pt-4">
@@ -6557,9 +6731,9 @@ const personList = site?.personList || [];
                       {h.field && (
                         <div className="mt-1">
                           <span className="text-gray-600">{h.field}: </span>
-                          <span className="text-red-500">{h.oldValue === undefined || h.oldValue === null || h.oldValue === "" ? "(空)" : String(h.oldValue)}</span>
+                          <span className="text-red-500">{h.oldValue == null || h.oldValue === "" ? "(空)" : String(h.oldValue)}</span>
                           <span className="text-gray-400"> → </span>
-                          <span className="text-green-600">{h.newValue === undefined || h.newValue === null || h.newValue === "" ? "(空)" : String(h.newValue)}</span>
+                          <span className="text-green-600">{h.newValue == null || h.newValue === "" ? "(空)" : String(h.newValue)}</span>
                         </div>
                       )}
                       {h.fields && h.changes && (
