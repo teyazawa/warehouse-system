@@ -6521,6 +6521,18 @@ const personList = site?.personList || [];
                               placeholder="レコードID"
                             />
                           </div>
+                          {/* 重ね置きOK */}
+                          <div className="flex items-center gap-2">
+                            <label className="flex items-center gap-1.5 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={!!selectedEntity.stackable}
+                                onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "stackable", e.target.checked)}
+                                className="accent-blue-600"
+                              />
+                              <span className="text-xs text-gray-700">重ね置きOK</span>
+                            </label>
+                          </div>
                           {/* 詳細モーダルボタン */}
                           <button
                             type="button"
