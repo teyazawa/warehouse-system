@@ -286,6 +286,9 @@ const SHELF_COLORS = {
   lavender: { bg: "bg-violet-100/70", border: "border-violet-300", handle: "bg-violet-200", label: "ラベンダー" },
 };
 
+// ========== 画像アップロードAPI（GASウェブアプリ） ==========
+const IMAGE_API_URL = "https://script.google.com/macros/s/AKfycbySvsonWAF4igHJ9xFVkG5H7hbNeReElMy5k6w84p8peXiUMhg65d-U-Xu3t52LRMie/exec";
+
 function useSupabaseState(key, initial) {
   const [value, setValue] = useState(() => {
     try {
@@ -1556,6 +1559,53 @@ const personList = site?.personList || [];
     setToast(msg);
     window.clearTimeout(showToast._t);
     showToast._t = window.setTimeout(() => setToast(null), 1600);
+  }
+
+  // ========== 画像アップロード / 削除 ==========
+  async function uploadImage(unitId, file) {
+    showToast("画像をアップロード中...");
+    try {
+      const base64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      const res = await fetch(IMAGE_API_URL, {
+        method: "POST",
+        body: JSON.stringify({ image: base64, fileName: file.name }),
+      });
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error || "Upload failed");
+      setUnits((prev) => prev.map((u) => {
+        if (u.id !== unitId) return u;
+        const imgs = (u.images || []).concat({
+          url: json.url,
+          fileId: json.fileId,
+          uploadedAt: new Date().toISOString(),
+        });
+        return { ...u, images: imgs };
+      }));
+      showToast("画像を登録しました");
+    } catch (err) {
+      console.error("Image upload error:", err);
+      showToast("画像アップロードに失敗しました");
+    }
+  }
+
+  async function deleteImage(unitId, fileId) {
+    showToast("画像を削除中...");
+    try {
+      await fetch(IMAGE_API_URL + "?action=delete&fileId=" + encodeURIComponent(fileId));
+      setUnits((prev) => prev.map((u) => {
+        if (u.id !== unitId) return u;
+        return { ...u, images: (u.images || []).filter((img) => img.fileId !== fileId) };
+      }));
+      showToast("画像を削除しました");
+    } catch (err) {
+      console.error("Image delete error:", err);
+      showToast("画像削除に失敗しました");
+    }
   }
 
   // ========== Unit更新ヘルパー ==========
@@ -3405,6 +3455,9 @@ const personList = site?.personList || [];
       bgColor: form.bgColor || "",
       bgOpacity: 100,
       labelColor: "",
+
+      // ========== 画像 ==========
+      images: [],
     };
     setUnits((prev) => [u, ...prev]);
     setSelected({ kind: "unit", id: u.id });
@@ -6706,6 +6759,50 @@ const personList = site?.personList || [];
                       </button>
                     </div>
 
+                    {/* ===== 画像登録 ===== */}
+                    <div className="rounded-xl border-2 border-blue-200 bg-blue-50 p-3">
+                      <div className="text-xs font-bold text-blue-700 mb-2">画像</div>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        id="image-upload-input"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) uploadImage(selectedEntity.id, file);
+                          e.target.value = "";
+                        }}
+                      />
+                      <button
+                        className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700 font-medium"
+                        type="button"
+                        onClick={() => document.getElementById("image-upload-input")?.click()}
+                      >
+                        画像を登録
+                      </button>
+                      {(selectedEntity.images || []).length > 0 && (
+                        <div className="mt-2 grid grid-cols-3 gap-2">
+                          {(selectedEntity.images || []).map((img, idx) => (
+                            <div key={img.fileId || idx} className="relative group">
+                              <img
+                                src={img.fileId ? `https://drive.google.com/thumbnail?id=${img.fileId}&sz=w200` : img.url}
+                                alt=""
+                                className="w-full h-16 object-cover rounded-lg border cursor-pointer"
+                                onClick={() => window.open(img.fileId ? `https://drive.google.com/uc?export=view&id=${img.fileId}` : img.url, "_blank")}
+                              />
+                              <button
+                                type="button"
+                                className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                                onClick={() => deleteImage(selectedEntity.id, img.fileId)}
+                              >
+                                x
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
                     {/* ===== 倉庫間移動 ===== */}
                     {warehouses.filter((w) => w.id !== wh.id).length > 0 && (
                       <div className="rounded-xl border-2 border-indigo-200 bg-indigo-50 p-3">
@@ -7118,6 +7215,23 @@ const personList = site?.personList || [];
                 {detailUnit.weight_kg > 0 && <Badge>{detailUnit.weight_kg}kg</Badge>}
               </div>
             </div>
+
+            {(detailUnit.images || []).length > 0 && (
+              <div>
+                <div className="text-xs text-gray-500 mb-1">画像</div>
+                <div className="flex gap-2 overflow-x-auto pb-2">
+                  {(detailUnit.images || []).map((img, idx) => (
+                    <img
+                      key={img.fileId || idx}
+                      src={img.fileId ? `https://drive.google.com/thumbnail?id=${img.fileId}&sz=w200` : img.url}
+                      alt=""
+                      className="h-20 w-20 object-cover rounded-lg border flex-shrink-0 cursor-pointer hover:opacity-80 transition-opacity"
+                      onClick={() => window.open(img.fileId ? `https://drive.google.com/uc?export=view&id=${img.fileId}` : img.url, "_blank")}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="grid grid-cols-2 gap-4">
               <div>
