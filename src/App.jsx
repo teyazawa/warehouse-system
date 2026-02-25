@@ -339,6 +339,123 @@ function useSupabaseState(key, initial) {
   return [value, setValue];
 }
 
+// ========== 認証フック ==========
+function useAuth() {
+  const [session, setSession] = useState(null);
+  const [displayName, setDisplayName] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!supabase) { setLoading(false); return; }
+
+    // 初期セッション取得
+    supabase.auth.getSession().then(({ data: { session: s } }) => {
+      setSession(s);
+      if (s?.user) fetchProfile(s.user.id);
+      else setLoading(false);
+    });
+
+    // 状態変化リスン
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, s) => {
+      setSession(s);
+      if (s?.user) fetchProfile(s.user.id);
+      else {
+        setDisplayName("");
+        setLoading(false);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  async function fetchProfile(userId) {
+    try {
+      const { data } = await supabase.from("profiles").select("display_name").eq("id", userId).maybeSingle();
+      setDisplayName(data?.display_name || session?.user?.email?.split("@")[0] || "");
+    } catch {
+      setDisplayName(session?.user?.email?.split("@")[0] || "");
+    }
+    setLoading(false);
+  }
+
+  const isLoggedIn = !!session;
+
+  const signOut = async () => {
+    if (!supabase) return;
+    await supabase.auth.signOut();
+  };
+
+  return { isLoggedIn, displayName, loading, signOut };
+}
+
+// ========== ログインモーダル ==========
+function LoginModal({ open, onClose }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  async function handleLogin(e) {
+    e.preventDefault();
+    if (!supabase) { setError("Supabase が設定されていません"); return; }
+    setError("");
+    setSubmitting(true);
+    const { error: err } = await supabase.auth.signInWithPassword({ email, password });
+    setSubmitting(false);
+    if (err) {
+      setError(err.message === "Invalid login credentials" ? "メールアドレスまたはパスワードが正しくありません" : err.message);
+    } else {
+      setEmail("");
+      setPassword("");
+      onClose();
+    }
+  }
+
+  if (!open) return null;
+  return (
+    <div
+      style={{
+        position: "fixed", top: 0, left: 0, right: 0, bottom: 0, zIndex: 99999,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        background: "linear-gradient(135deg, rgba(99,102,241,0.15) 0%, rgba(236,72,153,0.1) 100%)",
+        backdropFilter: "blur(4px)", padding: "16px",
+      }}
+    >
+      <div style={{ width: "100%", maxWidth: "24rem", borderRadius: "24px", backgroundColor: "white", boxShadow: "0 20px 60px -10px rgba(99,102,241,0.3)" }}>
+        <div style={{ textAlign: "center", padding: "28px 24px 0" }}>
+          <div style={{ width: "48px", height: "48px", borderRadius: "50%", background: "linear-gradient(135deg, #e0e7ff, #c7d2fe)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 8px", fontSize: "22px" }}>🔑</div>
+          <div style={{ fontSize: "18px", fontWeight: 700, color: "#312e81" }}>ログイン</div>
+          <div style={{ fontSize: "13px", color: "#6b7280", marginTop: "4px" }}>メールアドレスとパスワードを入力してください</div>
+        </div>
+        <form onSubmit={handleLogin} style={{ padding: "20px 24px 24px" }} className="space-y-4">
+          {error && <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "12px", padding: "10px 14px", fontSize: "13px", color: "#dc2626" }}>{error}</div>}
+          <div>
+            <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#6366f1", marginBottom: "6px" }}>メールアドレス</label>
+            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required
+              style={{ width: "100%", borderRadius: "12px", border: "2px solid #e0e7ff", padding: "10px 14px", fontSize: "14px", outline: "none", transition: "border-color 0.2s", boxSizing: "border-box" }}
+              onFocus={(e) => e.target.style.borderColor = "#818cf8"} onBlur={(e) => e.target.style.borderColor = "#e0e7ff"}
+              placeholder="user@example.com" />
+          </div>
+          <div>
+            <label style={{ display: "block", fontSize: "13px", fontWeight: 600, color: "#6366f1", marginBottom: "6px" }}>パスワード</label>
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required
+              style={{ width: "100%", borderRadius: "12px", border: "2px solid #e0e7ff", padding: "10px 14px", fontSize: "14px", outline: "none", transition: "border-color 0.2s", boxSizing: "border-box" }}
+              onFocus={(e) => e.target.style.borderColor = "#818cf8"} onBlur={(e) => e.target.style.borderColor = "#e0e7ff"}
+              placeholder="••••••••" />
+          </div>
+          <button type="submit" disabled={submitting}
+            style={{ width: "100%", borderRadius: "14px", padding: "12px", fontSize: "15px", fontWeight: 700, color: "white", border: "none", cursor: submitting ? "wait" : "pointer", background: "linear-gradient(135deg, #6366f1 0%, #a855f7 100%)", boxShadow: "0 4px 14px rgba(99,102,241,0.4)", opacity: submitting ? 0.6 : 1, transition: "opacity 0.2s" }}>
+            {submitting ? "ログイン中..." : "ログイン"}
+          </button>
+          <div style={{ textAlign: "center" }}>
+            <button type="button" onClick={onClose} style={{ fontSize: "13px", color: "#9ca3af", background: "none", border: "none", cursor: "pointer" }}>閉じる</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function Modal({ title, open, onClose, children }) {
   if (!open) return null;
   return (
@@ -353,7 +470,8 @@ function Modal({ title, open, onClose, children }) {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        backgroundColor: "rgba(0, 0, 0, 0.5)",
+        background: "rgba(15, 23, 42, 0.4)",
+        backdropFilter: "blur(4px)",
         padding: "16px",
       }}
     >
@@ -363,15 +481,15 @@ function Modal({ title, open, onClose, children }) {
           maxWidth: "36rem",
           maxHeight: "90vh",
           overflow: "auto",
-          borderRadius: "16px",
-          backgroundColor: "white",
-          boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.25)",
+          borderRadius: "20px",
+          backgroundColor: "#fff",
+          boxShadow: "0 20px 60px -10px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(0,0,0,0.05)",
         }}
       >
-        <div className="flex items-center justify-between border-b px-5 py-4">
-          <div className="text-lg font-semibold">{title}</div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", borderBottom: "1px solid #f1f5f9", background: "linear-gradient(135deg, #f8fafc, #f1f5f9)" }}>
+          <div style={{ fontSize: "16px", fontWeight: 700, color: "#1e293b" }}>{title}</div>
           <button
-            className="rounded-xl px-3 py-1 text-sm hover:bg-gray-100"
+            style={{ borderRadius: "10px", padding: "4px 10px", fontSize: "13px", color: "#94a3b8", background: "none", border: "1px solid #e2e8f0", cursor: "pointer" }}
             onClick={onClose}
             type="button"
           >
@@ -385,23 +503,18 @@ function Modal({ title, open, onClose, children }) {
 }
 
 function Badge({ children, color = "gray" }) {
-  const colors = {
-    gray: "bg-gray-100 text-gray-700",
-    blue: "bg-blue-100 text-blue-700",
-    green: "bg-green-100 text-green-700",
-    yellow: "bg-yellow-100 text-yellow-700",
-    red: "bg-red-100 text-red-700",
-    purple: "bg-purple-100 text-purple-700",
+  const styles = {
+    gray:   { bg: "#f1f5f9", fg: "#475569" },
+    blue:   { bg: "#dbeafe", fg: "#2563eb" },
+    green:  { bg: "#dcfce7", fg: "#16a34a" },
+    yellow: { bg: "#fef9c3", fg: "#a16207" },
+    red:    { bg: "#fee2e2", fg: "#dc2626" },
+    purple: { bg: "#ede9fe", fg: "#7c3aed" },
+    orange: { bg: "#fff7ed", fg: "#c2410c" },
   };
-  if (color === "orange") {
-    return (
-      <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs" style={{ background: "#fff7ed", color: "#c2410c" }}>
-        {children}
-      </span>
-    );
-  }
+  const s = styles[color] || styles.gray;
   return (
-    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs ${colors[color] || colors.gray}`}>
+    <span style={{ display: "inline-flex", alignItems: "center", borderRadius: "20px", padding: "2px 10px", fontSize: "11px", fontWeight: 600, background: s.bg, color: s.fg }}>
       {children}
     </span>
   );
@@ -412,7 +525,9 @@ function IconButton({ children, onClick, title }) {
     <button
       title={title}
       onClick={onClick}
-      className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm hover:bg-gray-50 active:scale-[0.99]"
+      style={{ borderRadius: "12px", border: "1px solid #e2e8f0", background: "#fff", padding: "6px 14px", fontSize: "13px", fontWeight: 500, color: "#475569", cursor: "pointer", boxShadow: "0 1px 3px rgba(0,0,0,0.06)", transition: "all 0.15s" }}
+      onMouseEnter={(e) => { e.currentTarget.style.background = "#f8fafc"; e.currentTarget.style.borderColor = "#cbd5e1"; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = "#fff"; e.currentTarget.style.borderColor = "#e2e8f0"; }}
       type="button"
     >
       {children}
@@ -422,8 +537,11 @@ function IconButton({ children, onClick, title }) {
 
 function SectionTitle({ children, right }) {
   return (
-    <div className="mb-2 flex items-center justify-between">
-      <div className="text-sm font-semibold text-gray-900">{children}</div>
+    <div className="mb-3 flex items-center justify-between">
+      <div className="flex items-center gap-2">
+        <div style={{ width: 3, height: 16, borderRadius: 2, background: "linear-gradient(180deg, #6366f1, #a855f7)" }} />
+        <div style={{ fontSize: "13px", fontWeight: 700, color: "#1e293b", letterSpacing: "0.01em" }}>{children}</div>
+      </div>
       {right}
     </div>
   );
@@ -883,7 +1001,7 @@ function CalendarStub({ selectedDate, onPick }) {
   const dayHeaders = "日月火水木金土".split("");
 
   return (
-    <div className="rounded-2xl border bg-white p-3 shadow-sm">
+    <div className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm">
       <div className="mb-2 flex items-center justify-between">
         <div className="text-sm font-semibold">
           {year} / {month + 1}
@@ -1137,7 +1255,7 @@ function SimpleGridView({ warehouses, selectedWarehouseId, onSelect, onOpen }) {
   );
 }
 
-function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, warehouses, onSwitchWarehouse }) {
+function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, warehouses, onSwitchWarehouse, isLoggedIn, displayName, onLoginClick, onLogout }) {
   const [selectedDate, setSelectedDate] = useState(() => new Date());
 
   const defaultLayout = useMemo(
@@ -1182,17 +1300,42 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
     []
   );
 
-  const [layout, setLayout] = useSupabaseState(`wh_demo_layout_${wh.id}_v1`, defaultLayout);
-  const [units, setUnits] = useSupabaseState(`wh_demo_units_${wh.id}_v1`, []);
+  const [layout, _setLayoutRaw] = useSupabaseState(`wh_demo_layout_${wh.id}_v1`, defaultLayout);
+  const [units, _setUnitsRaw] = useSupabaseState(`wh_demo_units_${wh.id}_v1`, []);
   // units: {id, kind, client, name, w_m,d_m,h_m, qty, status, rot, loc:{kind:'unplaced'|'floor'|'rack', x?,y?, rackId?, slot?}}
 
-  const [panels, setPanels] = useSupabaseState(`wh_demo_panels_${wh.id}_v1`, []);
+  const [panels, _setPanelsRaw] = useSupabaseState(`wh_demo_panels_${wh.id}_v1`, []);
 
-  // マイグレーション: layout.panelsが存在する場合、新stateに移行
+  const [toast, setToast] = useState(null);
+
+  // 認証付きセッター（未ログイン時はブロック、デバウンスでトースト表示）
+  const _authToastRef = useRef(0);
+  function _authBlock() {
+    const now = Date.now();
+    if (now - _authToastRef.current > 2000) {
+      _authToastRef.current = now;
+      setToast("この操作にはログインが必要です");
+      setTimeout(() => setToast(null), 1600);
+    }
+  }
+  const setLayout = useCallback((...args) => {
+    if (!isLoggedIn) { _authBlock(); return; }
+    _setLayoutRaw(...args);
+  }, [isLoggedIn, _setLayoutRaw]);
+  const setUnits = useCallback((...args) => {
+    if (!isLoggedIn) { _authBlock(); return; }
+    _setUnitsRaw(...args);
+  }, [isLoggedIn, _setUnitsRaw]);
+  const setPanels = useCallback((...args) => {
+    if (!isLoggedIn) { return; }
+    _setPanelsRaw(...args);
+  }, [isLoggedIn, _setPanelsRaw]);
+
+  // マイグレーション: layout.panelsが存在する場合、新stateに移行（rawセッター使用）
   useEffect(() => {
     if (layout.panels && layout.panels.length > 0) {
-      setPanels((prev) => prev.length > 0 ? prev : layout.panels);
-      setLayout((prev) => { const { panels: _, ...rest } = prev; return rest; });
+      _setPanelsRaw((prev) => prev.length > 0 ? prev : layout.panels);
+      _setLayoutRaw((prev) => { const { panels: _, ...rest } = prev; return rest; });
     }
   }, []);
 
@@ -1243,8 +1386,8 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
       labelColor: p.labelColor || "#000000",
       labelFontSize: p.labelFontSize || 0.75,
     }));
-    setUnits((prev) => [...prev, ...newUnits]);
-    setPanels([]);
+    _setUnitsRaw((prev) => [...prev, ...newUnits]);
+    _setPanelsRaw([]);
   }, []);
 
   // 仮置き場ゾーンの自動作成（既存オブジェクトと重ならない空き位置を探索）
@@ -1293,7 +1436,7 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
     }
     // それでも見つからなければ遠い位置にフォールバック
     if (sx === null) { sx = fx + floor.cols + 20; sy = fy; }
-    setLayout((prev) => ({
+    _setLayoutRaw((prev) => ({
       ...prev,
       zones: [
         ...prev.zones,
@@ -1371,7 +1514,6 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
   useEffect(() => { unitsRef.current = units; }, [units]);
 
   const canvasRef = useRef(null);
-  const [toast, setToast] = useState(null);
   const [isoViewOpen, setIsoViewOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
 const [detailUnit, setDetailUnit] = useState(null);
@@ -1455,6 +1597,13 @@ const personList = site?.personList || [];
   qty: "1",
   bgColor: "",
 });
+  // ログイン時、担当者名を自動設定
+  useEffect(() => {
+    if (displayName && isLoggedIn) {
+      setForm((prev) => prev.personInCharge ? prev : { ...prev, personInCharge: displayName });
+    }
+  }, [displayName, isLoggedIn]);
+
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [listModalOpen, setListModalOpen] = useState(false);
   const [listSearchKey, setListSearchKey] = useState("personInCharge"); // 検索キー
@@ -1561,8 +1710,16 @@ const personList = site?.personList || [];
     showToast._t = window.setTimeout(() => setToast(null), 1600);
   }
 
+  // ========== 認証ガード ==========
+  function requireAuth() {
+    if (isLoggedIn) return true;
+    showToast("この操作にはログインが必要です");
+    return false;
+  }
+
   // ========== 画像アップロード / 削除 ==========
   async function uploadImage(unitId, file) {
+    if (!requireAuth()) return;
     showToast("画像をアップロード中...");
     try {
       const base64 = await new Promise((resolve, reject) => {
@@ -1594,6 +1751,7 @@ const personList = site?.personList || [];
   }
 
   async function deleteImage(unitId, fileId) {
+    if (!requireAuth()) return;
     showToast("画像を削除中...");
     try {
       await fetch(IMAGE_API_URL + "?action=delete&fileId=" + encodeURIComponent(fileId));
@@ -1610,6 +1768,7 @@ const personList = site?.personList || [];
 
   // ========== Unit更新ヘルパー ==========
   function updateUnitField(unitId, field, newValue, action) {
+    if (!requireAuth()) return;
     setUnits((prev) => prev.map((u) => {
       if (u.id !== unitId) return u;
       const oldValue = u[field];
@@ -1620,6 +1779,7 @@ const personList = site?.personList || [];
         field,
         oldValue,
         newValue,
+        by: displayName || "",
       });
       if (hist.length > 200) hist.splice(0, hist.length - 200);
       return { ...u, [field]: newValue, editHistory: hist };
@@ -1627,12 +1787,14 @@ const personList = site?.personList || [];
   }
 
   function updateUnitFieldSilent(unitId, field, newValue) {
+    if (!requireAuth()) return;
     setUnits((prev) => prev.map((u) =>
       u.id === unitId ? { ...u, [field]: newValue } : u
     ));
   }
 
   function updateUnitFields(unitId, changes, action) {
+    if (!requireAuth()) return;
     setUnits((prev) => prev.map((u) => {
       if (u.id !== unitId) return u;
       const hist = (u.editHistory || []).slice();
@@ -1642,6 +1804,7 @@ const personList = site?.personList || [];
         action: action || "changed",
         fields,
         changes: fields.reduce((acc, f) => { acc[f] = { old: u[f], new: changes[f] }; return acc; }, {}),
+        by: displayName || "",
       });
       if (hist.length > 200) hist.splice(0, hist.length - 200);
       return { ...u, ...changes, editHistory: hist };
@@ -1650,6 +1813,7 @@ const personList = site?.personList || [];
 
   // 倉庫間移動
   function transferUnitToWarehouse(unitId, destWarehouseId) {
+    if (!requireAuth()) return;
     const unit = units.find((u) => u.id === unitId);
     if (!unit) return;
     const destWh = warehouses.find((w) => w.id === destWarehouseId);
@@ -1671,6 +1835,7 @@ const personList = site?.personList || [];
       field: "倉庫",
       oldValue: wh.name,
       newValue: destWh.name,
+      by: displayName || "",
     });
     if (hist.length > 200) hist.splice(0, hist.length - 200);
 
@@ -2678,6 +2843,7 @@ const personList = site?.personList || [];
     }
 
     if (drag.type === "place_new") {
+      if (!requireAuth()) { setDrag(null); return; }
       const { cx, cy } = toCell(drag.pointerX, drag.pointerY);
       const u = drag.draftUnit;
 
@@ -2751,6 +2917,7 @@ const personList = site?.personList || [];
     }
 
     if (drag.type === "move_unit") {
+      if (!requireAuth()) { setDrag(null); return; }
       const u = unitsRef.current.find((x) => x.id === drag.unitId);
       if (!u) {
         setDrag(null);
@@ -3393,6 +3560,7 @@ const personList = site?.personList || [];
   }
 
   function createUnitFromForm() {
+    if (!requireAuth()) return;
     const w = Number(form.w);
     const d = Number(form.d);
     const h = Number(form.h);
@@ -3445,6 +3613,7 @@ const personList = site?.personList || [];
       editHistory: [{
         timestamp: new Date().toISOString(),
         action: "created",
+        by: displayName || "",
       }],
 
       // ========== 運行中 ==========
@@ -3466,6 +3635,7 @@ const personList = site?.personList || [];
   }
 
   function placeOnFloorAuto(unitId) {
+    if (!requireAuth()) return;
     const u = units.find((x) => x.id === unitId);
     if (!u) return;
     const fp = unitFootprintCells(u);
@@ -3501,6 +3671,7 @@ const personList = site?.personList || [];
   }
 
   function placeOnShelfAuto(unitId, shelfId) {
+    if (!requireAuth()) return;
     const u = units.find((x) => x.id === unitId);
     if (!u) return;
     const shelf = (layout.shelves || []).find((s) => s.id === shelfId);
@@ -3519,6 +3690,7 @@ const personList = site?.personList || [];
   }
 
   function placeOnRackAuto(unitId, rackId) {
+    if (!requireAuth()) return;
     const u = units.find((x) => x.id === unitId);
     if (!u) return;
     const rack = layout.racks.find((r) => r.id === rackId);
@@ -3731,7 +3903,7 @@ const personList = site?.personList || [];
   return (
     <div className="h-screen w-full bg-gray-50">
       {/* Header */}
-      <div className="flex items-center justify-between border-b bg-white px-5 py-3">
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 20px", borderBottom: "1px solid #e2e8f0", background: "linear-gradient(to right, #ffffff, #f8fafc)" }}>
         <div className="flex items-center gap-3">
           <button
             className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm hover:bg-gray-50"
@@ -3830,12 +4002,32 @@ const personList = site?.personList || [];
           >
             担当者管理
           </button>
+          {/* Auth UI */}
+          <div className="ml-1 border-l pl-2 flex items-center gap-2">
+            {isLoggedIn ? (
+              <>
+                <span style={{ background: "linear-gradient(135deg, #e0e7ff, #ede9fe)", color: "#4338ca", borderRadius: "20px", padding: "4px 12px", fontSize: "12px", fontWeight: 600 }}>{displayName}</span>
+                <button type="button" onClick={onLogout} style={{ borderRadius: "8px", padding: "4px 8px", fontSize: "11px", color: "#9ca3af", background: "none", border: "none", cursor: "pointer" }}>ログアウト</button>
+              </>
+            ) : (
+              <button type="button" onClick={onLoginClick} style={{ borderRadius: "20px", padding: "6px 16px", fontSize: "12px", fontWeight: 600, color: "white", background: "linear-gradient(135deg, #6366f1, #a855f7)", border: "none", cursor: "pointer", boxShadow: "0 2px 8px rgba(99,102,241,0.3)" }}>ログイン</button>
+            )}
+          </div>
         </div>
       </div>
 
+      {/* 閲覧モードバナー */}
+      {!isLoggedIn && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", background: "linear-gradient(90deg, #fef3c7, #fde68a)", borderBottom: "1px solid #fcd34d", padding: "8px 16px", fontSize: "13px", color: "#92400e" }}>
+          <span style={{ fontSize: "16px" }}>👀</span>
+          <span>閲覧モード — 編集するにはログインしてください</span>
+          <button type="button" onClick={onLoginClick} style={{ borderRadius: "16px", padding: "3px 12px", fontSize: "12px", fontWeight: 600, color: "white", background: "linear-gradient(135deg, #f59e0b, #ef4444)", border: "none", cursor: "pointer" }}>ログイン</button>
+        </div>
+      )}
+
       {/* Toast */}
       {toast && (
-        <div className="fixed left-1/2 top-16 z-50 -translate-x-1/2 rounded-2xl bg-black px-4 py-2 text-sm text-white shadow">
+        <div style={{ position: "fixed", left: "50%", top: "72px", transform: "translateX(-50%)", zIndex: 9999, borderRadius: "14px", padding: "8px 20px", fontSize: "13px", fontWeight: 500, color: "#fff", background: "linear-gradient(135deg, #1e293b, #334155)", boxShadow: "0 8px 24px rgba(0,0,0,0.2)" }}>
           {toast}
         </div>
       )}
@@ -4264,7 +4456,7 @@ const personList = site?.personList || [];
           <CalendarStub selectedDate={selectedDate} onPick={setSelectedDate} />
 
           {/* 出庫予定セクション */}
-          <div className="rounded-2xl border bg-white p-3 shadow-sm">
+          <div className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm">
             <SectionTitle
               right={<Badge>{shippingSchedule.length} 件</Badge>}
             >
@@ -4312,7 +4504,7 @@ const personList = site?.personList || [];
           </div>
 
           {/* 運行中セクション */}
-          <div className="rounded-2xl border bg-white p-3 shadow-sm" style={{ borderColor: transitAlerts.length > 0 ? "#fbbf24" : undefined }}>
+          <div className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm" style={{ borderColor: transitAlerts.length > 0 ? "#fbbf24" : undefined }}>
             <SectionTitle
               right={
                 <span className="flex items-center gap-1">
@@ -4392,7 +4584,7 @@ const personList = site?.personList || [];
 
           {/* 予約アラートセクション */}
           {reservationAlerts.length > 0 && (
-            <div className="rounded-2xl border bg-white p-3 shadow-sm" style={{ borderColor: "#f97316" }}>
+            <div className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm" style={{ borderColor: "#f97316" }}>
               <SectionTitle
                 right={
                   <span className="inline-flex items-center justify-center rounded-full text-[10px] font-bold text-white" style={{ background: "#f97316", minWidth: 20, height: 20, padding: "0 5px" }}>
@@ -4458,7 +4650,7 @@ const personList = site?.personList || [];
           )}
 
           {/* 入庫予定セクション */}
-          <div className="rounded-2xl border bg-white p-3 shadow-sm">
+          <div className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm">
             <SectionTitle
               right={<Badge color="blue">{arrivalSchedule.length} 件</Badge>}
             >
@@ -4504,7 +4696,7 @@ const personList = site?.personList || [];
             )}
           </div>
 
-          <div className="rounded-2xl border bg-white p-3 shadow-sm">
+          <div className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm">
             <SectionTitle>取引先別 占有（概算）</SectionTitle>
             <div className="space-y-2">
               {clientUsage.length === 0 && <div className="text-sm text-gray-600">まだ配置された荷物がありません。</div>}
@@ -4536,7 +4728,7 @@ const personList = site?.personList || [];
         </div>
 
         {/* Center: Warehouse canvas */}
-        <div className="flex-1 rounded-2xl border bg-white p-3 shadow-sm min-w-0">
+        <div className="flex-1 rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm min-w-0">
           <SectionTitle
             right={
               <div className="flex flex-wrap items-center gap-2">
@@ -5494,7 +5686,7 @@ const personList = site?.personList || [];
           }}
         >
           {mode === "layout" ? (
-            <div className="rounded-2xl border bg-white p-3 shadow-sm">
+            <div className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm">
               <SectionTitle>レイアウト編集</SectionTitle>
 
               <div className="grid grid-cols-3 gap-2">
@@ -5535,7 +5727,7 @@ const personList = site?.personList || [];
                     <div>
                       <div className="text-xs text-gray-500">横セル数</div>
                       <input
-                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                        className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                         value={layout.floor.cols}
                         onChange={(e) =>
                           setLayout((p) => ({
@@ -5549,7 +5741,7 @@ const personList = site?.personList || [];
                     <div>
                       <div className="text-xs text-gray-500">縦セル数</div>
                       <input
-                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                        className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                         value={layout.floor.rows}
                         onChange={(e) =>
                           setLayout((p) => ({
@@ -5563,7 +5755,7 @@ const personList = site?.personList || [];
                     <div>
                       <div className="text-xs text-gray-500">セル幅(m)</div>
                       <input
-                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                        className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                         value={layout.floor.cell_m_w}
                         onChange={(e) =>
                           setLayout((p) => ({
@@ -5577,7 +5769,7 @@ const personList = site?.personList || [];
                     <div>
                       <div className="text-xs text-gray-500">セル奥行(m)</div>
                       <input
-                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                        className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                         value={layout.floor.cell_m_d}
                         onChange={(e) =>
                           setLayout((p) => ({
@@ -5794,7 +5986,7 @@ const personList = site?.personList || [];
                       <div>
                         <div className="text-xs text-gray-500">名前</div>
                         <input
-                          className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                          className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                           value={selectedEntity.name || ""}
                           onChange={(e) => {
                             const v = e.target.value;
@@ -5866,7 +6058,7 @@ const personList = site?.personList || [];
                           <div>
                             <div className="text-xs text-gray-500">取引先</div>
                             <input
-                              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                               value={selectedEntity.client || ""}
                               onChange={(e) => {
                                 const v = e.target.value;
@@ -5966,7 +6158,7 @@ const personList = site?.personList || [];
                             <div>
                               <div className="text-xs text-gray-500">段数(rows)</div>
                               <input
-                                className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                                className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                                 value={selectedEntity.rows}
                                 onChange={(e) => {
                                   const v = clamp(Number(e.target.value) || 1, 1, 20);
@@ -5981,7 +6173,7 @@ const personList = site?.personList || [];
                             <div>
                               <div className="text-xs text-gray-500">列数(cols)</div>
                               <input
-                                className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                                className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                                 value={selectedEntity.cols}
                                 onChange={(e) => {
                                   const v = clamp(Number(e.target.value) || 1, 1, 30);
@@ -6560,6 +6752,7 @@ const personList = site?.personList || [];
                               style={{ background: "#fee2e2", color: "#dc2626" }}
                               onClick={(e) => {
                                 e.stopPropagation();
+                                if (!requireAuth()) return;
                                 setUnits((prev) => prev.filter((x) => x.id !== u.id));
                                 showToast("削除しました");
                               }}
@@ -6574,7 +6767,7 @@ const personList = site?.personList || [];
                 </div>
               </div>
 
-              <div className="rounded-2xl border bg-white p-3 shadow-sm">
+              <div className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm">
                 <SectionTitle>選択中{selectionSet.length > 1 ? ` (${selectionSet.length}件)` : ""}</SectionTitle>
                 {selectionSet.length > 1 ? (
                   <div className="space-y-2">
@@ -6588,7 +6781,7 @@ const personList = site?.personList || [];
                     <div className="text-xs text-gray-500">選択中のアイテムをドラッグでグループ移動できます。</div>
                     <button
                       className="rounded-xl border px-3 py-2 text-sm hover:bg-red-50 text-red-600 border-red-300 w-full"
-                      onClick={() => { removeSelected(); showToast("一括削除しました"); }}
+                      onClick={() => { if (!requireAuth()) return; removeSelected(); showToast("一括削除しました"); }}
                       type="button"
                     >
                       一括削除 ({selectionSet.length}件)
@@ -6649,7 +6842,7 @@ const personList = site?.personList || [];
                     <div>
                       <div className="text-xs text-gray-500">名前</div>
                       <input
-                        className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                        className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                         value={selectedEntity.name || ""}
                         onChange={(e) => setPanels((p) => p.map((pn) => (pn.id === selected.id ? { ...pn, name: e.target.value } : pn)))}
                       />
@@ -6743,7 +6936,7 @@ const personList = site?.personList || [];
                       </button>
                     </div>
                     <div className="flex gap-2">
-                      <button className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50" type="button" onClick={() => { setPanels((prev) => prev.filter((p) => p.id !== selectedEntity.id)); clearSelection(); showToast("削除しました"); }}>
+                      <button className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50" type="button" onClick={() => { if (!requireAuth()) return; setPanels((prev) => prev.filter((p) => p.id !== selectedEntity.id)); clearSelection(); showToast("削除しました"); }}>
                         削除
                       </button>
                     </div>
@@ -6776,6 +6969,7 @@ const personList = site?.personList || [];
                         className="rounded-xl border px-3 py-2 text-sm hover:bg-red-50 text-red-600"
                         type="button"
                         onClick={() => {
+                          if (!requireAuth()) return;
                           setUnits((prev) => prev.filter((u) => u.id !== selectedEntity.id));
                           clearSelection();
                           showToast("削除しました");
@@ -6972,7 +7166,7 @@ const personList = site?.personList || [];
                           <div>
                             <div className="text-xs text-gray-500">社内担当者名</div>
                             <select
-                              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                               value={selectedEntity.personInCharge || ""}
                               onChange={(e) => updateUnitField(selectedEntity.id, "personInCharge", e.target.value, "担当者変更")}
                             >
@@ -6986,7 +7180,7 @@ const personList = site?.personList || [];
                           <div>
                             <div className="text-xs text-gray-500">顧客名</div>
                             <input
-                              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                               value={selectedEntity.client || ""}
                               onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "client", e.target.value)}
                               onBlur={(e) => updateUnitField(selectedEntity.id, "client", e.target.value, "顧客名変更")}
@@ -6997,7 +7191,7 @@ const personList = site?.personList || [];
                           <div>
                             <div className="text-xs text-gray-500">部署名</div>
                             <input
-                              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                               value={selectedEntity.department || ""}
                               onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "department", e.target.value)}
                               onBlur={(e) => updateUnitField(selectedEntity.id, "department", e.target.value, "部署名変更")}
@@ -7008,7 +7202,7 @@ const personList = site?.personList || [];
                           <div>
                             <div className="text-xs text-gray-500">顧客担当者名</div>
                             <input
-                              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                               value={selectedEntity.clientContact || ""}
                               onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "clientContact", e.target.value)}
                               onBlur={(e) => updateUnitField(selectedEntity.id, "clientContact", e.target.value, "顧客担当者名変更")}
@@ -7019,7 +7213,7 @@ const personList = site?.personList || [];
                           <div>
                             <div className="text-xs text-gray-500">荷物名(イベント名)</div>
                             <input
-                              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                               value={selectedEntity.name || ""}
                               onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "name", e.target.value)}
                               onBlur={(e) => updateUnitField(selectedEntity.id, "name", e.target.value, "荷物名変更")}
@@ -7043,7 +7237,7 @@ const personList = site?.personList || [];
                             <div className="text-xs text-gray-500">入庫日</div>
                             <input
                               type="datetime-local"
-                              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                               value={selectedEntity.arrivalDate || ""}
                               onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "arrivalDate", e.target.value)}
                               onBlur={(e) => updateUnitField(selectedEntity.id, "arrivalDate", e.target.value, "入庫日変更")}
@@ -7054,7 +7248,7 @@ const personList = site?.personList || [];
                             <div className="text-xs text-gray-500">出庫予定日</div>
                             <input
                               type="datetime-local"
-                              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                               value={selectedEntity.departureDate || ""}
                               onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "departureDate", e.target.value)}
                               onBlur={(e) => updateUnitField(selectedEntity.id, "departureDate", e.target.value, "出庫予定日変更")}
@@ -7134,7 +7328,7 @@ const personList = site?.personList || [];
                           <div>
                             <div className="text-xs text-gray-500">重量(kg)</div>
                             <input
-                              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                               type="number" min="0" step="0.1"
                               value={selectedEntity.weight_kg || ""}
                               onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "weight_kg", Number(e.target.value) || 0)}
@@ -7145,7 +7339,7 @@ const personList = site?.personList || [];
                           <div>
                             <div className="text-xs text-gray-500">kintoneレコードID</div>
                             <input
-                              className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                               value={selectedEntity.kintoneRecordId || ""}
                               onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "kintoneRecordId", e.target.value)}
                               onBlur={(e) => updateUnitFieldSilent(selectedEntity.id, "kintoneRecordId", e.target.value)}
@@ -7194,6 +7388,9 @@ const personList = site?.personList || [];
                                 <span>{new Date(h.timestamp).toLocaleString("ja-JP")}</span>
                                 <span className="font-medium text-gray-700">{h.action}</span>
                               </div>
+                              {h.by && (
+                                <div className="text-indigo-600 mt-0.5">by {h.by}</div>
+                              )}
                               {h.field && (
                                 <div className="mt-0.5">
                                   <span className="text-gray-600">{h.field}: </span>
@@ -7213,7 +7410,7 @@ const personList = site?.personList || [];
             </div>
           )}
 
-          <div className="rounded-2xl border bg-white p-3 shadow-sm">
+          <div className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm">
             <SectionTitle>料金（将来）</SectionTitle>
             <div className="text-sm text-gray-700">m²・日 / m³・日 / 場所貸し（ゾーン契約）を組み合わせて請求。</div>
             <div className="mt-2 text-xs text-gray-500">※この画面の占有集計（概算）を土台に、日次スナップショットへ拡張。</div>
@@ -7402,6 +7599,9 @@ const personList = site?.personList || [];
                         <span>{new Date(h.timestamp).toLocaleString("ja-JP")}</span>
                         <span className="font-medium text-gray-700">{h.action}</span>
                       </div>
+                      {h.by && (
+                        <div className="text-indigo-600 mt-0.5">by {h.by}</div>
+                      )}
                       {h.field && (
                         <div className="mt-1">
                           <span className="text-gray-600">{h.field}: </span>
@@ -7756,6 +7956,7 @@ const personList = site?.personList || [];
         // ドロップ処理（2D/3D共通）
         const handleDrop = () => {
           if (!zoneDetailDrag) return;
+          if (!requireAuth()) { setZoneDetailDrag(null); return; }
           const d = zoneDetailDrag;
           const { x: newLocalX, y: newLocalY } = calcDragTarget(d);
           const u = units.find((uu) => uu.id === d.unitId);
@@ -8038,6 +8239,9 @@ function runSelfTests() {
 }
 
 export default function App() {
+  const { isLoggedIn, displayName, loading: authLoading, signOut } = useAuth();
+  const [loginModalOpen, setLoginModalOpen] = useState(false);
+
   const [view, setView] = useState("map"); // map | warehouse
   const [activeWarehouseId, setActiveWarehouseId] = useState(null);
   const [selectedWarehouseId, setSelectedWarehouseId] = useState(null); // 地図上で選択中の倉庫
@@ -8229,6 +8433,7 @@ export default function App() {
   }
 
   function deleteWarehouse(id) {
+    if (!isLoggedIn) { return; }
     setWarehouses((prev) => prev.filter((w) => w.id !== id));
     if (editId === id) {
       setEditOpen(false);
@@ -8237,6 +8442,7 @@ export default function App() {
   }
 
   function addWarehouse() {
+    if (!isLoggedIn) { return; }
     const id = "wh-" + uid();
     // 地図の中央付近に新規倉庫を配置（少しずらす）
     const baseLat = 35.68 + (warehouses.length * 0.005);
@@ -8411,11 +8617,14 @@ export default function App() {
   }, [drag, zoom]);
 
   const updateWarehouse = useCallback((id, patch) => {
+    if (!isLoggedIn) { return; }
     setWarehouses((prev) => prev.map((w) => (w.id === id ? { ...w, ...patch } : w)));
-  }, []);
+  }, [isLoggedIn]);
 
   if (view === "warehouse" && activeWarehouse) {
     return (
+      <>
+      <LoginModal open={loginModalOpen} onClose={() => setLoginModalOpen(false)} />
       <WarehouseView
         key={activeWarehouseId}
         wh={activeWarehouse}
@@ -8428,14 +8637,22 @@ export default function App() {
         onUpdateSite={setSite}
         warehouses={warehouses}
         onSwitchWarehouse={(id) => setActiveWarehouseId(id)}
+        isLoggedIn={isLoggedIn}
+        displayName={displayName}
+        onLoginClick={() => setLoginModalOpen(true)}
+        onLogout={signOut}
       />
+      </>
     );
   }
 
   return (
     <div className="h-screen w-full bg-gray-50">
+      {/* LoginModal */}
+      <LoginModal open={loginModalOpen} onClose={() => setLoginModalOpen(false)} />
+
       {/* Header */}
-      <div className="flex items-center justify-between border-b bg-white px-5 py-3">
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 20px", borderBottom: "1px solid #e2e8f0", background: "linear-gradient(to right, #ffffff, #f8fafc)" }}>
         <div className="flex items-center gap-4">
           <div>
             <div className="text-sm text-gray-500">TOP（マップ風配置 / 簡易デモ）</div>
@@ -8478,8 +8695,28 @@ export default function App() {
               </IconButton>
             </>
           )}
+          {/* Auth UI */}
+          <div className="ml-2 border-l pl-2 flex items-center gap-2">
+            {isLoggedIn ? (
+              <>
+                <span style={{ background: "linear-gradient(135deg, #e0e7ff, #ede9fe)", color: "#4338ca", borderRadius: "20px", padding: "4px 12px", fontSize: "12px", fontWeight: 600 }}>{displayName}</span>
+                <button type="button" onClick={signOut} style={{ borderRadius: "8px", padding: "4px 8px", fontSize: "11px", color: "#9ca3af", background: "none", border: "none", cursor: "pointer" }}>ログアウト</button>
+              </>
+            ) : (
+              <button type="button" onClick={() => setLoginModalOpen(true)} style={{ borderRadius: "20px", padding: "6px 16px", fontSize: "12px", fontWeight: 600, color: "white", background: "linear-gradient(135deg, #6366f1, #a855f7)", border: "none", cursor: "pointer", boxShadow: "0 2px 8px rgba(99,102,241,0.3)" }}>ログイン</button>
+            )}
+          </div>
         </div>
       </div>
+
+      {/* 閲覧モードバナー */}
+      {!isLoggedIn && (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", background: "linear-gradient(90deg, #fef3c7, #fde68a)", borderBottom: "1px solid #fcd34d", padding: "8px 16px", fontSize: "13px", color: "#92400e" }}>
+          <span style={{ fontSize: "16px" }}>👀</span>
+          <span>閲覧モード — 編集するにはログインしてください</span>
+          <button type="button" onClick={() => setLoginModalOpen(true)} style={{ borderRadius: "16px", padding: "3px 12px", fontSize: "12px", fontWeight: 600, color: "white", background: "linear-gradient(135deg, #f59e0b, #ef4444)", border: "none", cursor: "pointer" }}>ログイン</button>
+        </div>
+      )}
 
       {/* Body */}
       <div className="grid h-[calc(100vh-64px)] grid-cols-[1fr_380px] gap-4 p-4">
@@ -8712,7 +8949,7 @@ export default function App() {
               <div>
                 <div className="text-xs text-gray-500">倉庫名</div>
                 <input
-                  className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                  className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                   value={editForm.name}
                   onChange={(e) => setEditForm((s) => ({ ...s, name: e.target.value }))}
                 />
@@ -8720,7 +8957,7 @@ export default function App() {
               <div>
                 <div className="text-xs text-gray-500">面積（m²）</div>
                 <input
-                  className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                  className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                   value={editForm.area_m2}
                   onChange={(e) => setEditForm((s) => ({ ...s, area_m2: e.target.value }))}
                   inputMode="decimal"
@@ -8729,7 +8966,7 @@ export default function App() {
               <div>
                 <div className="text-xs text-gray-500">棚台数</div>
                 <input
-                  className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                  className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                   value={editForm.rack_count}
                   onChange={(e) => setEditForm((s) => ({ ...s, rack_count: e.target.value }))}
                   inputMode="numeric"
@@ -8738,7 +8975,7 @@ export default function App() {
               <div>
                 <div className="text-xs text-gray-500">今日 入荷</div>
                 <input
-                  className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                  className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                   value={editForm.inbound_today}
                   onChange={(e) => setEditForm((s) => ({ ...s, inbound_today: e.target.value }))}
                   inputMode="numeric"
@@ -8747,7 +8984,7 @@ export default function App() {
               <div>
                 <div className="text-xs text-gray-500">今日 出荷</div>
                 <input
-                  className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                  className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                   value={editForm.outbound_today}
                   onChange={(e) => setEditForm((s) => ({ ...s, outbound_today: e.target.value }))}
                   inputMode="numeric"
@@ -8756,7 +8993,7 @@ export default function App() {
               <div>
                 <div className="text-xs text-gray-500">占有（m²）</div>
                 <input
-                  className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                  className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                   value={editForm.occupancy_m2}
                   onChange={(e) => setEditForm((s) => ({ ...s, occupancy_m2: e.target.value }))}
                   inputMode="decimal"
@@ -8765,7 +9002,7 @@ export default function App() {
               <div>
                 <div className="text-xs text-gray-500">占有（m³）</div>
                 <input
-                  className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                  className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                   value={editForm.occupancy_m3}
                   onChange={(e) => setEditForm((s) => ({ ...s, occupancy_m3: e.target.value }))}
                   inputMode="decimal"
@@ -8801,7 +9038,7 @@ export default function App() {
               <div>
                 <div className="text-xs text-gray-500">緯度（lat）</div>
                 <input
-                  className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                  className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                   value={editForm.lat}
                   onChange={(e) => setEditForm((s) => ({ ...s, lat: e.target.value }))}
                   inputMode="decimal"
@@ -8811,7 +9048,7 @@ export default function App() {
               <div>
                 <div className="text-xs text-gray-500">経度（lng）</div>
                 <input
-                  className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                  className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                   value={editForm.lng}
                   onChange={(e) => setEditForm((s) => ({ ...s, lng: e.target.value }))}
                   inputMode="decimal"
@@ -8846,7 +9083,7 @@ export default function App() {
                   <div>
                     <div className="text-xs text-gray-500">画像URL（空欄で絵文字アイコン）</div>
                     <input
-                      className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
+                      className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 focus:outline-none transition-colors"
                       value={editForm.iconImage}
                       onChange={(e) => setEditForm((s) => ({ ...s, iconImage: e.target.value }))}
                       placeholder="https://example.com/image.png"
