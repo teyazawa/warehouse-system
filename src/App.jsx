@@ -3930,10 +3930,13 @@ const personList = site?.personList || [];
 
       {/* 新規作成モーダル */}
       <Modal title="新規荷物作成" open={createModalOpen} onClose={() => setCreateModalOpen(false)}>
-        <div className="space-y-4">
+        <div className="space-y-5">
           {/* テンプレート選択 */}
           <div>
-            <div className="text-xs font-semibold mb-2" style={{ color: "#64748b" }}>テンプレート</div>
+            <div className="flex items-center gap-2 mb-2">
+              <div className="w-1 h-4 rounded-full" style={{ background: "#3b82f6" }} />
+              <div className="text-sm font-bold text-gray-700">テンプレート</div>
+            </div>
             <div className="grid grid-cols-4 gap-2">
               {[
                 { k: "パレット", icon: "\u{1f4e6}", w: "1.2", d: "1.0", h: "1.6", color: "#dbeafe", activeColor: "#3b82f6" },
@@ -3967,192 +3970,215 @@ const personList = site?.personList || [];
             </div>
           </div>
 
-          {/* 入力フィールド */}
-          <div className="grid grid-cols-2 gap-3">
-            <div className="col-span-2">
-              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>① 社内担当者名</div>
-              <select
-                className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
-                style={{ borderColor: "#e2e8f0" }}
-                value={form.personInCharge}
-                onChange={(e) => setForm((s) => ({ ...s, personInCharge: e.target.value }))}
-              >
-                <option value="">（未設定）</option>
-                {personList.map((p) => (
-                  <option key={p.id} value={p.name}>{p.name}</option>
-                ))}
-              </select>
+          {/* 基本情報 */}
+          <div className="rounded-xl border p-4 space-y-3" style={{ background: "#f8fafc" }}>
+            <div className="flex items-center gap-2 mb-1">
+              <div className="w-1 h-4 rounded-full" style={{ background: "#6366f1" }} />
+              <div className="text-sm font-bold text-gray-700">基本情報</div>
             </div>
             <div>
-              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>② 顧客名</div>
+              <label className="text-xs font-medium text-gray-600">荷物名(イベント名)</label>
               <input
-                className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
-                style={{ borderColor: "#e2e8f0" }}
-                value={form.client}
-                onChange={(e) => setForm((s) => ({ ...s, client: e.target.value }))}
-                placeholder="顧客名"
-              />
-            </div>
-            <div>
-              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>③ 部署名</div>
-              <input
-                className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
-                style={{ borderColor: "#e2e8f0" }}
-                value={form.department}
-                onChange={(e) => setForm((s) => ({ ...s, department: e.target.value }))}
-                placeholder="部署名"
-              />
-            </div>
-            <div className="col-span-2">
-              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>④ 顧客担当者名</div>
-              <input
-                className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
-                style={{ borderColor: "#e2e8f0" }}
-                value={form.clientContact}
-                onChange={(e) => setForm((s) => ({ ...s, clientContact: e.target.value }))}
-                placeholder="顧客担当者名"
-              />
-            </div>
-            <div className="col-span-2">
-              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>⑤ 荷物名(イベント名)</div>
-              <input
-                className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
-                style={{ borderColor: "#e2e8f0" }}
+                className="mt-1 w-full rounded-xl border-2 px-3 py-2.5 text-sm font-medium"
+                style={{ borderColor: "#c7d2fe", background: "#fff" }}
                 value={form.name}
                 onChange={(e) => setForm((s) => ({ ...s, name: e.target.value }))}
-                placeholder="荷物名やイベント名"
+                placeholder="荷物名やイベント名を入力"
               />
             </div>
-            <div className="col-span-2">
-              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>⑥ 荷物詳細</div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-medium text-gray-600">社内担当者</label>
+                <select
+                  className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
+                  style={{ borderColor: "#e2e8f0", background: "#fff" }}
+                  value={form.personInCharge}
+                  onChange={(e) => setForm((s) => ({ ...s, personInCharge: e.target.value }))}
+                >
+                  <option value="">（未設定）</option>
+                  {personList.map((p) => (
+                    <option key={p.id} value={p.name}>{p.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-gray-600">顧客名</label>
+                <input
+                  className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
+                  style={{ borderColor: "#e2e8f0", background: "#fff" }}
+                  value={form.client}
+                  onChange={(e) => setForm((s) => ({ ...s, client: e.target.value }))}
+                  placeholder="顧客名"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-gray-600">部署名</label>
+                <input
+                  className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
+                  style={{ borderColor: "#e2e8f0", background: "#fff" }}
+                  value={form.department}
+                  onChange={(e) => setForm((s) => ({ ...s, department: e.target.value }))}
+                  placeholder="部署名"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-gray-600">顧客担当者名</label>
+                <input
+                  className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
+                  style={{ borderColor: "#e2e8f0", background: "#fff" }}
+                  value={form.clientContact}
+                  onChange={(e) => setForm((s) => ({ ...s, clientContact: e.target.value }))}
+                  placeholder="顧客担当者名"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-600">荷物詳細</label>
               <textarea
                 className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
-                style={{ borderColor: "#e2e8f0" }}
+                style={{ borderColor: "#e2e8f0", background: "#fff" }}
                 value={form.notes}
                 onChange={(e) => setForm((s) => ({ ...s, notes: e.target.value }))}
-                placeholder="荷物の詳細情報"
+                placeholder="荷物の詳細情報やメモ"
                 rows={2}
-              />
-            </div>
-            <div>
-              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>⑦ 入庫日</div>
-              <input
-                type="datetime-local"
-                className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
-                style={{ borderColor: "#e2e8f0" }}
-                value={form.arrivalDate}
-                onChange={(e) => setForm((s) => ({ ...s, arrivalDate: e.target.value }))}
-              />
-            </div>
-            <div>
-              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>⑧ 出庫予定日</div>
-              <input
-                type="datetime-local"
-                className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
-                style={{ borderColor: "#e2e8f0" }}
-                value={form.departureDate}
-                onChange={(e) => setForm((s) => ({ ...s, departureDate: e.target.value }))}
               />
             </div>
           </div>
 
-          {/* 運行期間（任意） */}
-          <div>
-            <div className="text-xs font-semibold mb-1" style={{ color: "#64748b" }}>⑧-2 運行期間（任意）</div>
-            <div className="grid grid-cols-2 gap-2">
+          {/* スケジュール */}
+          <div className="rounded-xl border p-4 space-y-3" style={{ background: "#f8fafc" }}>
+            <div className="flex items-center gap-2 mb-1">
+              <div className="w-1 h-4 rounded-full" style={{ background: "#10b981" }} />
+              <div className="text-sm font-bold text-gray-700">スケジュール</div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
               <div>
-                <div className="text-[10px] text-gray-400">開始日</div>
+                <label className="text-xs font-medium text-gray-600">入庫日</label>
                 <input
                   type="datetime-local"
-                  className="mt-0.5 w-full rounded-xl border-2 px-3 py-2 text-sm"
-                  style={{ borderColor: "#e2e8f0" }}
-                  value={form.transitStartDate}
-                  onChange={(e) => setForm((s) => ({ ...s, transitStartDate: e.target.value }))}
+                  className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
+                  style={{ borderColor: "#e2e8f0", background: "#fff" }}
+                  value={form.arrivalDate}
+                  onChange={(e) => setForm((s) => ({ ...s, arrivalDate: e.target.value }))}
                 />
               </div>
               <div>
-                <div className="text-[10px] text-gray-400">終了日（戻り予定）</div>
+                <label className="text-xs font-medium text-gray-600">出庫予定日</label>
                 <input
                   type="datetime-local"
-                  className="mt-0.5 w-full rounded-xl border-2 px-3 py-2 text-sm"
-                  style={{ borderColor: "#e2e8f0" }}
-                  value={form.transitEndDate}
-                  onChange={(e) => setForm((s) => ({ ...s, transitEndDate: e.target.value }))}
+                  className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
+                  style={{ borderColor: "#e2e8f0", background: "#fff" }}
+                  value={form.departureDate}
+                  onChange={(e) => setForm((s) => ({ ...s, departureDate: e.target.value }))}
                 />
+              </div>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-500">運行期間（任意）</label>
+              <div className="grid grid-cols-2 gap-2 mt-1">
+                <div>
+                  <div className="text-[10px] text-gray-400">開始日</div>
+                  <input
+                    type="datetime-local"
+                    className="mt-0.5 w-full rounded-xl border-2 px-3 py-2 text-sm"
+                    style={{ borderColor: "#e2e8f0", background: "#fff" }}
+                    value={form.transitStartDate}
+                    onChange={(e) => setForm((s) => ({ ...s, transitStartDate: e.target.value }))}
+                  />
+                </div>
+                <div>
+                  <div className="text-[10px] text-gray-400">終了日（戻り予定）</div>
+                  <input
+                    type="datetime-local"
+                    className="mt-0.5 w-full rounded-xl border-2 px-3 py-2 text-sm"
+                    style={{ borderColor: "#e2e8f0", background: "#fff" }}
+                    value={form.transitEndDate}
+                    onChange={(e) => setForm((s) => ({ ...s, transitEndDate: e.target.value }))}
+                  />
+                </div>
               </div>
             </div>
           </div>
 
           {/* サイズ・重量 */}
-          <div className="grid grid-cols-4 gap-2">
-            <div>
-              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>W(m)</div>
-              <input
-                className="mt-1 w-full rounded-xl border-2 px-2 py-2 text-sm"
-                style={{ borderColor: "#e2e8f0" }}
-                value={form.w}
-                onChange={(e) => setForm((s) => ({ ...s, w: e.target.value }))}
-                inputMode="decimal"
-              />
+          <div className="rounded-xl border p-4 space-y-3" style={{ background: "#f8fafc" }}>
+            <div className="flex items-center gap-2 mb-1">
+              <div className="w-1 h-4 rounded-full" style={{ background: "#f59e0b" }} />
+              <div className="text-sm font-bold text-gray-700">サイズ・重量</div>
             </div>
-            <div>
-              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>D(m)</div>
-              <input
-                className="mt-1 w-full rounded-xl border-2 px-2 py-2 text-sm"
-                style={{ borderColor: "#e2e8f0" }}
-                value={form.d}
-                onChange={(e) => setForm((s) => ({ ...s, d: e.target.value }))}
-                inputMode="decimal"
-              />
+            <div className="grid grid-cols-4 gap-2">
+              <div>
+                <label className="text-xs font-medium text-gray-600">幅 W(m)</label>
+                <input
+                  className="mt-1 w-full rounded-xl border-2 px-2 py-2 text-sm text-center"
+                  style={{ borderColor: "#e2e8f0", background: "#fff" }}
+                  value={form.w}
+                  onChange={(e) => setForm((s) => ({ ...s, w: e.target.value }))}
+                  inputMode="decimal"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-gray-600">奥行 D(m)</label>
+                <input
+                  className="mt-1 w-full rounded-xl border-2 px-2 py-2 text-sm text-center"
+                  style={{ borderColor: "#e2e8f0", background: "#fff" }}
+                  value={form.d}
+                  onChange={(e) => setForm((s) => ({ ...s, d: e.target.value }))}
+                  inputMode="decimal"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-gray-600">高さ H(m)</label>
+                <input
+                  className="mt-1 w-full rounded-xl border-2 px-2 py-2 text-sm text-center"
+                  style={{ borderColor: "#e2e8f0", background: "#fff" }}
+                  value={form.h}
+                  onChange={(e) => setForm((s) => ({ ...s, h: e.target.value }))}
+                  inputMode="decimal"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-gray-600">数量</label>
+                <input
+                  className="mt-1 w-full rounded-xl border-2 px-2 py-2 text-sm text-center"
+                  style={{ borderColor: "#e2e8f0", background: "#fff" }}
+                  value={form.qty}
+                  onChange={(e) => setForm((s) => ({ ...s, qty: e.target.value }))}
+                  inputMode="numeric"
+                />
+              </div>
             </div>
-            <div>
-              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>H(m)</div>
-              <input
-                className="mt-1 w-full rounded-xl border-2 px-2 py-2 text-sm"
-                style={{ borderColor: "#e2e8f0" }}
-                value={form.h}
-                onChange={(e) => setForm((s) => ({ ...s, h: e.target.value }))}
-                inputMode="decimal"
-              />
-            </div>
-            <div>
-              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>数量</div>
-              <input
-                className="mt-1 w-full rounded-xl border-2 px-2 py-2 text-sm"
-                style={{ borderColor: "#e2e8f0" }}
-                value={form.qty}
-                onChange={(e) => setForm((s) => ({ ...s, qty: e.target.value }))}
-                inputMode="numeric"
-              />
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>⑪ 重量(kg)</div>
-              <input
-                className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
-                style={{ borderColor: "#e2e8f0" }}
-                value={form.weight_kg}
-                onChange={(e) => setForm((s) => ({ ...s, weight_kg: e.target.value }))}
-                inputMode="decimal"
-                placeholder="0"
-              />
-            </div>
-            <div>
-              <div className="text-xs font-semibold" style={{ color: "#64748b" }}>⑫ kintoneレコードID</div>
-              <input
-                className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
-                style={{ borderColor: "#e2e8f0" }}
-                value={form.kintoneRecordId}
-                onChange={(e) => setForm((s) => ({ ...s, kintoneRecordId: e.target.value }))}
-                placeholder="レコードID"
-              />
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-medium text-gray-600">重量(kg)</label>
+                <input
+                  className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
+                  style={{ borderColor: "#e2e8f0", background: "#fff" }}
+                  value={form.weight_kg}
+                  onChange={(e) => setForm((s) => ({ ...s, weight_kg: e.target.value }))}
+                  inputMode="decimal"
+                  placeholder="0"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-gray-600">kintoneレコードID</label>
+                <input
+                  className="mt-1 w-full rounded-xl border-2 px-3 py-2 text-sm"
+                  style={{ borderColor: "#e2e8f0", background: "#fff" }}
+                  value={form.kintoneRecordId}
+                  onChange={(e) => setForm((s) => ({ ...s, kintoneRecordId: e.target.value }))}
+                  placeholder="レコードID"
+                />
+              </div>
             </div>
           </div>
 
-          {/* カラーピッカー */}
-          <div>
-            <div className="text-xs font-semibold mb-2" style={{ color: "#64748b" }}>カード背景色</div>
+          {/* カード背景色 */}
+          <div className="rounded-xl border p-4" style={{ background: "#f8fafc" }}>
+            <div className="flex items-center gap-2 mb-3">
+              <div className="w-1 h-4 rounded-full" style={{ background: "#ec4899" }} />
+              <div className="text-sm font-bold text-gray-700">カード背景色</div>
+            </div>
             <div className="flex items-center gap-2">
               <input
                 type="color"
@@ -4162,7 +4188,7 @@ const personList = site?.personList || [];
               />
               <input
                 className="flex-1 rounded-xl border-2 px-3 py-2 text-sm"
-                style={{ borderColor: "#e2e8f0" }}
+                style={{ borderColor: "#e2e8f0", background: "#fff" }}
                 value={form.bgColor}
                 onChange={(e) => setForm((s) => ({ ...s, bgColor: e.target.value }))}
                 placeholder="未設定（自動配色）"
@@ -4196,11 +4222,11 @@ const personList = site?.personList || [];
 
           {/* 作成ボタン */}
           <button
-            className="w-full rounded-2xl px-4 py-3 text-sm font-bold"
+            className="w-full rounded-2xl px-4 py-3.5 text-sm font-bold"
             type="button"
             onClick={createUnitFromForm}
             style={{
-              background: "#1e293b",
+              background: "linear-gradient(135deg, #1e293b, #334155)",
               color: "#fff",
               boxShadow: "0 4px 14px rgba(30,41,59,0.3)",
             }}
@@ -6859,7 +6885,7 @@ const personList = site?.personList || [];
                     {/* ===== 運行期間（運行中の時のみ表示） ===== */}
                     {selectedEntity.status === "in_transit" && (
                       <div className="border-t pt-2 pb-1">
-                        <div className="text-xs text-gray-500 mb-1">⑧-2 運行期間</div>
+                        <div className="text-xs text-gray-500 mb-1">運行期間</div>
                         <div className="grid grid-cols-2 gap-2">
                           <div>
                             <div className="text-[10px] text-gray-400">開始日</div>
@@ -6942,9 +6968,9 @@ const personList = site?.personList || [];
                       </button>
                       {panelSections.detail && (
                         <div className="pb-2 space-y-2">
-                          {/* ① 社内担当者名 */}
+                          {/* 社内担当者名 */}
                           <div>
-                            <div className="text-xs text-gray-500">① 社内担当者名</div>
+                            <div className="text-xs text-gray-500">社内担当者名</div>
                             <select
                               className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
                               value={selectedEntity.personInCharge || ""}
@@ -6956,9 +6982,9 @@ const personList = site?.personList || [];
                               ))}
                             </select>
                           </div>
-                          {/* ② 顧客名 */}
+                          {/* 顧客名 */}
                           <div>
-                            <div className="text-xs text-gray-500">② 顧客名</div>
+                            <div className="text-xs text-gray-500">顧客名</div>
                             <input
                               className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
                               value={selectedEntity.client || ""}
@@ -6967,9 +6993,9 @@ const personList = site?.personList || [];
                               placeholder="顧客名"
                             />
                           </div>
-                          {/* ③ 部署名 */}
+                          {/* 部署名 */}
                           <div>
-                            <div className="text-xs text-gray-500">③ 部署名</div>
+                            <div className="text-xs text-gray-500">部署名</div>
                             <input
                               className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
                               value={selectedEntity.department || ""}
@@ -6978,9 +7004,9 @@ const personList = site?.personList || [];
                               placeholder="部署名"
                             />
                           </div>
-                          {/* ④ 顧客担当者名 */}
+                          {/* 顧客担当者名 */}
                           <div>
-                            <div className="text-xs text-gray-500">④ 顧客担当者名</div>
+                            <div className="text-xs text-gray-500">顧客担当者名</div>
                             <input
                               className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
                               value={selectedEntity.clientContact || ""}
@@ -6989,9 +7015,9 @@ const personList = site?.personList || [];
                               placeholder="顧客担当者名"
                             />
                           </div>
-                          {/* ⑤ 荷物名(イベント名) */}
+                          {/* 荷物名(イベント名) */}
                           <div>
-                            <div className="text-xs text-gray-500">⑤ 荷物名(イベント名)</div>
+                            <div className="text-xs text-gray-500">荷物名(イベント名)</div>
                             <input
                               className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
                               value={selectedEntity.name || ""}
@@ -7000,9 +7026,9 @@ const personList = site?.personList || [];
                               placeholder="荷物名"
                             />
                           </div>
-                          {/* ⑥ 荷物詳細 */}
+                          {/* 荷物詳細 */}
                           <div>
-                            <div className="text-xs text-gray-500">⑥ 荷物詳細</div>
+                            <div className="text-xs text-gray-500">荷物詳細</div>
                             <textarea
                               className="mt-1 w-full rounded-xl border px-3 py-2 text-sm resize-none"
                               rows={2}
@@ -7012,9 +7038,9 @@ const personList = site?.personList || [];
                               placeholder="荷物の詳細情報"
                             />
                           </div>
-                          {/* ⑦ 入庫日 */}
+                          {/* 入庫日 */}
                           <div>
-                            <div className="text-xs text-gray-500">⑦ 入庫日</div>
+                            <div className="text-xs text-gray-500">入庫日</div>
                             <input
                               type="datetime-local"
                               className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
@@ -7023,9 +7049,9 @@ const personList = site?.personList || [];
                               onBlur={(e) => updateUnitField(selectedEntity.id, "arrivalDate", e.target.value, "入庫日変更")}
                             />
                           </div>
-                          {/* ⑧ 出庫予定日 */}
+                          {/* 出庫予定日 */}
                           <div>
-                            <div className="text-xs text-gray-500">⑧ 出庫予定日</div>
+                            <div className="text-xs text-gray-500">出庫予定日</div>
                             <input
                               type="datetime-local"
                               className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
@@ -7034,9 +7060,9 @@ const personList = site?.personList || [];
                               onBlur={(e) => updateUnitField(selectedEntity.id, "departureDate", e.target.value, "出庫予定日変更")}
                             />
                           </div>
-                          {/* ⑨ 保管場所（表示のみ） */}
+                          {/* 保管場所（表示のみ） */}
                           <div>
-                            <div className="text-xs text-gray-500">⑨ 保管場所</div>
+                            <div className="text-xs text-gray-500">保管場所</div>
                             <div className="mt-1 text-sm text-gray-700">
                               {(() => {
                                 const loc = selectedEntity.loc;
@@ -7058,9 +7084,9 @@ const personList = site?.personList || [];
                               })()}
                             </div>
                           </div>
-                          {/* ⑩ サイズ */}
+                          {/* サイズ */}
                           <div>
-                            <div className="text-xs text-gray-500">⑩ サイズ</div>
+                            <div className="text-xs text-gray-500">サイズ</div>
                             <div className="grid grid-cols-3 gap-2 mt-1">
                               <div>
                                 <div className="text-[10px] text-gray-400">幅(m)</div>
@@ -7104,9 +7130,9 @@ const personList = site?.personList || [];
                               </div>
                             </div>
                           </div>
-                          {/* ⑪ 重量(kg) */}
+                          {/* 重量(kg) */}
                           <div>
-                            <div className="text-xs text-gray-500">⑪ 重量(kg)</div>
+                            <div className="text-xs text-gray-500">重量(kg)</div>
                             <input
                               className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
                               type="number" min="0" step="0.1"
@@ -7115,9 +7141,9 @@ const personList = site?.personList || [];
                               placeholder="0"
                             />
                           </div>
-                          {/* ⑫ kintoneレコードID */}
+                          {/* kintoneレコードID */}
                           <div>
-                            <div className="text-xs text-gray-500">⑫ kintoneレコードID</div>
+                            <div className="text-xs text-gray-500">kintoneレコードID</div>
                             <input
                               className="mt-1 w-full rounded-xl border px-3 py-2 text-sm"
                               value={selectedEntity.kintoneRecordId || ""}
@@ -7235,30 +7261,30 @@ const personList = site?.personList || [];
 
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <div className="text-xs text-gray-500">① 社内担当者名</div>
+                <div className="text-xs text-gray-500">社内担当者名</div>
                 <div className="text-sm">{detailUnit.personInCharge || "-"}</div>
               </div>
               <div>
-                <div className="text-xs text-gray-500">② 顧客名</div>
+                <div className="text-xs text-gray-500">顧客名</div>
                 <div className="text-sm">{detailUnit.client || "-"}</div>
               </div>
               <div>
-                <div className="text-xs text-gray-500">③ 部署名</div>
+                <div className="text-xs text-gray-500">部署名</div>
                 <div className="text-sm">{detailUnit.department || "-"}</div>
               </div>
               <div>
-                <div className="text-xs text-gray-500">④ 顧客担当者名</div>
+                <div className="text-xs text-gray-500">顧客担当者名</div>
                 <div className="text-sm">{detailUnit.clientContact || "-"}</div>
               </div>
               <div className="col-span-2">
-                <div className="text-xs text-gray-500">⑤ 荷物名(イベント名)</div>
+                <div className="text-xs text-gray-500">荷物名(イベント名)</div>
                 <div className="text-sm">{detailUnit.name || "-"}</div>
               </div>
             </div>
 
             {detailUnit.notes && (
               <div>
-                <div className="text-xs text-gray-500">⑥ 荷物詳細</div>
+                <div className="text-xs text-gray-500">荷物詳細</div>
                 <div className="mt-1 rounded-xl border bg-gray-50 p-3 text-sm">
                   {detailUnit.notes}
                 </div>
@@ -7267,7 +7293,7 @@ const personList = site?.personList || [];
 
             <div className="grid grid-cols-2 gap-4 border-t pt-4">
               <div>
-                <div className="text-xs text-gray-500">⑦ 入庫日</div>
+                <div className="text-xs text-gray-500">入庫日</div>
                 <div className="text-sm">
                   {detailUnit.arrivalDate
                     ? new Date(detailUnit.arrivalDate).toLocaleString("ja-JP")
@@ -7275,7 +7301,7 @@ const personList = site?.personList || [];
                 </div>
               </div>
               <div>
-                <div className="text-xs text-gray-500">⑧ 出庫予定日</div>
+                <div className="text-xs text-gray-500">出庫予定日</div>
                 <div className="text-sm">
                   {detailUnit.departureDate
                     ? new Date(detailUnit.departureDate).toLocaleString("ja-JP")
@@ -7284,7 +7310,7 @@ const personList = site?.personList || [];
               </div>
               {detailUnit.status === "in_transit" && (
                 <div className="col-span-2">
-                  <div className="text-xs text-gray-500">⑧-2 運行期間</div>
+                  <div className="text-xs text-gray-500">運行期間</div>
                   <div className="text-sm">
                     {detailUnit.transitStartDate
                       ? new Date(detailUnit.transitStartDate).toLocaleString("ja-JP")
@@ -7297,7 +7323,7 @@ const personList = site?.personList || [];
                 </div>
               )}
               <div className="col-span-2">
-                <div className="text-xs text-gray-500">⑨ 保管場所</div>
+                <div className="text-xs text-gray-500">保管場所</div>
                 <div className="text-sm">
                   {(() => {
                     const loc = detailUnit.loc;
@@ -7320,18 +7346,18 @@ const personList = site?.personList || [];
                 </div>
               </div>
               <div>
-                <div className="text-xs text-gray-500">⑩ サイズ(W×D×H)</div>
+                <div className="text-xs text-gray-500">サイズ(W×D×H)</div>
                 <div className="text-sm">
                   {detailUnit.w_m}×{detailUnit.d_m}×{detailUnit.h_m}m
                   ({(detailUnit.w_m * detailUnit.d_m * detailUnit.h_m).toFixed(3)}m³)
                 </div>
               </div>
               <div>
-                <div className="text-xs text-gray-500">⑪ 重量(kg)</div>
+                <div className="text-xs text-gray-500">重量(kg)</div>
                 <div className="text-sm">{detailUnit.weight_kg || 0}kg</div>
               </div>
               <div>
-                <div className="text-xs text-gray-500">⑫ kintoneレコードID</div>
+                <div className="text-xs text-gray-500">kintoneレコードID</div>
                 <div className="text-sm">{detailUnit.kintoneRecordId || "-"}</div>
               </div>
               <div>
