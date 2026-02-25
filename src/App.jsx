@@ -218,11 +218,9 @@ function fmt(n) {
 function getStatusColor(status) {
   const map = {
     draft: "gray",
-    planned_in: "blue",
+    in_transit: "orange",
     in_stock: "green",
-    reserved: "yellow",
     planned_out: "purple",
-    shipped: "gray",
   };
   return map[status] || "gray";
 }
@@ -231,11 +229,9 @@ function getStatusColor(status) {
 function getStatusLabel(status) {
   const map = {
     draft: "下書き",
-    planned_in: "入荷予定",
-    in_stock: "在庫中",
-    reserved: "引当済",
+    in_transit: "運行中",
+    in_stock: "保管中",
     planned_out: "出荷予定",
-    shipped: "出荷済",
   };
   return map[status] || status;
 }
@@ -394,6 +390,13 @@ function Badge({ children, color = "gray" }) {
     red: "bg-red-100 text-red-700",
     purple: "bg-purple-100 text-purple-700",
   };
+  if (color === "orange") {
+    return (
+      <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs" style={{ background: "#fff7ed", color: "#c2410c" }}>
+        {children}
+      </span>
+    );
+  }
   return (
     <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs ${colors[color] || colors.gray}`}>
       {children}
@@ -656,7 +659,7 @@ function Iso3DView({
             const bb = (onUnitMouseDown || onUnitDoubleClick) ? boxBounds(gx, gy, fw, fh, zOff, h) : null;
             return (
               <g key={u.id+"-"+idx}>
-                {renderIsoBox(gx, gy, fw, fh, zOff, h, color, null, u.fragile, blinkingUnitIds?.has(u.id), isDrag ? 0.3 : 1)}
+                {renderIsoBox(gx, gy, fw, fh, zOff, h, color, null, u.fragile, blinkingUnitIds?.has(u.id), isDrag ? 0.3 : (u.status === "in_transit" ? 0.35 : 1))}
                 {bb && (
                   <div
                     style={{ position: "absolute", left: bb.x, top: bb.y, width: bb.w, height: Math.max(bb.h, 16), cursor: "grab", zIndex: 20 }}
@@ -1131,7 +1134,7 @@ function SimpleGridView({ warehouses, selectedWarehouseId, onSelect, onOpen }) {
   );
 }
 
-function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, warehouses }) {
+function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, warehouses, onSwitchWarehouse }) {
   const [selectedDate, setSelectedDate] = useState(() => new Date());
 
   const defaultLayout = useMemo(
@@ -1439,12 +1442,15 @@ const personList = site?.personList || [];
   notes: "",
   arrivalDate: "",
   departureDate: "",
+  transitStartDate: "",
+  transitEndDate: "",
   w: "1.2",
   d: "1.0",
   h: "1.6",
   weight_kg: "",
   kintoneRecordId: "",
   qty: "1",
+  bgColor: "",
 });
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [listModalOpen, setListModalOpen] = useState(false);
@@ -1694,10 +1700,11 @@ const personList = site?.personList || [];
       const vr = getShelfVisualRect(s);
       rects.push({ x: vr.x, y: vr.y, w: vr.w, h: vr.h, kind: "shelf", id: s.id });
     }
-    // placed units
+    // placed units (skip in_transit units)
     for (const u of units) {
       if (u.id === excludeUnitId) continue;
       if (u.loc?.kind !== "floor") continue;
+      if (u.status === "in_transit") continue;
       const fp = unitFootprintCells(u);
       rects.push({ x: u.loc.x, y: u.loc.y, w: fp.w, h: fp.h, kind: "unit", id: u.id });
     }
@@ -1777,8 +1784,32 @@ const personList = site?.personList || [];
     return true;
   }
 
+  // 予約ゾーンブロック判定（メインキャンバス上の絶対座標で判定）
+  function isBlockedByReservedZone(absX, absY, w, h) {
+    const today = new Date(); today.setHours(0,0,0,0);
+    for (const z of layout.zones) {
+      if (!z.reserved || !z.reservationEndDate) continue;
+      if (z.loc?.kind !== "floor") continue;
+      const endD = new Date(z.reservationEndDate); endD.setHours(0,0,0,0);
+      const diff = Math.ceil((endD - today) / (1000*60*60*24));
+      if (diff > 1) continue;
+      // 矩形の重なりチェック
+      if (absX < z.x + z.w && absX + w > z.x && absY < z.y + z.h && absY + h > z.y) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   // 区画内限定の衝突判定（ローカル座標 0〜zone.w/h）
   function canPlaceInZone(zone, u, localX, localY, excludeUnitId = null, fpFn = null) {
+    // 予約ONかつ期限前日以降 → 配置ブロック
+    if (zone.reserved && zone.reservationEndDate) {
+      const today = new Date(); today.setHours(0,0,0,0);
+      const endD = new Date(zone.reservationEndDate); endD.setHours(0,0,0,0);
+      const diff = Math.ceil((endD - today) / (1000*60*60*24));
+      if (diff <= 1) return false;
+    }
     const fpFunc = fpFn || unitFootprintCells;
     const fp = fpFunc(u);
     if (localX < -0.001 || localY < -0.001) return false;
@@ -1891,6 +1922,7 @@ const personList = site?.personList || [];
     for (const u of units) {
       if (u.id === excludeUnitId) continue;
       if (u.loc?.kind !== "shelf" || u.loc.shelfId !== shelfId) continue;
+      if (u.status === "in_transit") continue;
       const fp = unitFootprintCells(u);
       rects.push({ x: u.loc.x, y: u.loc.y, w: fp.w, h: fp.h, kind: "unit", id: u.id });
     }
@@ -2648,6 +2680,11 @@ const personList = site?.personList || [];
         px = clamp(cx, fx, fx + layout.floor.cols - fp.w);
         py = clamp(cy, fy, fy + layout.floor.rows - fp.h);
       }
+      if (isBlockedByReservedZone(px, py, fp.w, fp.h)) {
+        showToast("予約期限間近のため配置できません（予約OFFにするか期限を延長してください）");
+        setDrag(null);
+        return;
+      }
       if (!canPlaceOnFloor(u, px, py)) {
         showToast("ここには置けません（他の荷物/棚と重なっています）");
         setDrag(null);
@@ -2705,6 +2742,11 @@ const personList = site?.personList || [];
       const floorY = inStaging ? dropY : clamp(dropY, fy, fy + layout.floor.rows - fp.h);
 
       // Check if unit's target area overlaps with floor or is in staging zone
+      if (isBlockedByReservedZone(floorX, floorY, fp.w, fp.h)) {
+        showToast("予約期限間近のため配置できません（予約OFFにするか期限を延長してください）");
+        setDrag(null);
+        return;
+      }
       if (inStaging || (floorX + fp.w > fx && floorY + fp.h > fy && floorX < fx + layout.floor.cols && floorY < fy + layout.floor.rows)) {
         if (canPlaceOnFloor(u, floorX, floorY, u.id)) {
           const candidate = { x: floorX, y: floorY, w: fp.w, h: fp.h };
@@ -2970,7 +3012,7 @@ const personList = site?.personList || [];
     if (px === null) { px = zfx + layout.floor.cols + 10; py = zfy; }
     setLayout((prev) => ({
       ...prev,
-      zones: [...prev.zones, { id: "z-" + uid(), name: "新規区画", client: "取引先A", x: px, y: py, w: zw, h: zh, labelColor: "#000000", bgColor, bgOpacity: 90, loc: { kind: "floor" } }],
+      zones: [...prev.zones, { id: "z-" + uid(), name: "新規区画", client: "取引先A", x: px, y: py, w: zw, h: zh, labelColor: "#000000", bgColor, bgOpacity: 90, loc: { kind: "floor" }, reserved: false, reservationEndDate: null }],
     }));
   }
 
@@ -3355,8 +3397,12 @@ const personList = site?.personList || [];
         action: "created",
       }],
 
+      // ========== 運行中 ==========
+      transitStartDate: form.transitStartDate || null,
+      transitEndDate: form.transitEndDate || null,
+
       // ========== 見た目 ==========
-      bgColor: "",
+      bgColor: form.bgColor || "",
       bgOpacity: 100,
       labelColor: "",
     };
@@ -3535,6 +3581,68 @@ const personList = site?.personList || [];
       .sort((a, b) => (a.arrivalDate || "").localeCompare(b.arrivalDate || ""));
   }, [units, selectedDate]);
 
+  // 運行中ユニット一覧（selectedDate が運行期間内のもの）
+  const transitUnits = useMemo(() => {
+    const selDateStr = (() => {
+      const y = selectedDate.getFullYear();
+      const m = String(selectedDate.getMonth() + 1).padStart(2, "0");
+      const d = String(selectedDate.getDate()).padStart(2, "0");
+      return `${y}-${m}-${d}`;
+    })();
+    return units.filter((u) => {
+      if (u.status !== "in_transit") return false;
+      if (!u.transitStartDate && !u.transitEndDate) return true;
+      const start = u.transitStartDate ? u.transitStartDate.slice(0, 10) : "0000-00-00";
+      const end = u.transitEndDate ? u.transitEndDate.slice(0, 10) : "9999-99-99";
+      return selDateStr >= start && selDateStr <= end;
+    });
+  }, [units, selectedDate]);
+
+  // 運行終了3日前アラート
+  const transitAlerts = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const alerts = [];
+    for (const u of units) {
+      if (u.status !== "in_transit" || !u.transitEndDate) continue;
+      const endDate = new Date(u.transitEndDate);
+      endDate.setHours(0, 0, 0, 0);
+      const diffDays = Math.ceil((endDate - today) / (1000 * 60 * 60 * 24));
+      if (diffDays > 3) continue;
+      // 元の配置位置に別ユニットが置かれているかチェック
+      let positionOccupied = false;
+      if (u.loc?.kind === "floor") {
+        const fp = unitFootprintCells(u);
+        for (const other of units) {
+          if (other.id === u.id || other.status === "in_transit") continue;
+          if (other.loc?.kind !== "floor") continue;
+          const ofp = unitFootprintCells(other);
+          if (u.loc.x < other.loc.x + ofp.w && u.loc.x + fp.w > other.loc.x &&
+              u.loc.y < other.loc.y + ofp.h && u.loc.y + fp.h > other.loc.y) {
+            positionOccupied = true;
+            break;
+          }
+        }
+      }
+      alerts.push({ unit: u, diffDays, positionOccupied });
+    }
+    return alerts;
+  }, [units]);
+
+  // 予約期限アラート
+  const reservationAlerts = useMemo(() => {
+    const today = new Date(); today.setHours(0,0,0,0);
+    const alerts = [];
+    for (const z of layout.zones) {
+      if (!z.reserved || !z.reservationEndDate) continue;
+      const endDate = new Date(z.reservationEndDate); endDate.setHours(0,0,0,0);
+      const diffDays = Math.ceil((endDate - today) / (1000*60*60*24));
+      if (diffDays > 3) continue;
+      alerts.push({ zone: z, diffDays, expired: diffDays <= 0 });
+    }
+    return alerts;
+  }, [layout.zones]);
+
   // Group move visual offset (in screen px, not zoomed)
   const groupMoveDx = drag?.type === "group_move" ? (drag.pointerX - drag.startX) / zoom : 0;
   const groupMoveDy = drag?.type === "group_move" ? (drag.pointerY - drag.startY) / zoom : 0;
@@ -3581,8 +3689,31 @@ const personList = site?.personList || [];
           </button>
           <div>
             <div className="text-sm text-gray-500">倉庫内部（ドラッグ&ドロップ簡易デモ）</div>
-            <div className="text-lg font-semibold">{wh.name}</div>
+            <div className="text-lg font-semibold flex items-center gap-2">
+              {wh.name}
+              {transitAlerts.length > 0 && (
+                <span className="inline-flex items-center justify-center rounded-full text-[10px] font-bold text-white" style={{ background: "#ef4444", minWidth: 20, height: 20, padding: "0 5px" }} title={`運行終了間近: ${transitAlerts.length}件`}>
+                  {transitAlerts.length}
+                </span>
+              )}
+              {reservationAlerts.length > 0 && (
+                <span className="inline-flex items-center justify-center rounded-full text-[10px] font-bold text-white" style={{ background: "#f97316", minWidth: 20, height: 20, padding: "0 5px" }} title={`予約期限間近: ${reservationAlerts.length}件`}>
+                  {reservationAlerts.length}
+                </span>
+              )}
+            </div>
           </div>
+          {warehouses.length > 1 && onSwitchWarehouse && (
+            <select
+              className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm"
+              value={wh.id}
+              onChange={(e) => onSwitchWarehouse(e.target.value)}
+            >
+              {warehouses.map((w) => (
+                <option key={w.id} value={w.id}>{w.name}</option>
+              ))}
+            </select>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
@@ -3614,18 +3745,12 @@ const personList = site?.personList || [];
           >
             3Dビュー
           </button>
+          <div style={{ width: 1, height: 24, background: "#e2e8f0" }} />
           <button
-            className="rounded-xl border px-3 py-2 text-sm shadow-sm hover:bg-gray-50"
-            onClick={() => setPersonModalOpen(true)}
-            type="button"
-          >
-            担当者管理
-          </button>
-          <div className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm">ズーム {Math.round(zoom * 100)}%</div>
-          <button
-            className={
-              "rounded-xl border px-3 py-2 text-sm shadow-sm " +
-              (mode === "operate" ? "bg-black text-white" : "bg-white hover:bg-gray-50")
+            className="rounded-xl border px-3 py-2 text-sm shadow-sm font-bold"
+            style={mode === "operate"
+              ? { background: "#dcfce7", color: "#16a34a", borderColor: "#86efac" }
+              : { background: "#f9fafb", color: "#6b7280", borderColor: "#e5e7eb" }
             }
             onClick={() => setMode("operate")}
             type="button"
@@ -3633,24 +3758,24 @@ const personList = site?.personList || [];
             運用
           </button>
           <button
-            className={
-              "rounded-xl border px-3 py-2 text-sm shadow-sm " +
-              (mode === "layout" ? "bg-black text-white" : "bg-white hover:bg-gray-50")
+            className="rounded-xl border px-3 py-2 text-sm shadow-sm font-bold"
+            style={mode === "layout"
+              ? { background: "#ffedd5", color: "#ea580c", borderColor: "#fdba74" }
+              : { background: "#f9fafb", color: "#6b7280", borderColor: "#e5e7eb" }
             }
             onClick={() => setMode("layout")}
             type="button"
           >
             レイアウト編集
           </button>
+          <div style={{ width: 1, height: 24, background: "#e2e8f0" }} />
           <button
-            className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm hover:bg-gray-50"
-            onClick={() => {
-              setZoom(1);
-              setPan({ x: 0, y: 0 });
-            }}
+            className="rounded-xl border px-3 py-2 text-sm shadow-sm font-bold"
+            style={{ background: "#ccfbf1", color: "#0d9488", borderColor: "#5eead4" }}
+            onClick={() => setPersonModalOpen(true)}
             type="button"
           >
-            表示リセット
+            担当者管理
           </button>
         </div>
       </div>
@@ -3878,6 +4003,33 @@ const personList = site?.personList || [];
             </div>
           </div>
 
+          {/* 運行期間（任意） */}
+          <div>
+            <div className="text-xs font-semibold mb-1" style={{ color: "#64748b" }}>⑧-2 運行期間（任意）</div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <div className="text-[10px] text-gray-400">開始日</div>
+                <input
+                  type="datetime-local"
+                  className="mt-0.5 w-full rounded-xl border-2 px-3 py-2 text-sm"
+                  style={{ borderColor: "#e2e8f0" }}
+                  value={form.transitStartDate}
+                  onChange={(e) => setForm((s) => ({ ...s, transitStartDate: e.target.value }))}
+                />
+              </div>
+              <div>
+                <div className="text-[10px] text-gray-400">終了日（戻り予定）</div>
+                <input
+                  type="datetime-local"
+                  className="mt-0.5 w-full rounded-xl border-2 px-3 py-2 text-sm"
+                  style={{ borderColor: "#e2e8f0" }}
+                  value={form.transitEndDate}
+                  onChange={(e) => setForm((s) => ({ ...s, transitEndDate: e.target.value }))}
+                />
+              </div>
+            </div>
+          </div>
+
           {/* サイズ・重量 */}
           <div className="grid grid-cols-4 gap-2">
             <div>
@@ -3942,6 +4094,50 @@ const personList = site?.personList || [];
                 onChange={(e) => setForm((s) => ({ ...s, kintoneRecordId: e.target.value }))}
                 placeholder="レコードID"
               />
+            </div>
+          </div>
+
+          {/* カラーピッカー */}
+          <div>
+            <div className="text-xs font-semibold mb-2" style={{ color: "#64748b" }}>カード背景色</div>
+            <div className="flex items-center gap-2">
+              <input
+                type="color"
+                value={form.bgColor || "#ffffff"}
+                onChange={(e) => setForm((s) => ({ ...s, bgColor: e.target.value }))}
+                className="h-9 w-12 cursor-pointer rounded-lg border p-0.5"
+              />
+              <input
+                className="flex-1 rounded-xl border-2 px-3 py-2 text-sm"
+                style={{ borderColor: "#e2e8f0" }}
+                value={form.bgColor}
+                onChange={(e) => setForm((s) => ({ ...s, bgColor: e.target.value }))}
+                placeholder="未設定（自動配色）"
+              />
+              {form.bgColor && (
+                <button
+                  type="button"
+                  className="rounded-lg border px-2 py-1 text-xs hover:bg-gray-100"
+                  onClick={() => setForm((s) => ({ ...s, bgColor: "" }))}
+                >
+                  リセット
+                </button>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {["#dbeafe","#d1fae5","#fef3c7","#fce7f3","#e0e7ff","#fef9c3","#ffedd5","#f3e8ff","#ccfbf1","#fee2e2"].map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  className="w-7 h-7 rounded-lg border-2 transition-all"
+                  style={{
+                    background: c,
+                    borderColor: form.bgColor === c ? "#1e293b" : "transparent",
+                    transform: form.bgColor === c ? "scale(1.15)" : undefined,
+                  }}
+                  onClick={() => setForm((s) => ({ ...s, bgColor: c }))}
+                />
+              ))}
             </div>
           </div>
 
@@ -4035,6 +4231,152 @@ const personList = site?.personList || [];
               </div>
             )}
           </div>
+
+          {/* 運行中セクション */}
+          <div className="rounded-2xl border bg-white p-3 shadow-sm" style={{ borderColor: transitAlerts.length > 0 ? "#fbbf24" : undefined }}>
+            <SectionTitle
+              right={
+                <span className="flex items-center gap-1">
+                  <Badge color="orange">{transitUnits.length} 件</Badge>
+                  {transitAlerts.length > 0 && (
+                    <span className="inline-flex items-center justify-center rounded-full text-[10px] font-bold text-white" style={{ background: "#ef4444", width: 18, height: 18 }}>
+                      {transitAlerts.length}
+                    </span>
+                  )}
+                </span>
+              }
+            >
+              運行中
+            </SectionTitle>
+            {transitAlerts.length > 0 && (
+              <div className="space-y-1 mb-2">
+                {transitAlerts.map((a) => (
+                  <div
+                    key={a.unit.id}
+                    className="rounded-xl p-2 text-xs cursor-pointer"
+                    style={{ background: "#fef2f2", border: "1px solid #fca5a5" }}
+                    onClick={() => {
+                      setSelected({ kind: "unit", id: a.unit.id });
+                    }}
+                  >
+                    <div className="font-bold" style={{ color: "#dc2626" }}>
+                      ⚠ {a.unit.name} — {a.diffDays <= 0 ? "期限超過" : `あと${a.diffDays}日`}
+                    </div>
+                    {a.positionOccupied && (
+                      <div style={{ color: "#b91c1c" }}>元の位置に別荷物あり</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+            {transitUnits.length === 0 ? (
+              <div className="text-sm text-gray-500">運行中の荷物はありません。</div>
+            ) : (
+              <div className="space-y-2 max-h-48 overflow-y-auto">
+                {transitUnits.map((u) => {
+                  const isAlert = transitAlerts.some((a) => a.unit.id === u.id);
+                  const startStr = u.transitStartDate ? new Date(u.transitStartDate).toLocaleDateString("ja-JP") : "-";
+                  const endStr = u.transitEndDate ? new Date(u.transitEndDate).toLocaleDateString("ja-JP") : "-";
+                  const diffDays = u.transitEndDate
+                    ? Math.ceil((new Date(u.transitEndDate) - new Date()) / (1000 * 60 * 60 * 24))
+                    : null;
+                  return (
+                    <div
+                      key={u.id}
+                      className="rounded-xl border p-2 text-sm cursor-pointer transition-colors"
+                      style={{
+                        borderColor: isAlert ? "#fca5a5" : undefined,
+                        background: isAlert ? "#fff7ed" : undefined,
+                      }}
+                      onClick={() => {
+                        setSelected({ kind: "unit", id: u.id });
+                      }}
+                    >
+                      <div className="font-medium flex items-center gap-1">
+                        <span style={{ color: "#ea580c" }}>●</span> {u.name}
+                      </div>
+                      <div className="mt-1 text-xs text-gray-600 space-y-0.5">
+                        {u.client && <div>顧客: {u.client}</div>}
+                        <div>期間: {startStr} 〜 {endStr}</div>
+                        {diffDays !== null && (
+                          <div style={{ color: diffDays <= 3 ? "#dc2626" : "#6b7280" }}>
+                            {diffDays <= 0 ? "期限超過" : `残り${diffDays}日`}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* 予約アラートセクション */}
+          {reservationAlerts.length > 0 && (
+            <div className="rounded-2xl border bg-white p-3 shadow-sm" style={{ borderColor: "#f97316" }}>
+              <SectionTitle
+                right={
+                  <span className="inline-flex items-center justify-center rounded-full text-[10px] font-bold text-white" style={{ background: "#f97316", minWidth: 20, height: 20, padding: "0 5px" }}>
+                    {reservationAlerts.length}
+                  </span>
+                }
+              >
+                予約アラート
+              </SectionTitle>
+              <div className="space-y-1">
+                {reservationAlerts.map((a) => (
+                  <div
+                    key={a.zone.id}
+                    className="rounded-xl p-2 text-xs cursor-pointer"
+                    style={{
+                      background: a.expired ? "#fef2f2" : "#fffbeb",
+                      border: `1px solid ${a.expired ? "#fca5a5" : "#fde68a"}`,
+                    }}
+                    onClick={() => setSelected({ kind: "zone", id: a.zone.id })}
+                  >
+                    <div className="font-bold" style={{ color: a.expired ? "#dc2626" : "#d97706" }}>
+                      {a.expired ? "⚠ " : "⏰ "}{a.zone.name} — {a.expired ? "期限超過" : `あと${a.diffDays}日`}
+                    </div>
+                    {a.zone.client && <div className="text-gray-600 mt-0.5">取引先: {a.zone.client}</div>}
+                    <div className="text-gray-500 mt-0.5">期限: {a.zone.reservationEndDate}</div>
+                    {a.expired && (
+                      <div className="flex gap-1 mt-1">
+                        <button
+                          className="rounded-lg px-2 py-0.5 text-[10px] font-bold text-white"
+                          style={{ background: "#f97316" }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const newDate = prompt("新しい期限日を入力 (YYYY-MM-DD):", a.zone.reservationEndDate);
+                            if (newDate && /^\d{4}-\d{2}-\d{2}$/.test(newDate)) {
+                              setLayout((p) => ({
+                                ...p,
+                                zones: p.zones.map((z) => z.id === a.zone.id ? { ...z, reservationEndDate: newDate } : z),
+                              }));
+                            }
+                          }}
+                        >
+                          延長
+                        </button>
+                        <button
+                          className="rounded-lg px-2 py-0.5 text-[10px] font-bold text-white"
+                          style={{ background: "#10b981" }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setLayout((p) => ({
+                              ...p,
+                              zones: p.zones.map((z) => z.id === a.zone.id ? { ...z, reserved: false, reservationEndDate: null } : z),
+                            }));
+                          }}
+                        >
+                          予約OFF
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* 入庫予定セクション */}
           <div className="rounded-2xl border bg-white p-3 shadow-sm">
@@ -4294,11 +4636,22 @@ const personList = site?.personList || [];
                 const zoneDragTransform = hasMovedZone
                   ? `translate(${(drag.pointerX - drag.startX) / zoom}px, ${(drag.pointerY - drag.startY) / zoom}px)`
                   : (zSel && groupMoveTransform ? groupMoveTransform : undefined);
+                // 予約状態の計算
+                let reservationBorderColor = z.bgColor || "#10b981";
+                let reservationExpired = false;
+                if (z.reserved && z.reservationEndDate) {
+                  const today = new Date(); today.setHours(0,0,0,0);
+                  const endD = new Date(z.reservationEndDate); endD.setHours(0,0,0,0);
+                  const diff = Math.ceil((endD - today) / (1000*60*60*24));
+                  if (diff <= 0) { reservationBorderColor = "#ef4444"; reservationExpired = true; }
+                  else if (diff <= 3) { reservationBorderColor = "#fbbf24"; }
+                }
                 return (
                   <div
                     key={z.id}
                     className={
                       `absolute rounded-2xl border-2 ` +
+                      (reservationExpired ? "wh-reservation-expired " : "") +
                       (zSel ? "ring-2 ring-black" : "")
                     }
                     style={{
@@ -4308,7 +4661,7 @@ const personList = site?.personList || [];
                       height: z.h * cellPx,
                       zIndex: (hasMovedZone || (zSel && drag?.type === "group_move")) ? 50 : 1,
                       backgroundColor: `rgba(${bgRgb.join(",")}, ${bgOpacity})`,
-                      borderColor: z.bgColor || "#10b981",
+                      borderColor: reservationBorderColor,
                       transform: zoneDragTransform,
                       opacity: hasMovedZone ? 0.7 : undefined,
                       pointerEvents: hasMovedZone ? "none" : undefined,
@@ -4318,6 +4671,10 @@ const personList = site?.personList || [];
                     onClick={(e) => handleItemClick(e, "zone", z.id)}
                     onDoubleClick={(e) => { e.stopPropagation(); openZoneDetailModal(z); }}
                   >
+                    {/* 予約ゾーンのハッチングオーバーレイ */}
+                    {z.reserved && (
+                      <div className="absolute inset-0 rounded-2xl wh-zone-reserved" style={{ zIndex: 60 }} />
+                    )}
                     {/* Zone label - watermark style */}
                     <div
                       className="absolute pointer-events-none"
@@ -4816,11 +5173,13 @@ const personList = site?.personList || [];
                   ? `translate(${(drag.pointerX - drag.startX) / zoom}px, ${(drag.pointerY - drag.startY) / zoom}px)`
                   : isGroupMoving ? groupMoveTransform : undefined;
                 const shouldBlink = blinkingUnitIds.has(u.id);
+                const isTransit = u.status === "in_transit";
                 return (
                   <div
                     key={u.id}
                     className={
-                      "absolute rounded-3xl border-2 cursor-pointer " +
+                      "absolute rounded-3xl cursor-pointer " +
+                      (isTransit ? "" : "border-2 ") +
                       ((hasMoved || isGroupMoving) ? "" : "transition-all duration-150 ") +
                       (isSel ? "ring-2 ring-black shadow-lg" : "hover:shadow-xl hover:-translate-y-0.5") +
                       (shouldBlink && !isSel ? " wh-departure-blink" : "")
@@ -4834,12 +5193,14 @@ const personList = site?.personList || [];
                         ? `rgba(${unitBgRgb.join(",")}, ${unitBgOpacity})`
                         : "linear-gradient(145deg, #ffffff 0%, #f8fafc 50%, #f1f5f9 100%)",
                       borderColor: (shouldBlink && !isSel) ? undefined : (isSel ? "#1e293b" : (u.bgColor || "#e2e8f0")),
+                      borderWidth: isTransit ? 2 : undefined,
+                      borderStyle: isTransit ? "dashed" : undefined,
                       boxShadow: (shouldBlink && !isSel) ? undefined : (isSel
                         ? "0 10px 25px -5px rgba(0,0,0,0.15), 0 4px 6px -2px rgba(0,0,0,0.1)"
                         : "0 4px 12px -2px rgba(0,0,0,0.08), 0 2px 4px -1px rgba(0,0,0,0.04)"),
                       zIndex: (hasMoved || isGroupMoving) ? 50 : 8,
                       transform: dragTransform,
-                      opacity: hasMoved ? 0.7 : undefined,
+                      opacity: hasMoved ? 0.7 : (isTransit ? 0.35 : undefined),
                       pointerEvents: hasMoved ? "none" : undefined,
                       transition: hasMoved ? "none" : undefined,
                     }}
@@ -5381,6 +5742,48 @@ const personList = site?.personList || [];
 
                       {selected.kind === "zone" && (
                         <>
+                          {/* 予約ON/OFF */}
+                          <div className="border-t pt-2 pb-1">
+                            <div className="flex items-center justify-between">
+                              <div className="text-xs text-gray-500">予約状態</div>
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${selectedEntity.reserved ? "bg-orange-100 text-orange-700" : "bg-green-100 text-green-700"}`}>
+                                {selectedEntity.reserved ? "予約中" : "運用中"}
+                              </span>
+                            </div>
+                            <div
+                              className="mt-1 flex items-center gap-2 cursor-pointer"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const newVal = !selectedEntity.reserved;
+                                setLayout((p) => ({
+                                  ...p,
+                                  zones: p.zones.map((z) => z.id === selected.id ? { ...z, reserved: newVal, ...(!newVal ? { reservationEndDate: null } : {}) } : z),
+                                }));
+                              }}
+                            >
+                              <div className="relative rounded-full" style={{ width: 40, height: 20, backgroundColor: selectedEntity.reserved ? "#fb923c" : "#d1d5db", transition: "background-color 0.2s" }}>
+                                <div className="absolute rounded-full shadow pointer-events-none" style={{ top: 2, width: 16, height: 16, backgroundColor: "#fff", transition: "transform 0.2s", transform: selectedEntity.reserved ? "translateX(20px)" : "translateX(2px)" }} />
+                              </div>
+                              <span className="text-xs text-gray-600">予約 {selectedEntity.reserved ? "ON" : "OFF"}</span>
+                            </div>
+                            {selectedEntity.reserved && (
+                              <div className="mt-2">
+                                <div className="text-[10px] text-gray-400">予約期限日</div>
+                                <input
+                                  type="date"
+                                  className="mt-0.5 w-full rounded-xl border px-3 py-1.5 text-sm"
+                                  value={selectedEntity.reservationEndDate || ""}
+                                  onChange={(e) => {
+                                    const v = e.target.value;
+                                    setLayout((p) => ({
+                                      ...p,
+                                      zones: p.zones.map((z) => z.id === selected.id ? { ...z, reservationEndDate: v || null } : z),
+                                    }));
+                                  }}
+                                />
+                              </div>
+                            )}
+                          </div>
                           <div>
                             <div className="text-xs text-gray-500">取引先</div>
                             <input
@@ -6112,8 +6515,55 @@ const personList = site?.personList || [];
                       一括削除 ({selectionSet.length}件)
                     </button>
                   </div>
-                ) : !selectedEntity || (selected.kind !== "unit" && selected.kind !== "panel") ? (
+                ) : !selectedEntity || (selected.kind !== "unit" && selected.kind !== "panel" && selected.kind !== "zone") ? (
                   <div className="text-sm text-gray-600">荷物または配電盤をクリックすると詳細が出ます。Ctrl+クリックで複数選択。</div>
+                ) : selected.kind === "zone" ? (
+                  <div className="space-y-2">
+                    <div className="text-sm font-semibold">区画: {selectedEntity.name}</div>
+                    {selectedEntity.client && <div className="text-xs text-gray-500">取引先: {selectedEntity.client}</div>}
+                    {/* 予約ON/OFF */}
+                    <div className="border-t pt-2 pb-1">
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs text-gray-500">予約状態</div>
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${selectedEntity.reserved ? "bg-orange-100 text-orange-700" : "bg-green-100 text-green-700"}`}>
+                          {selectedEntity.reserved ? "予約中" : "運用中"}
+                        </span>
+                      </div>
+                      <div
+                        className="mt-1 flex items-center gap-2 cursor-pointer"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const newVal = !selectedEntity.reserved;
+                          setLayout((p) => ({
+                            ...p,
+                            zones: p.zones.map((z) => z.id === selected.id ? { ...z, reserved: newVal, ...(!newVal ? { reservationEndDate: null } : {}) } : z),
+                          }));
+                        }}
+                      >
+                        <div className="relative rounded-full" style={{ width: 40, height: 20, backgroundColor: selectedEntity.reserved ? "#fb923c" : "#d1d5db", transition: "background-color 0.2s" }}>
+                          <div className="absolute rounded-full shadow pointer-events-none" style={{ top: 2, width: 16, height: 16, backgroundColor: "#fff", transition: "transform 0.2s", transform: selectedEntity.reserved ? "translateX(20px)" : "translateX(2px)" }} />
+                        </div>
+                        <span className="text-xs text-gray-600">予約 {selectedEntity.reserved ? "ON" : "OFF"}</span>
+                      </div>
+                      {selectedEntity.reserved && (
+                        <div className="mt-2">
+                          <div className="text-[10px] text-gray-400">予約期限日</div>
+                          <input
+                            type="date"
+                            className="mt-0.5 w-full rounded-xl border px-3 py-1.5 text-sm"
+                            value={selectedEntity.reservationEndDate || ""}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              setLayout((p) => ({
+                                ...p,
+                                zones: p.zones.map((z) => z.id === selected.id ? { ...z, reservationEndDate: v || null } : z),
+                              }));
+                            }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 ) : selected.kind === "panel" ? (
                   <div className="space-y-2">
                     <div className="text-sm font-semibold">配電盤: {selectedEntity.name}</div>
@@ -6282,6 +6732,58 @@ const personList = site?.personList || [];
                           >
                             移動
                           </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ===== ステータス変更 ===== */}
+                    <div className="border-t pt-2 pb-1">
+                      <div className="text-xs text-gray-500 mb-1">ステータス</div>
+                      <select
+                        className="w-full rounded-xl border px-3 py-2 text-sm"
+                        value={selectedEntity.status || "draft"}
+                        onChange={(e) => {
+                          const newStatus = e.target.value;
+                          updateUnitField(selectedEntity.id, "status", newStatus, "ステータス変更");
+                          if (newStatus === "in_transit" && !selectedEntity.transitStartDate) {
+                            const now = new Date();
+                            const localIso = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+                            updateUnitFieldSilent(selectedEntity.id, "transitStartDate", localIso);
+                          }
+                        }}
+                      >
+                        <option value="draft">下書き</option>
+                        <option value="in_transit">運行中</option>
+                        <option value="in_stock">保管中</option>
+                        <option value="planned_out">出荷予定</option>
+                      </select>
+                    </div>
+
+                    {/* ===== 運行期間（運行中の時のみ表示） ===== */}
+                    {selectedEntity.status === "in_transit" && (
+                      <div className="border-t pt-2 pb-1">
+                        <div className="text-xs text-gray-500 mb-1">⑧-2 運行期間</div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <div className="text-[10px] text-gray-400">開始日</div>
+                            <input
+                              type="datetime-local"
+                              className="mt-0.5 w-full rounded-xl border px-2 py-1.5 text-sm"
+                              value={selectedEntity.transitStartDate || ""}
+                              onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "transitStartDate", e.target.value)}
+                              onBlur={(e) => updateUnitField(selectedEntity.id, "transitStartDate", e.target.value, "運行開始日変更")}
+                            />
+                          </div>
+                          <div>
+                            <div className="text-[10px] text-gray-400">終了日（戻り予定）</div>
+                            <input
+                              type="datetime-local"
+                              className="mt-0.5 w-full rounded-xl border px-2 py-1.5 text-sm"
+                              value={selectedEntity.transitEndDate || ""}
+                              onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "transitEndDate", e.target.value)}
+                              onBlur={(e) => updateUnitField(selectedEntity.id, "transitEndDate", e.target.value, "運行終了日変更")}
+                            />
+                          </div>
                         </div>
                       </div>
                     )}
@@ -6666,6 +7168,20 @@ const personList = site?.personList || [];
                     : "-"}
                 </div>
               </div>
+              {detailUnit.status === "in_transit" && (
+                <div className="col-span-2">
+                  <div className="text-xs text-gray-500">⑧-2 運行期間</div>
+                  <div className="text-sm">
+                    {detailUnit.transitStartDate
+                      ? new Date(detailUnit.transitStartDate).toLocaleString("ja-JP")
+                      : "-"}
+                    {" 〜 "}
+                    {detailUnit.transitEndDate
+                      ? new Date(detailUnit.transitEndDate).toLocaleString("ja-JP")
+                      : "-"}
+                  </div>
+                </div>
+              )}
               <div className="col-span-2">
                 <div className="text-xs text-gray-500">⑨ 保管場所</div>
                 <div className="text-sm">
@@ -7121,7 +7637,18 @@ const personList = site?.personList || [];
                 setUnits((prev) => prev.map((uu) => uu.id === u.id ? { ...uu, loc: { kind: "floor", x: absX, y: absY }, stackZ: newStackZ } : uu));
               }
             } else {
-              showToast("ここには置けません（他の荷物と重なっています）");
+              if (z.reserved && z.reservationEndDate) {
+                const _today = new Date(); _today.setHours(0,0,0,0);
+                const _endD = new Date(z.reservationEndDate); _endD.setHours(0,0,0,0);
+                const _diff = Math.ceil((_endD - _today) / (1000*60*60*24));
+                if (_diff <= 1) {
+                  showToast("予約期限間近のため配置できません（予約OFFにするか期限を延長してください）");
+                } else {
+                  showToast("ここには置けません（他の荷物と重なっています）");
+                }
+              } else {
+                showToast("ここには置けません（他の荷物と重なっています）");
+              }
             }
           }
           setZoneDetailDrag(null);
@@ -7750,6 +8277,7 @@ export default function App() {
   if (view === "warehouse" && activeWarehouse) {
     return (
       <WarehouseView
+        key={activeWarehouseId}
         wh={activeWarehouse}
         onBack={() => {
           setView("map");
@@ -7759,6 +8287,7 @@ export default function App() {
         site={site}
         onUpdateSite={setSite}
         warehouses={warehouses}
+        onSwitchWarehouse={(id) => setActiveWarehouseId(id)}
       />
     );
   }
