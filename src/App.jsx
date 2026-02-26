@@ -3903,7 +3903,7 @@ const personList = site?.personList || [];
   return (
     <div className="h-screen w-full bg-gray-50">
       {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 20px", borderBottom: "1px solid #e2e8f0", background: "linear-gradient(to right, #ffffff, #f8fafc)" }}>
+      <div style={{ display: "flex", alignItems: "center", padding: "10px 20px", borderBottom: "1px solid #e2e8f0", background: "linear-gradient(to right, #ffffff, #f8fafc)" }}>
         <div className="flex items-center gap-3">
           <button
             className="rounded-xl border-2 shadow-sm font-bold"
@@ -3913,34 +3913,7 @@ const personList = site?.personList || [];
           >
             ← TOPへ戻る
           </button>
-          <div className="flex items-center gap-2">
-            <div className="text-xl font-bold" style={{ color: "#1e293b" }}>
-              {wh.name}
-            </div>
-            {transitAlerts.length > 0 && (
-              <span className="inline-flex items-center justify-center rounded-full text-[10px] font-bold text-white" style={{ background: "#ef4444", minWidth: 20, height: 20, padding: "0 5px" }} title={`運行終了間近: ${transitAlerts.length}件`}>
-                {transitAlerts.length}
-              </span>
-            )}
-            {reservationAlerts.length > 0 && (
-              <span className="inline-flex items-center justify-center rounded-full text-[10px] font-bold text-white" style={{ background: "#f97316", minWidth: 20, height: 20, padding: "0 5px" }} title={`予約期限間近: ${reservationAlerts.length}件`}>
-                {reservationAlerts.length}
-              </span>
-            )}
-          </div>
-          {warehouses.length > 1 && onSwitchWarehouse && (
-            <select
-              className="rounded-xl border-2 shadow-sm font-bold"
-              style={{ padding: "8px 14px", fontSize: "14px", background: "white", borderColor: "#cbd5e1", cursor: "pointer", minWidth: "160px" }}
-              value={wh.id}
-              onChange={(e) => onSwitchWarehouse(e.target.value)}
-            >
-              {warehouses.map((w) => (
-                <option key={w.id} value={w.id}>{w.name}</option>
-              ))}
-            </select>
-          )}
-          <div style={{ width: 1, height: 28, background: "#e2e8f0" }} />
+          <div style={{ width: 16 }} />
           <button
             className="rounded-xl border-2 shadow-sm font-bold"
             style={mode === "operate"
@@ -3963,6 +3936,34 @@ const personList = site?.personList || [];
           >
             レイアウトモード
           </button>
+        </div>
+
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "12px" }}>
+          <span style={{ fontSize: "22px", fontWeight: 800, color: "#1e293b", letterSpacing: "0.02em" }}>
+            {wh.name}
+          </span>
+          {transitAlerts.length > 0 && (
+            <span className="inline-flex items-center justify-center rounded-full text-[10px] font-bold text-white" style={{ background: "#ef4444", minWidth: 20, height: 20, padding: "0 5px" }} title={`運行終了間近: ${transitAlerts.length}件`}>
+              {transitAlerts.length}
+            </span>
+          )}
+          {reservationAlerts.length > 0 && (
+            <span className="inline-flex items-center justify-center rounded-full text-[10px] font-bold text-white" style={{ background: "#f97316", minWidth: 20, height: 20, padding: "0 5px" }} title={`予約期限間近: ${reservationAlerts.length}件`}>
+              {reservationAlerts.length}
+            </span>
+          )}
+          {warehouses.length > 1 && onSwitchWarehouse && (
+            <select
+              className="rounded-xl border-2 shadow-sm font-bold"
+              style={{ padding: "8px 14px", fontSize: "14px", background: "white", borderColor: "#cbd5e1", cursor: "pointer", minWidth: "160px" }}
+              value={wh.id}
+              onChange={(e) => onSwitchWarehouse(e.target.value)}
+            >
+              {warehouses.map((w) => (
+                <option key={w.id} value={w.id}>{w.name}</option>
+              ))}
+            </select>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
@@ -8643,11 +8644,8 @@ export default function App() {
       <LoginModal open={loginModalOpen} onClose={() => setLoginModalOpen(false)} />
 
       {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 20px", borderBottom: "1px solid #e2e8f0", background: "linear-gradient(to right, #ffffff, #f8fafc)" }}>
-        <div className="flex items-center gap-4">
-          <div>
-            <div className="text-xl font-bold" style={{ color: "#1e293b" }}>{site.name}</div>
-          </div>
+      <div style={{ display: "flex", alignItems: "center", padding: "10px 20px", borderBottom: "1px solid #e2e8f0", background: "linear-gradient(to right, #ffffff, #f8fafc)" }}>
+        <div className="flex items-center gap-3">
           <div className="flex overflow-hidden rounded-xl border-2 shadow-sm" style={{ borderColor: "#6366f1" }}>
             {[["map", "マップ"], ["simple", "一覧"]].map(([mode, label]) => (
               <button
@@ -8663,8 +8661,6 @@ export default function App() {
               </button>
             ))}
           </div>
-        </div>
-        <div className="flex items-center gap-2">
           <button
             type="button"
             className="rounded-xl border-2 shadow-sm font-bold"
@@ -8674,6 +8670,11 @@ export default function App() {
           >
             ＋ 倉庫追加
           </button>
+        </div>
+        <div style={{ flex: 1, textAlign: "center" }}>
+          <span style={{ fontSize: "22px", fontWeight: 800, color: "#1e293b", letterSpacing: "0.02em" }}>{site.name}</span>
+        </div>
+        <div className="flex items-center gap-2">
           {topViewMode === "map" && (
             <>
               <IconButton title="ズームアウト" onClick={() => setZoom((z) => clamp(z * 0.9, 0.5, 2.5))}>
