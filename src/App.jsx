@@ -3906,31 +3906,32 @@ const personList = site?.personList || [];
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 20px", borderBottom: "1px solid #e2e8f0", background: "linear-gradient(to right, #ffffff, #f8fafc)" }}>
         <div className="flex items-center gap-3">
           <button
-            className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm hover:bg-gray-50"
+            className="rounded-xl border-2 shadow-sm font-bold"
+            style={{ padding: "8px 16px", fontSize: "14px", background: "linear-gradient(135deg, #dbeafe, #e0e7ff)", color: "#4338ca", borderColor: "#818cf8", cursor: "pointer" }}
             onClick={onBack}
             type="button"
           >
             ← TOPへ戻る
           </button>
-          <div>
-            <div className="text-sm text-gray-500">倉庫内部（ドラッグ&ドロップ簡易デモ）</div>
-            <div className="text-lg font-semibold flex items-center gap-2">
+          <div className="flex items-center gap-2">
+            <div className="text-xl font-bold" style={{ color: "#1e293b" }}>
               {wh.name}
-              {transitAlerts.length > 0 && (
-                <span className="inline-flex items-center justify-center rounded-full text-[10px] font-bold text-white" style={{ background: "#ef4444", minWidth: 20, height: 20, padding: "0 5px" }} title={`運行終了間近: ${transitAlerts.length}件`}>
-                  {transitAlerts.length}
-                </span>
-              )}
-              {reservationAlerts.length > 0 && (
-                <span className="inline-flex items-center justify-center rounded-full text-[10px] font-bold text-white" style={{ background: "#f97316", minWidth: 20, height: 20, padding: "0 5px" }} title={`予約期限間近: ${reservationAlerts.length}件`}>
-                  {reservationAlerts.length}
-                </span>
-              )}
             </div>
+            {transitAlerts.length > 0 && (
+              <span className="inline-flex items-center justify-center rounded-full text-[10px] font-bold text-white" style={{ background: "#ef4444", minWidth: 20, height: 20, padding: "0 5px" }} title={`運行終了間近: ${transitAlerts.length}件`}>
+                {transitAlerts.length}
+              </span>
+            )}
+            {reservationAlerts.length > 0 && (
+              <span className="inline-flex items-center justify-center rounded-full text-[10px] font-bold text-white" style={{ background: "#f97316", minWidth: 20, height: 20, padding: "0 5px" }} title={`予約期限間近: ${reservationAlerts.length}件`}>
+                {reservationAlerts.length}
+              </span>
+            )}
           </div>
           {warehouses.length > 1 && onSwitchWarehouse && (
             <select
-              className="rounded-xl border bg-white px-3 py-2 text-sm shadow-sm"
+              className="rounded-xl border-2 shadow-sm font-bold"
+              style={{ padding: "8px 14px", fontSize: "14px", background: "white", borderColor: "#cbd5e1", cursor: "pointer", minWidth: "160px" }}
               value={wh.id}
               onChange={(e) => onSwitchWarehouse(e.target.value)}
             >
@@ -3939,22 +3940,45 @@ const personList = site?.personList || [];
               ))}
             </select>
           )}
+          <div style={{ width: 1, height: 28, background: "#e2e8f0" }} />
+          <button
+            className="rounded-xl border-2 shadow-sm font-bold"
+            style={mode === "operate"
+              ? { padding: "8px 18px", fontSize: "14px", background: "linear-gradient(135deg, #dcfce7, #bbf7d0)", color: "#15803d", borderColor: "#4ade80", cursor: "pointer" }
+              : { padding: "8px 18px", fontSize: "14px", background: "#f9fafb", color: "#6b7280", borderColor: "#e5e7eb", cursor: "pointer" }
+            }
+            onClick={() => setMode("operate")}
+            type="button"
+          >
+            運用モード
+          </button>
+          <button
+            className="rounded-xl border-2 shadow-sm font-bold"
+            style={mode === "layout"
+              ? { padding: "8px 18px", fontSize: "14px", background: "linear-gradient(135deg, #ffedd5, #fed7aa)", color: "#ea580c", borderColor: "#fb923c", cursor: "pointer" }
+              : { padding: "8px 18px", fontSize: "14px", background: "#f9fafb", color: "#6b7280", borderColor: "#e5e7eb", cursor: "pointer" }
+            }
+            onClick={() => setMode("layout")}
+            type="button"
+          >
+            レイアウトモード
+          </button>
         </div>
 
         <div className="flex items-center gap-2">
           {mode === "operate" && (
             <>
               <button
-                className="rounded-xl border px-3 py-2 text-sm shadow-sm font-bold"
-                style={{ background: "#dbeafe", color: "#2563eb", borderColor: "#93c5fd" }}
+                className="rounded-xl border-2 shadow-sm font-bold"
+                style={{ padding: "8px 16px", fontSize: "14px", background: "linear-gradient(135deg, #dbeafe, #bfdbfe)", color: "#2563eb", borderColor: "#60a5fa", cursor: "pointer" }}
                 onClick={() => setCreateModalOpen(true)}
                 type="button"
               >
                 ＋新規作成
               </button>
               <button
-                className="rounded-xl border px-3 py-2 text-sm shadow-sm font-bold"
-                style={{ background: "#f0fdf4", color: "#15803d", borderColor: "#86efac" }}
+                className="rounded-xl border-2 shadow-sm font-bold"
+                style={{ padding: "8px 16px", fontSize: "14px", background: "linear-gradient(135deg, #f0fdf4, #dcfce7)", color: "#15803d", borderColor: "#86efac", cursor: "pointer" }}
                 onClick={() => setListModalOpen(true)}
                 type="button"
               >
@@ -3963,40 +3987,17 @@ const personList = site?.personList || [];
             </>
           )}
           <button
-            className="rounded-xl border px-3 py-2 text-sm shadow-sm font-bold"
-            style={{ background: "#ede9fe", color: "#7c3aed", borderColor: "#c4b5fd" }}
+            className="rounded-xl border-2 shadow-sm font-bold"
+            style={{ padding: "8px 16px", fontSize: "14px", background: "linear-gradient(135deg, #ede9fe, #ddd6fe)", color: "#7c3aed", borderColor: "#a78bfa", cursor: "pointer" }}
             onClick={() => setIsoViewOpen(true)}
             type="button"
           >
             3Dビュー
           </button>
-          <div style={{ width: 1, height: 24, background: "#e2e8f0" }} />
+          <div style={{ width: 1, height: 28, background: "#e2e8f0" }} />
           <button
-            className="rounded-xl border px-3 py-2 text-sm shadow-sm font-bold"
-            style={mode === "operate"
-              ? { background: "#dcfce7", color: "#16a34a", borderColor: "#86efac" }
-              : { background: "#f9fafb", color: "#6b7280", borderColor: "#e5e7eb" }
-            }
-            onClick={() => setMode("operate")}
-            type="button"
-          >
-            運用
-          </button>
-          <button
-            className="rounded-xl border px-3 py-2 text-sm shadow-sm font-bold"
-            style={mode === "layout"
-              ? { background: "#ffedd5", color: "#ea580c", borderColor: "#fdba74" }
-              : { background: "#f9fafb", color: "#6b7280", borderColor: "#e5e7eb" }
-            }
-            onClick={() => setMode("layout")}
-            type="button"
-          >
-            レイアウト編集
-          </button>
-          <div style={{ width: 1, height: 24, background: "#e2e8f0" }} />
-          <button
-            className="rounded-xl border px-3 py-2 text-sm shadow-sm font-bold"
-            style={{ background: "#ccfbf1", color: "#0d9488", borderColor: "#5eead4" }}
+            className="rounded-xl border-2 shadow-sm font-bold"
+            style={{ padding: "8px 16px", fontSize: "14px", background: "linear-gradient(135deg, #ccfbf1, #99f6e4)", color: "#0d9488", borderColor: "#5eead4", cursor: "pointer" }}
             onClick={() => setPersonModalOpen(true)}
             type="button"
           >
@@ -4729,17 +4730,7 @@ const personList = site?.personList || [];
 
         {/* Center: Warehouse canvas */}
         <div className="flex-1 rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm min-w-0">
-          <SectionTitle
-            right={
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge>Shift+ドラッグ: パン</Badge>
-                <Badge>ホイール: ズーム</Badge>
-                {mode === "layout" ? <Badge>編集: 区画/ラックをドラッグ・リサイズ</Badge> : <Badge>運用: 荷物をドラッグ</Badge>}
-              </div>
-            }
-          >
-            倉庫キャンバス
-          </SectionTitle>
+          <SectionTitle>倉庫キャンバス</SectionTitle>
 
           <div
             ref={canvasRef}
@@ -8252,7 +8243,7 @@ export default function App() {
 
   const [site, setSite] = useSupabaseState("wh_demo_site_v1", {
     id: "site-1",
-    name: "共有ワークスペース 倉庫群",
+    name: "手塚運輸倉庫システム",
     map_scale_mode: "ui", // ui | scaled
     personList: [],  // [{id, name}]
   });
@@ -8655,15 +8646,17 @@ export default function App() {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 20px", borderBottom: "1px solid #e2e8f0", background: "linear-gradient(to right, #ffffff, #f8fafc)" }}>
         <div className="flex items-center gap-4">
           <div>
-            <div className="text-sm text-gray-500">TOP（マップ風配置 / 簡易デモ）</div>
-            <div className="text-lg font-semibold">{site.name}</div>
+            <div className="text-xl font-bold" style={{ color: "#1e293b" }}>{site.name}</div>
           </div>
-          <div className="flex overflow-hidden rounded-lg border text-sm">
+          <div className="flex overflow-hidden rounded-xl border-2 shadow-sm" style={{ borderColor: "#6366f1" }}>
             {[["map", "マップ"], ["simple", "一覧"]].map(([mode, label]) => (
               <button
                 key={mode}
                 type="button"
-                className={"px-3 py-1.5 " + (topViewMode === mode ? "bg-black text-white" : "bg-white hover:bg-gray-100")}
+                style={topViewMode === mode
+                  ? { padding: "8px 18px", fontSize: "14px", fontWeight: 700, background: "linear-gradient(135deg, #6366f1, #8b5cf6)", color: "white", border: "none", cursor: "pointer" }
+                  : { padding: "8px 18px", fontSize: "14px", fontWeight: 600, background: "white", color: "#6366f1", border: "none", cursor: "pointer" }
+                }
                 onClick={() => setTopViewMode(mode)}
               >
                 {label}
@@ -8672,9 +8665,15 @@ export default function App() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <IconButton title="倉庫を追加" onClick={addWarehouse}>
+          <button
+            type="button"
+            className="rounded-xl border-2 shadow-sm font-bold"
+            style={{ padding: "8px 16px", fontSize: "14px", background: "linear-gradient(135deg, #dbeafe, #e0e7ff)", color: "#4338ca", borderColor: "#818cf8", cursor: "pointer" }}
+            title="倉庫を追加"
+            onClick={addWarehouse}
+          >
             ＋ 倉庫追加
-          </IconButton>
+          </button>
           {topViewMode === "map" && (
             <>
               <IconButton title="ズームアウト" onClick={() => setZoom((z) => clamp(z * 0.9, 0.5, 2.5))}>
