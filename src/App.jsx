@@ -1,16 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "./supabaseClient";
-import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents } from "react-leaflet";
-import L from "leaflet";
-import "leaflet/dist/leaflet.css";
+import maplibregl from "maplibre-gl";
+import "maplibre-gl/dist/maplibre-gl.css";
+import { normalize as normalizeAddress } from "@geolonia/normalize-japanese-addresses";
 
-// Leafletデフォルトアイコンの修正（Webpack/Vite対応）
-delete L.Icon.Default.prototype._getIconUrl;
-L.Icon.Default.mergeOptions({
-  iconRetinaUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png",
-  iconUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png",
-  shadowUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png",
-});
 
 // HEX色をRGB配列に変換
 function hexToRgb(hex) {
@@ -22,20 +15,23 @@ function hexToRgb(hex) {
   ] : [0, 0, 0];
 }
 
-// 吹き出し風カスタム倉庫アイコンを生成
-function createWarehouseIcon(warehouse, isSelected = false) {
+// 吹き出し風カスタム倉庫マーカーのDOM要素を生成
+function createWarehouseMarkerElement(warehouse, isSelected = false) {
   const size = warehouse.iconSize || 48;
   const imageUrl = warehouse.iconImage;
-  const pointerLength = warehouse.pointerLength || 10; // 吹き出しの尖り部分の長さ
-  const pointerWidth = warehouse.pointerWidth || 8; // 吹き出しの尖り部分の幅
+  const pointerLength = warehouse.pointerLength || 10;
+  const pointerWidth = warehouse.pointerWidth || 8;
   const borderColor = isSelected ? "#2563eb" : "#333";
   const borderWidth = isSelected ? "3px" : "2px";
   const shadowColor = isSelected ? "rgba(37,99,235,0.4)" : "rgba(0,0,0,0.3)";
 
-  let iconHtml;
+  const el = document.createElement("div");
+  el.className = "warehouse-marker";
+  el.style.cursor = "pointer";
+
+  let innerHtml;
   if (imageUrl) {
-    // カスタム画像がある場合
-    iconHtml = `
+    innerHtml = `
       <div style="position: relative;">
         <div style="
           width: ${size}px;
@@ -62,8 +58,7 @@ function createWarehouseIcon(warehouse, isSelected = false) {
       </div>
     `;
   } else {
-    // デフォルトアイコン
-    iconHtml = `
+    innerHtml = `
       <div style="position: relative;">
         <div style="
           width: ${size}px;
@@ -92,92 +87,189 @@ function createWarehouseIcon(warehouse, isSelected = false) {
     `;
   }
 
-  return new L.DivIcon({
-    className: "warehouse-marker",
-    html: iconHtml,
-    iconSize: [size, size + pointerLength],
-    iconAnchor: [size / 2, size + pointerLength],
-  });
+  el.innerHTML = innerHtml;
+  return el;
 }
 
-// 地図の状態（位置・ズーム）を保存・復元するコンポーネント
-function MapStateHandler({ storageKey }) {
-  const map = useMap();
+// MapLibre GL JS マップコンポーネント
+const STORAGE_KEY_V2 = "wh_demo_map_state_v2";
+const STORAGE_KEY_V1 = "wh_demo_map_state_v1";
 
-  // 初回マウント時に保存された状態を復元
+function MapLibreMap({ warehouses, selectedWarehouseId, onSelect, onPositionChange, onDoubleClick }) {
+  const containerRef = useRef(null);
+  const mapRef = useRef(null);
+  const markersRef = useRef({}); // { [warehouseId]: maplibregl.Marker }
+
+  // マップ初期化
   useEffect(() => {
+    if (!containerRef.current || mapRef.current) return;
+
+    // 保存状態の復元
+    let initCenter = [139.75, 35.68]; // [lng, lat]
+    let initZoom = 12;
+    let initPitch = 0;
+    let initBearing = 0;
+
     try {
-      const saved = localStorage.getItem(storageKey);
-      if (saved) {
-        const { center, zoom } = JSON.parse(saved);
-        if (center && zoom) {
-          map.setView(center, zoom);
+      const savedV2 = localStorage.getItem(STORAGE_KEY_V2);
+      if (savedV2) {
+        const s = JSON.parse(savedV2);
+        if (s.center) initCenter = s.center;
+        if (s.zoom != null) initZoom = s.zoom;
+        if (s.pitch != null) initPitch = s.pitch;
+        if (s.bearing != null) initBearing = s.bearing;
+      } else {
+        // v1フォールバック: Leaflet時代は [lat, lng] で保存されていた
+        const savedV1 = localStorage.getItem(STORAGE_KEY_V1);
+        if (savedV1) {
+          const s = JSON.parse(savedV1);
+          if (s.center && s.center.length === 2) {
+            initCenter = [s.center[1], s.center[0]]; // [lat,lng] → [lng,lat]
+          }
+          if (s.zoom != null) initZoom = s.zoom;
         }
       }
     } catch (e) {
       console.error("Failed to restore map state:", e);
     }
-  }, [map, storageKey]);
 
-  // 地図移動・ズーム時に状態を保存
-  useMapEvents({
-    moveend: () => {
-      const center = map.getCenter();
-      const zoom = map.getZoom();
+    const map = new maplibregl.Map({
+      container: containerRef.current,
+      style: {
+        version: 8,
+        sources: {
+          osm: {
+            type: "raster",
+            tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+            tileSize: 256,
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+          },
+        },
+        layers: [
+          {
+            id: "osm-tiles",
+            type: "raster",
+            source: "osm",
+            minzoom: 0,
+            maxzoom: 19,
+          },
+        ],
+      },
+      center: initCenter,
+      zoom: initZoom,
+      pitch: initPitch,
+      bearing: initBearing,
+      maxPitch: 60,
+    });
+
+    map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
+
+    // 状態保存
+    const saveState = () => {
       try {
-        localStorage.setItem(storageKey, JSON.stringify({
-          center: [center.lat, center.lng],
-          zoom,
+        const center = map.getCenter();
+        localStorage.setItem(STORAGE_KEY_V2, JSON.stringify({
+          center: [center.lng, center.lat],
+          zoom: map.getZoom(),
+          pitch: map.getPitch(),
+          bearing: map.getBearing(),
         }));
       } catch (e) {
         // ignore
       }
-    },
-  });
+    };
+    map.on("moveend", saveState);
 
-  return null;
-}
+    mapRef.current = map;
 
-// ドラッグ可能なマーカーコンポーネント（ポップアップなし、クリックで選択）
-function DraggableMarker({ position, warehouse, isSelected, onPositionChange, onClick, onDoubleClick }) {
-  const markerRef = useRef(null);
+    return () => {
+      map.remove();
+      mapRef.current = null;
+      markersRef.current = {};
+    };
+  }, []);
 
-  const eventHandlers = useMemo(() => ({
-    dragend() {
-      const marker = markerRef.current;
-      if (marker) {
-        const { lat, lng } = marker.getLatLng();
-        onPositionChange(warehouse.id, lat, lng);
+  // マーカー同期
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const currentIds = new Set(warehouses.map((w) => w.id));
+    const existingIds = new Set(Object.keys(markersRef.current));
+
+    // 削除されたマーカーを除去
+    for (const id of existingIds) {
+      if (!currentIds.has(id)) {
+        markersRef.current[id].remove();
+        delete markersRef.current[id];
       }
-    },
-    click: onClick,
-    dblclick: onDoubleClick,
-  }), [warehouse.id, onPositionChange, onClick, onDoubleClick]);
+    }
 
-  const icon = useMemo(() => createWarehouseIcon(warehouse, isSelected), [warehouse, isSelected]);
+    // 追加・更新
+    for (const w of warehouses) {
+      const isSelected = selectedWarehouseId === w.id;
+      const lng = w.lng || 139.75;
+      const lat = w.lat || 35.68;
 
-  return (
-    <Marker
-      ref={markerRef}
-      position={position}
-      icon={icon}
-      draggable={true}
-      eventHandlers={eventHandlers}
-    />
-  );
+      if (markersRef.current[w.id]) {
+        // 既存マーカーの更新: 位置と見た目を更新
+        const marker = markersRef.current[w.id];
+        marker.setLngLat([lng, lat]);
+        // 見た目を再生成して選択状態を反映（要素自体はMapLibreが参照保持するので中身だけ差し替え）
+        const fresh = createWarehouseMarkerElement(w, isSelected);
+        marker.getElement().innerHTML = fresh.innerHTML;
+      } else {
+        // 新規マーカー
+        const el = createWarehouseMarkerElement(w, isSelected);
+        el.addEventListener("click", (e) => {
+          e.stopPropagation();
+          onSelect(w.id);
+        });
+        el.addEventListener("dblclick", (e) => {
+          e.stopPropagation();
+          onDoubleClick(w.id);
+        });
+
+        const marker = new maplibregl.Marker({ element: el, draggable: true })
+          .setLngLat([lng, lat])
+          .addTo(map);
+
+        marker.on("dragend", () => {
+          const lngLat = marker.getLngLat();
+          onPositionChange(w.id, lngLat.lat, lngLat.lng);
+        });
+
+        markersRef.current[w.id] = marker;
+      }
+    }
+  }, [warehouses, selectedWarehouseId, onSelect, onPositionChange, onDoubleClick]);
+
+  return <div ref={containerRef} style={{ width: "100%", height: "100%" }} />;
 }
 
-// 住所からジオコーディング（Nominatim API使用 - 無料）
+// 住所からジオコーディング（Geolonia → Nominatim フォールバック）
 async function geocodeAddress(address) {
+  // 1) Geolonia normalize-japanese-addresses（番地レベル対応）
+  try {
+    const result = await normalizeAddress(address);
+    if (result?.point?.lat && result?.point?.lng) {
+      const display = [result.pref, result.city, result.town, result.addr].filter(Boolean).join("");
+      return {
+        lat: result.point.lat,
+        lng: result.point.lng,
+        displayName: display + (result.other ? ` ${result.other}` : ""),
+        level: result.point.level,
+      };
+    }
+  } catch (e) {
+    console.warn("Geolonia geocoding failed, trying Nominatim:", e);
+  }
+  // 2) Nominatim フォールバック
   try {
     const encoded = encodeURIComponent(address);
     const response = await fetch(
       `https://nominatim.openstreetmap.org/search?format=json&q=${encoded}&limit=1`,
-      {
-        headers: {
-          "Accept-Language": "ja",
-        },
-      }
+      { headers: { "Accept-Language": "ja" } }
     );
     const data = await response.json();
     if (data && data.length > 0) {
@@ -187,11 +279,10 @@ async function geocodeAddress(address) {
         displayName: data[0].display_name,
       };
     }
-    return null;
   } catch (e) {
-    console.error("Geocoding failed:", e);
-    return null;
+    console.error("Nominatim geocoding also failed:", e);
   }
+  return null;
 }
 
 // Single-file demo UI
@@ -1071,6 +1162,172 @@ function CalendarStub({ selectedDate, onPick }) {
   );
 }
 
+const UNIT_SEARCH_KEYS = [
+  { key: "all", label: "全項目" },
+  { key: "personInCharge", label: "社内担当者名" },
+  { key: "client", label: "顧客名" },
+  { key: "department", label: "部署名" },
+  { key: "name", label: "荷物名" },
+  { key: "notes", label: "荷物詳細" },
+  { key: "status", label: "ステータス" },
+];
+
+const STATUS_OPTIONS = [
+  { value: "draft", label: "下書き" },
+  { value: "in_transit", label: "運行中" },
+  { value: "in_stock", label: "保管中" },
+  { value: "planned_out", label: "出荷予定" },
+];
+
+function UnitSearchModal({ open, onClose, query, setQuery, searchKey, setSearchKey, results, onNavigate, allUnits }) {
+  if (!open) return null;
+  const capped = results.slice(0, 100);
+  const isSpecific = searchKey !== "all";
+
+  // 選択中フィールドの既存値一覧（ソート済み）
+  const suggestions = useMemo(() => {
+    if (!isSpecific) return [];
+    const set = new Set();
+    for (const u of allUnits) {
+      const v = u[searchKey];
+      if (v && typeof v === "string" && v.trim()) set.add(v.trim());
+    }
+    return [...set].sort();
+  }, [allUnits, searchKey, isSpecific]);
+
+  // テキスト入力で候補を絞り込み
+  const filteredSuggestions = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return suggestions;
+    return suggestions.filter((s) => s.toLowerCase().includes(q));
+  }, [suggestions, query]);
+
+  const isPerson = searchKey === "personInCharge";
+  const isStatus = searchKey === "status";
+  const isDropdown = isPerson || isStatus;
+  const showSuggestions = isSpecific && !isDropdown && suggestions.length > 0;
+
+  return (
+    <div
+      style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, zIndex: 99999, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(15,23,42,0.4)", backdropFilter: "blur(4px)", padding: "16px" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{ background: "white", borderRadius: "20px", boxShadow: "0 25px 60px rgba(0,0,0,0.18)", width: "100%", maxWidth: "720px", maxHeight: "85vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        {/* Header */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 24px 12px", borderBottom: "1px solid #e2e8f0" }}>
+          <span style={{ fontSize: "17px", fontWeight: 700, color: "#1e293b" }}>荷物検索（全倉庫横断）</span>
+          <button type="button" onClick={onClose} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#94a3b8", lineHeight: 1 }}>&times;</button>
+        </div>
+        {/* Search field chips */}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", padding: "12px 24px 8px" }}>
+          {UNIT_SEARCH_KEYS.map((k) => (
+            <button
+              key={k.key}
+              type="button"
+              onClick={() => { setSearchKey(k.key); setQuery(""); }}
+              style={{
+                padding: "4px 12px", borderRadius: "16px", fontSize: "12px", fontWeight: 600, border: "1.5px solid",
+                cursor: "pointer", transition: "all .15s",
+                ...(searchKey === k.key
+                  ? { background: "linear-gradient(135deg,#fbbf24,#f59e0b)", color: "#fff", borderColor: "#f59e0b" }
+                  : { background: "#f8fafc", color: "#64748b", borderColor: "#e2e8f0" }),
+              }}
+            >
+              {k.label}
+            </button>
+          ))}
+        </div>
+        {/* Input area */}
+        <div style={{ padding: "8px 24px" }}>
+          {isStatus ? (
+            /* ステータス: プルダウン */
+            <select
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              style={{ width: "100%", padding: "10px 14px", borderRadius: "10px", border: "1.5px solid #e2e8f0", fontSize: "14px", outline: "none", background: "white", cursor: "pointer" }}
+            >
+              <option value="">-- ステータスを選択 --</option>
+              {STATUS_OPTIONS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+            </select>
+          ) : isPerson ? (
+            /* 社内担当者名: プルダウン */
+            <select
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              style={{ width: "100%", padding: "10px 14px", borderRadius: "10px", border: "1.5px solid #e2e8f0", fontSize: "14px", outline: "none", background: "white", cursor: "pointer" }}
+            >
+              <option value="">-- 担当者を選択 --</option>
+              {suggestions.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          ) : (
+            /* その他: テキスト入力 */
+            <input
+              autoFocus
+              placeholder="検索キーワードを入力..."
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              style={{ width: "100%", padding: "10px 14px", borderRadius: "10px", border: "1.5px solid #e2e8f0", fontSize: "14px", outline: "none" }}
+              onFocus={(e) => e.target.style.borderColor = "#fbbf24"}
+              onBlur={(e) => e.target.style.borderColor = "#e2e8f0"}
+            />
+          )}
+        </div>
+        {/* Suggestion chips (specific field, not personInCharge) */}
+        {showSuggestions && !isPerson && (
+          <div style={{ padding: "2px 24px 6px", display: "flex", flexWrap: "wrap", gap: "5px", maxHeight: "72px", overflowY: "auto" }}>
+            {filteredSuggestions.map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => setQuery(s)}
+                style={{
+                  padding: "3px 10px", borderRadius: "14px", fontSize: "11px", fontWeight: 600, border: "1px solid",
+                  cursor: "pointer", transition: "all .12s",
+                  ...(query === s
+                    ? { background: "#fbbf24", color: "#fff", borderColor: "#f59e0b" }
+                    : { background: "#f8fafc", color: "#64748b", borderColor: "#e2e8f0" }),
+                }}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+        )}
+        {/* Count */}
+        <div style={{ padding: "2px 24px 6px", fontSize: "12px", color: "#94a3b8" }}>
+          {query.trim() ? `${results.length} 件ヒット${results.length > 100 ? "（先頭100件表示）" : ""}` : isDropdown ? "選択してください" : "キーワードを入力してください"}
+        </div>
+        {/* Results */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "0 24px 16px" }}>
+          {capped.map((u) => {
+            const locText = !u.loc || u.loc.kind === "unplaced" ? "未配置" : u.loc.kind === "floor" ? "床置き" : u.loc.kind === "rack" ? "ラック" : u.loc.kind === "shelf" ? "棚" : u.loc.kind;
+            return (
+              <div
+                key={u.id + "_" + u._whId}
+                onClick={() => onNavigate(u)}
+                style={{ display: "flex", alignItems: "center", gap: "10px", padding: "8px 10px", borderRadius: "10px", cursor: "pointer", borderBottom: "1px solid #f1f5f9", transition: "background .12s" }}
+                onMouseEnter={(e) => e.currentTarget.style.background = "#fffbeb"}
+                onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
+              >
+                <Badge color={getStatusColor(u.status)}>{getStatusLabel(u.status)}</Badge>
+                <span style={{ fontWeight: 600, fontSize: "13px", color: "#1e293b", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "180px" }}>{u.name || "(名称なし)"}</span>
+                <span style={{ fontSize: "11px", color: "#64748b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "160px" }}>
+                  {[u.client, u.department, u.personInCharge].filter(Boolean).join(" / ") || "—"}
+                </span>
+                <Badge color="purple">{u._whName}</Badge>
+                <span style={{ fontSize: "11px", color: "#94a3b8", marginLeft: "auto", flexShrink: 0 }}>{locText}</span>
+              </div>
+            );
+          })}
+          {query.trim() && results.length === 0 && (
+            <div style={{ textAlign: "center", padding: "32px 0", color: "#94a3b8", fontSize: "14px" }}>該当する荷物が見つかりません</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SimpleGridView({ warehouses, selectedWarehouseId, onSelect, onOpen }) {
   const CARD_W = 160;
   const CARD_H = 200;
@@ -1255,7 +1512,7 @@ function SimpleGridView({ warehouses, selectedWarehouseId, onSelect, onOpen }) {
   );
 }
 
-function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, warehouses, onSwitchWarehouse, isLoggedIn, displayName, onLoginClick, onLogout }) {
+function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, warehouses, onSwitchWarehouse, isLoggedIn, displayName, onLoginClick, onLogout, pendingFocusUnit, onFocusUnitHandled, onOpenUnitSearch }) {
   const [selectedDate, setSelectedDate] = useState(() => new Date());
 
   const defaultLayout = useMemo(
@@ -1461,6 +1718,7 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
   const [mode, setMode] = useState("operate"); // operate | layout
   const [selected, setSelected] = useState(null); // {kind:'unit'|'zone'|'rack', id}
   const [multiSelected, setMultiSelected] = useState([]); // [{kind, id}, ...]
+  const [highlightUnitId, setHighlightUnitId] = useState(null); // 検索からの赤点滅
 
   function isItemSelected(kind, id) {
     if (selected?.kind === kind && selected?.id === id) return true;
@@ -3660,9 +3918,10 @@ const personList = site?.personList || [];
     } else if (u.loc.kind === "shelf") {
       const shelf = (layout.shelves || []).find((s) => s.id === u.loc.shelfId);
       if (shelf) {
-        const vr = getShelfVisualRect(shelf);
-        const centerX = (vr.x + vr.w / 2) * cellPx;
-        const centerY = (vr.y + vr.h / 2) * cellPx;
+        const fp = unitFootprintCells(u);
+        // ユニットのローカル座標を棚の絶対座標に変換
+        const centerX = (shelf.x + u.loc.x + fp.w / 2) * cellPx;
+        const centerY = (shelf.y + u.loc.y + fp.h / 2) * cellPx;
         setPan({ x: r.width / 2 - centerX * zoom, y: r.height / 2 - centerY * zoom });
       }
     } else if (u.loc.kind === "rack") {
@@ -3685,6 +3944,37 @@ const personList = site?.personList || [];
     const centerY = (z.y + z.h / 2) * cellPx;
     setPan({ x: r.width / 2 - centerX * zoom, y: r.height / 2 - centerY * zoom });
   }
+
+  // 荷物検索からのフォーカス（canvasRef準備待ちリトライ付き）
+  useEffect(() => {
+    if (!pendingFocusUnit || pendingFocusUnit.whId !== wh.id) return;
+    let attempt = 0;
+    const maxAttempts = 10;
+    const tryFocus = () => {
+      attempt++;
+      const u = units.find((x) => x.id === pendingFocusUnit.unitId);
+      if (u) {
+        setSelected({ kind: "unit", id: u.id });
+        setHighlightUnitId(u.id);
+        if (canvasRef.current) {
+          panToUnit(u);
+          if (onFocusUnitHandled) onFocusUnitHandled();
+          return;
+        }
+        if (attempt < maxAttempts) { timerId = setTimeout(tryFocus, 200); return; }
+      }
+      if (onFocusUnitHandled) onFocusUnitHandled();
+    };
+    let timerId = setTimeout(tryFocus, 300);
+    return () => clearTimeout(timerId);
+  }, [pendingFocusUnit]);
+
+  // 赤点滅を5秒後に自動クリア
+  useEffect(() => {
+    if (!highlightUnitId) return;
+    const timer = setTimeout(() => setHighlightUnitId(null), 5000);
+    return () => clearTimeout(timer);
+  }, [highlightUnitId]);
 
   function placeOnFloorAuto(unitId) {
     if (!requireAuth()) return;
@@ -4046,6 +4336,14 @@ const personList = site?.personList || [];
             type="button"
           >
             3Dビュー
+          </button>
+          <button
+            className="rounded-xl border-2 shadow-sm font-bold"
+            style={{ padding: "8px 16px", fontSize: "14px", background: "linear-gradient(135deg, #fef3c7, #fde68a)", color: "#92400e", borderColor: "#fbbf24", cursor: "pointer" }}
+            onClick={onOpenUnitSearch}
+            type="button"
+          >
+            荷物検索
           </button>
           <div style={{ width: 1, height: 28, background: "#e2e8f0" }} />
           <button
@@ -5082,7 +5380,7 @@ const personList = site?.personList || [];
                         return (
                           <div
                             key={i}
-                            className="absolute rounded-lg border"
+                            className={"absolute rounded-lg border" + (occupant && highlightUnitId === occupant.id ? " wh-search-highlight" : "")}
                             style={{
                               left: col * slotW + 2,
                               top: row * slotH + 2,
@@ -5268,7 +5566,7 @@ const personList = site?.personList || [];
                           className={
                             "absolute rounded-xl border-2 cursor-pointer " +
                             (hasMovedShelfUnit ? "" : "transition-all duration-150 ") +
-                            (isUnitSel ? "ring-2 ring-black shadow-lg z-20" : "hover:shadow-lg")
+                            (highlightUnitId === u.id ? "wh-search-highlight" : (isUnitSel ? "ring-2 ring-black shadow-lg z-20" : "hover:shadow-lg"))
                           }
                           style={{
                             left: u.loc.x * cellPx + 1,
@@ -5473,6 +5771,7 @@ const personList = site?.personList || [];
                   : isGroupMoving ? groupMoveTransform : undefined;
                 const shouldBlink = blinkingUnitIds.has(u.id);
                 const isTransit = u.status === "in_transit";
+                const isHighlight = highlightUnitId === u.id;
                 return (
                   <div
                     key={u.id}
@@ -5480,8 +5779,8 @@ const personList = site?.personList || [];
                       "absolute rounded-3xl cursor-pointer " +
                       (isTransit ? "" : "border-2 ") +
                       ((hasMoved || isGroupMoving) ? "" : "transition-all duration-150 ") +
-                      (isSel ? "ring-2 ring-black shadow-lg" : "hover:shadow-xl hover:-translate-y-0.5") +
-                      (shouldBlink && !isSel ? " wh-departure-blink" : "")
+                      (isHighlight ? "wh-search-highlight" : (isSel ? "ring-2 ring-black shadow-lg" : "hover:shadow-xl hover:-translate-y-0.5")) +
+                      (shouldBlink && !isSel && !isHighlight ? " wh-departure-blink" : "")
                     }
                     style={{
                       left: u.loc.x * cellPx,
@@ -8272,10 +8571,18 @@ export default function App() {
   const [view, setView] = useState("map"); // map | warehouse
   const [activeWarehouseId, setActiveWarehouseId] = useState(null);
   const [selectedWarehouseId, setSelectedWarehouseId] = useState(null); // 地図上で選択中の倉庫
+
   const [topViewMode, setTopViewMode] = useState(() => {
     try { return localStorage.getItem("wh_top_view_mode") || "map"; } catch { return "map"; }
   });
   useEffect(() => { try { localStorage.setItem("wh_top_view_mode", topViewMode); } catch {} }, [topViewMode]);
+
+  // --- 荷物検索 ---
+  const [unitSearchOpen, setUnitSearchOpen] = useState(false);
+  const [unitSearchQuery, setUnitSearchQuery] = useState("");
+  const [unitSearchKey, setUnitSearchKey] = useState("all");
+  const [pendingFocusUnit, setPendingFocusUnit] = useState(null); // { unitId, whId, ts }
+  const [searchRefreshKey, setSearchRefreshKey] = useState(0);
 
   const [site, setSite] = useSupabaseState("wh_demo_site_v1", {
     id: "site-1",
@@ -8338,6 +8645,65 @@ export default function App() {
     warehouses,
     selectedWarehouseId,
   ]);
+
+  // マップコールバック（安定参照）
+  const handleMapSelect = useCallback((id) => setSelectedWarehouseId(id), []);
+  const handleMapPositionChange = useCallback((id, lat, lng) => {
+    setWarehouses((prev) =>
+      prev.map((wh) => (wh.id === id ? { ...wh, lat, lng } : wh))
+    );
+  }, [setWarehouses]);
+  const handleMapDoubleClick = useCallback((id) => {
+    setActiveWarehouseId(id);
+    setView("warehouse");
+  }, []);
+
+  // --- 荷物検索: 全倉庫ユニット取得 ---
+  const allUnitsForSearch = useMemo(() => {
+    void searchRefreshKey; // 依存に含めて再計算トリガー
+    const result = [];
+    for (const w of warehouses) {
+      try {
+        const raw = JSON.parse(localStorage.getItem(`wh_demo_units_${w.id}_v1`)) || [];
+        for (const u of raw) {
+          result.push({ ...u, _whName: w.name, _whId: w.id });
+        }
+      } catch { /* skip */ }
+    }
+    return result;
+  }, [warehouses, searchRefreshKey]);
+
+  const unitSearchResults = useMemo(() => {
+    const q = unitSearchQuery.trim().toLowerCase();
+    if (!q) return [];
+    const match = (val) => val && typeof val === "string" && val.toLowerCase().includes(q);
+    const exact = (val) => val && typeof val === "string" && val === unitSearchQuery.trim();
+    return allUnitsForSearch.filter((u) => {
+      if (unitSearchKey === "all") {
+        return match(u.client) || match(u.department) || match(u.personInCharge) || match(u.clientContact) || match(u.name) || match(u.kind) || match(u.notes) || match(u._whName);
+      }
+      if (unitSearchKey === "status") return exact(u.status);
+      if (unitSearchKey === "personInCharge") return exact(u.personInCharge);
+      return match(u[unitSearchKey]);
+    });
+  }, [allUnitsForSearch, unitSearchQuery, unitSearchKey]);
+
+  function openUnitSearch() {
+    setSearchRefreshKey((k) => k + 1);
+    setUnitSearchOpen(true);
+  }
+
+  function navigateToUnit(unit) {
+    setUnitSearchOpen(false);
+    setUnitSearchQuery("");
+    const targetWhId = unit._whId;
+    const ts = Date.now();
+    setPendingFocusUnit({ unitId: unit.id, whId: targetWhId, ts });
+    if (view !== "warehouse" || activeWarehouseId !== targetWhId) {
+      setActiveWarehouseId(targetWhId);
+      setView("warehouse");
+    }
+  }
 
   // Map pan/zoom
   const containerRef = useRef(null);
@@ -8668,6 +9034,20 @@ export default function App() {
         displayName={displayName}
         onLoginClick={() => setLoginModalOpen(true)}
         onLogout={signOut}
+        pendingFocusUnit={pendingFocusUnit}
+        onFocusUnitHandled={() => setPendingFocusUnit(null)}
+        onOpenUnitSearch={openUnitSearch}
+      />
+      <UnitSearchModal
+        open={unitSearchOpen}
+        onClose={() => setUnitSearchOpen(false)}
+        query={unitSearchQuery}
+        setQuery={setUnitSearchQuery}
+        searchKey={unitSearchKey}
+        setSearchKey={setUnitSearchKey}
+        results={unitSearchResults}
+        onNavigate={navigateToUnit}
+        allUnits={allUnitsForSearch}
       />
       </>
     );
@@ -8704,6 +9084,14 @@ export default function App() {
             onClick={addWarehouse}
           >
             ＋ 倉庫追加
+          </button>
+          <button
+            type="button"
+            className="rounded-xl border-2 shadow-sm font-bold"
+            style={{ padding: "8px 16px", fontSize: "14px", background: "linear-gradient(135deg, #fef3c7, #fde68a)", color: "#92400e", borderColor: "#fbbf24", cursor: "pointer" }}
+            onClick={openUnitSearch}
+          >
+            荷物検索
           </button>
         </div>
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -8806,41 +9194,19 @@ export default function App() {
                   <li>マーカー：クリックで情報表示</li>
                   <li>マーカー：ダブルクリックで倉庫に入る</li>
                   <li>マップ：ドラッグで移動 / ホイールでズーム</li>
+                  <li>マップ：右ドラッグで回転・傾き（3D）</li>
                 </ul>
               </div>
             </div>
 
-            {/* OpenStreetMap */}
-            <MapContainer
-              center={[35.68, 139.75]}
-              zoom={12}
-              className="h-full w-full"
-              style={{ height: "100%", width: "100%" }}
-            >
-              <MapStateHandler storageKey="wh_demo_map_state_v1" />
-              <TileLayer
-                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-              />
-              {warehouses.map((w) => (
-                <DraggableMarker
-                  key={w.id}
-                  position={[w.lat || 35.68, w.lng || 139.75]}
-                  warehouse={w}
-                  isSelected={selectedWarehouseId === w.id}
-                  onPositionChange={(id, lat, lng) => {
-                    setWarehouses((prev) =>
-                      prev.map((wh) => (wh.id === id ? { ...wh, lat, lng } : wh))
-                    );
-                  }}
-                  onClick={() => setSelectedWarehouseId(w.id)}
-                  onDoubleClick={() => {
-                    setActiveWarehouseId(w.id);
-                    setView("warehouse");
-                  }}
-                />
-              ))}
-            </MapContainer>
+            {/* OpenStreetMap (MapLibre GL JS) */}
+            <MapLibreMap
+              warehouses={warehouses}
+              selectedWarehouseId={selectedWarehouseId}
+              onSelect={handleMapSelect}
+              onPositionChange={handleMapPositionChange}
+              onDoubleClick={handleMapDoubleClick}
+            />
           </div>
         )}
 
@@ -9310,6 +9676,17 @@ export default function App() {
           </div>
         )}
       </Modal>
+      <UnitSearchModal
+        open={unitSearchOpen}
+        onClose={() => setUnitSearchOpen(false)}
+        query={unitSearchQuery}
+        setQuery={setUnitSearchQuery}
+        searchKey={unitSearchKey}
+        setSearchKey={setUnitSearchKey}
+        results={unitSearchResults}
+        onNavigate={navigateToUnit}
+        allUnits={allUnitsForSearch}
+      />
     </div>
   );
 }

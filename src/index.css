@@ -8,6 +8,15 @@
 }
 .wh-departure-blink { animation: wh-border-blink 1s ease-in-out infinite; }
 
+@keyframes wh-search-pulse {
+  0%, 100% { background-color: rgba(239, 68, 68, 0.55); box-shadow: 0 0 18px 6px rgba(239,68,68,0.5); }
+  50% { background-color: rgba(239, 68, 68, 0.1); box-shadow: 0 0 4px 1px rgba(239,68,68,0.15); }
+}
+.wh-search-highlight {
+  animation: wh-search-pulse 0.7s ease-in-out infinite !important;
+  z-index: 50 !important;
+}
+
 @keyframes wh-3d-departure-blink {
   0%, 100% { opacity: 0.5; }
   50% { opacity: 0; }
