@@ -8233,6 +8233,7 @@ function runSelfTests() {
 export default function App() {
   const { isLoggedIn, displayName, loading: authLoading, signOut } = useAuth();
   const [loginModalOpen, setLoginModalOpen] = useState(false);
+  const [editingSiteName, setEditingSiteName] = useState(null);
 
   const [view, setView] = useState("map"); // map | warehouse
   const [activeWarehouseId, setActiveWarehouseId] = useState(null);
@@ -8671,8 +8672,37 @@ export default function App() {
             ＋ 倉庫追加
           </button>
         </div>
-        <div style={{ flex: 1, textAlign: "center" }}>
-          <span style={{ fontSize: "22px", fontWeight: 800, color: "#1e293b", letterSpacing: "0.02em" }}>{site.name}</span>
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          {editingSiteName != null ? (
+            <input
+              autoFocus
+              style={{ fontSize: "22px", fontWeight: 800, color: "#1e293b", letterSpacing: "0.02em", textAlign: "center", border: "2px solid #6366f1", borderRadius: "8px", padding: "2px 12px", outline: "none", background: "#f8fafc", width: "320px" }}
+              value={editingSiteName}
+              onChange={(e) => setEditingSiteName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  const v = editingSiteName.trim();
+                  if (v) setSite((s) => ({ ...s, name: v }));
+                  setEditingSiteName(null);
+                } else if (e.key === "Escape") {
+                  setEditingSiteName(null);
+                }
+              }}
+              onBlur={() => {
+                const v = editingSiteName.trim();
+                if (v) setSite((s) => ({ ...s, name: v }));
+                setEditingSiteName(null);
+              }}
+            />
+          ) : (
+            <span
+              style={{ fontSize: "22px", fontWeight: 800, color: "#1e293b", letterSpacing: "0.02em", cursor: "pointer", borderBottom: "2px dashed transparent" }}
+              onMouseEnter={(e) => e.currentTarget.style.borderBottomColor = "#c7d2fe"}
+              onMouseLeave={(e) => e.currentTarget.style.borderBottomColor = "transparent"}
+              onClick={() => setEditingSiteName(site.name)}
+              title="クリックで名前を変更"
+            >{site.name}</span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           {topViewMode === "map" && (
