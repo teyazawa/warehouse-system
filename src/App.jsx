@@ -3640,9 +3640,9 @@ const personList = site?.personList || [];
     showToast("作成しました（未配置リストから配置できます）");
   }
 
-  // 配置時にdraft→storedへ自動変更するヘルパー
+  // 配置時にdraft→in_stockへ自動変更するヘルパー
   function autoPromoteStatus(unitObj) {
-    if (unitObj.status === "draft") return "stored";
+    if (unitObj.status === "draft") return "in_stock";
     return unitObj.status;
   }
 
