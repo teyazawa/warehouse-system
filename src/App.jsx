@@ -2846,17 +2846,28 @@ const personList = site?.personList || [];
       if (!requireAuth()) { setDrag(null); return; }
       const { cx, cy } = toCell(drag.pointerX, drag.pointerY);
       const u = drag.draftUnit;
+      const origId = u._origId; // 既存ユニットのドラッグ配置の場合、元のIDを保持
+
+      // ヘルパー: 既存ユニット更新 or 新規追加
+      const commitPlacement = (locData, extraFields = {}) => {
+        if (origId) {
+          // 既存ユニットを更新（重複を防ぐ）
+          setUnits((prev) => prev.map((x) => x.id === origId
+            ? { ...x, loc: locData, status: autoPromoteStatus(x), ...extraFields }
+            : x
+          ));
+        } else {
+          // 新規ユニット作成
+          const created = { ...u, id: "u-" + uid(), loc: locData, status: autoPromoteStatus(u), ...extraFields };
+          delete created._origId;
+          setUnits((prev) => [...prev, created]);
+        }
+      };
 
       // Try rack slot first if hovering rack
       const slot = findRackSlotAtCell(cx, cy);
-      if (slot && isRackSlotFree(slot.rackId, slot.slot)) {
-        const created = {
-          ...u,
-          id: "u-" + uid(),
-          loc: { kind: "rack", rackId: slot.rackId, slot: slot.slot },
-          status: autoPromoteStatus(u),
-        };
-        setUnits((prev) => [...prev, created]);
+      if (slot && isRackSlotFree(slot.rackId, slot.slot, origId)) {
+        commitPlacement({ kind: "rack", rackId: slot.rackId, slot: slot.slot });
         setDrag(null);
         return;
       }
@@ -2868,14 +2879,8 @@ const personList = site?.personList || [];
         const fp = unitFootprintCells(u);
         const clampedX = clamp(Math.floor(local.localX), 0, shelf.w - fp.w);
         const clampedY = clamp(Math.floor(local.localY), 0, shelf.h - fp.h);
-        if (canPlaceOnShelf(shelf.id, u, clampedX, clampedY)) {
-          const created = {
-            ...u,
-            id: "u-" + uid(),
-            loc: { kind: "shelf", shelfId: shelf.id, x: clampedX, y: clampedY },
-            status: autoPromoteStatus(u),
-          };
-          setUnits((prev) => [...prev, created]);
+        if (canPlaceOnShelf(shelf.id, u, clampedX, clampedY, origId)) {
+          commitPlacement({ kind: "shelf", shelfId: shelf.id, x: clampedX, y: clampedY });
           setDrag(null);
           return;
         } else {
@@ -2903,18 +2908,16 @@ const personList = site?.personList || [];
         setDrag(null);
         return;
       }
-      if (!canPlaceOnFloor(u, px, py)) {
+      if (!canPlaceOnFloor(u, px, py, origId)) {
         showToast("ここには置けません（他の荷物/棚と重なっています）");
         setDrag(null);
         return;
       }
-      const created = {
-        ...u,
-        id: "u-" + uid(),
-        loc: { kind: "floor", x: px, y: py },
-        status: autoPromoteStatus(u),
-      };
-      setUnits((prev) => [...prev, created]);
+      const containingItems = getContainingStackItems({ x: px, y: py, w: fp.w, h: fp.h }, origId);
+      const stackZ = containingItems.length > 0
+        ? Math.max(...containingItems.map(i => (i.stackZ || 0) + (i.h_m || 0)))
+        : 0;
+      commitPlacement({ kind: "floor", x: px, y: py }, { stackZ });
       setDrag(null);
       return;
     }
@@ -3768,7 +3771,7 @@ const personList = site?.personList || [];
   function startDragExistingUnitFromList(e, unitId) {
     const u = units.find((x) => x.id === unitId);
     if (!u) return;
-    const draft = { ...u, id: "__draft__", loc: { kind: "unplaced" } };
+    const draft = { ...u, id: "__draft__", _origId: u.id, loc: { kind: "unplaced" } };
     beginPlaceNew(e, draft);
   }
 
@@ -7101,34 +7104,32 @@ const personList = site?.personList || [];
                       </select>
                     </div>
 
-                    {/* ===== 運行期間（運行中の時のみ表示） ===== */}
-                    {selectedEntity.status === "in_transit" && (
-                      <div className="border-t pt-2 pb-1">
-                        <div className="text-xs text-gray-500 mb-1">運行期間</div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <div className="text-[10px] text-gray-400">開始日</div>
-                            <input
-                              type="datetime-local"
-                              className="mt-0.5 w-full rounded-xl border px-2 py-1.5 text-sm"
-                              value={selectedEntity.transitStartDate || ""}
-                              onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "transitStartDate", e.target.value)}
-                              onBlur={(e) => updateUnitField(selectedEntity.id, "transitStartDate", e.target.value, "運行開始日変更")}
-                            />
-                          </div>
-                          <div>
-                            <div className="text-[10px] text-gray-400">終了日（戻り予定）</div>
-                            <input
-                              type="datetime-local"
-                              className="mt-0.5 w-full rounded-xl border px-2 py-1.5 text-sm"
-                              value={selectedEntity.transitEndDate || ""}
-                              onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "transitEndDate", e.target.value)}
-                              onBlur={(e) => updateUnitField(selectedEntity.id, "transitEndDate", e.target.value, "運行終了日変更")}
-                            />
-                          </div>
+                    {/* ===== 運行期間 ===== */}
+                    <div className="border-t pt-2 pb-1">
+                      <div className="text-xs text-gray-500 mb-1">運行期間</div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <div className="text-[10px] text-gray-400">開始日</div>
+                          <input
+                            type="datetime-local"
+                            className="mt-0.5 w-full rounded-xl border px-2 py-1.5 text-sm"
+                            value={selectedEntity.transitStartDate || ""}
+                            onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "transitStartDate", e.target.value)}
+                            onBlur={(e) => updateUnitField(selectedEntity.id, "transitStartDate", e.target.value, "運行開始日変更")}
+                          />
+                        </div>
+                        <div>
+                          <div className="text-[10px] text-gray-400">終了日（戻り予定）</div>
+                          <input
+                            type="datetime-local"
+                            className="mt-0.5 w-full rounded-xl border px-2 py-1.5 text-sm"
+                            value={selectedEntity.transitEndDate || ""}
+                            onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "transitEndDate", e.target.value)}
+                            onBlur={(e) => updateUnitField(selectedEntity.id, "transitEndDate", e.target.value, "運行終了日変更")}
+                          />
                         </div>
                       </div>
-                    )}
+                    </div>
 
                     {/* ===== 見た目（色・透明度）— 折りたたみ（デフォルト閉） ===== */}
                     <div className="border-t">
