@@ -2854,6 +2854,7 @@ const personList = site?.personList || [];
           ...u,
           id: "u-" + uid(),
           loc: { kind: "rack", rackId: slot.rackId, slot: slot.slot },
+          status: autoPromoteStatus(u),
         };
         setUnits((prev) => [...prev, created]);
         setDrag(null);
@@ -2872,6 +2873,7 @@ const personList = site?.personList || [];
             ...u,
             id: "u-" + uid(),
             loc: { kind: "shelf", shelfId: shelf.id, x: clampedX, y: clampedY },
+            status: autoPromoteStatus(u),
           };
           setUnits((prev) => [...prev, created]);
           setDrag(null);
@@ -2910,6 +2912,7 @@ const personList = site?.personList || [];
         ...u,
         id: "u-" + uid(),
         loc: { kind: "floor", x: px, y: py },
+        status: autoPromoteStatus(u),
       };
       setUnits((prev) => [...prev, created]);
       setDrag(null);
@@ -2939,7 +2942,7 @@ const personList = site?.personList || [];
 
         if (canPlaceOnShelf(shelf.id, u, clampedX, clampedY, u.id)) {
           setUnits((prev) => prev.map((x) =>
-            x.id === u.id ? { ...x, loc: { kind: "shelf", shelfId: shelf.id, x: clampedX, y: clampedY } } : x
+            x.id === u.id ? { ...x, loc: { kind: "shelf", shelfId: shelf.id, x: clampedX, y: clampedY }, status: autoPromoteStatus(x) } : x
           ));
           setDrag(null);
           return;
@@ -2972,7 +2975,7 @@ const personList = site?.personList || [];
             ? Math.max(...containingItems.map(i => (i.stackZ || 0) + (i.h_m || 0)))
             : 0;
           setUnits((prev) => prev.map((x) =>
-            x.id === u.id ? { ...x, loc: { kind: "floor", x: floorX, y: floorY }, stackZ: newStackZ } : x
+            x.id === u.id ? { ...x, loc: { kind: "floor", x: floorX, y: floorY }, stackZ: newStackZ, status: autoPromoteStatus(x) } : x
           ));
           setDrag(null);
           return;
@@ -3634,6 +3637,52 @@ const personList = site?.personList || [];
     showToast("作成しました（未配置リストから配置できます）");
   }
 
+  // 配置時にdraft→storedへ自動変更するヘルパー
+  function autoPromoteStatus(unitObj) {
+    if (unitObj.status === "draft") return "stored";
+    return unitObj.status;
+  }
+
+  // ユニットをキャンバス中央にパンするヘルパー
+  function panToUnit(u) {
+    if (!u?.loc || u.loc.kind === "unplaced") return;
+    const el = canvasRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    if (u.loc.kind === "floor") {
+      const fp = unitFootprintCells(u);
+      const centerX = (u.loc.x + fp.w / 2) * cellPx;
+      const centerY = (u.loc.y + fp.h / 2) * cellPx;
+      setPan({ x: r.width / 2 - centerX * zoom, y: r.height / 2 - centerY * zoom });
+    } else if (u.loc.kind === "shelf") {
+      const shelf = (layout.shelves || []).find((s) => s.id === u.loc.shelfId);
+      if (shelf) {
+        const vr = getShelfVisualRect(shelf);
+        const centerX = (vr.x + vr.w / 2) * cellPx;
+        const centerY = (vr.y + vr.h / 2) * cellPx;
+        setPan({ x: r.width / 2 - centerX * zoom, y: r.height / 2 - centerY * zoom });
+      }
+    } else if (u.loc.kind === "rack") {
+      const rack = layout.racks.find((rc) => rc.id === u.loc.rackId);
+      if (rack) {
+        const centerX = (rack.x + rack.w / 2) * cellPx;
+        const centerY = (rack.y + rack.h / 2) * cellPx;
+        setPan({ x: r.width / 2 - centerX * zoom, y: r.height / 2 - centerY * zoom });
+      }
+    }
+  }
+
+  // 区画をキャンバス中央にパンするヘルパー
+  function panToZone(z) {
+    if (!z) return;
+    const el = canvasRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const centerX = (z.x + z.w / 2) * cellPx;
+    const centerY = (z.y + z.h / 2) * cellPx;
+    setPan({ x: r.width / 2 - centerX * zoom, y: r.height / 2 - centerY * zoom });
+  }
+
   function placeOnFloorAuto(unitId) {
     if (!requireAuth()) return;
     const u = units.find((x) => x.id === unitId);
@@ -3660,7 +3709,7 @@ const personList = site?.personList || [];
             const stackZ = containingItems.length > 0
               ? Math.max(...containingItems.map(i => (i.stackZ || 0) + (i.h_m || 0)))
               : 0;
-            setUnits((prev) => prev.map((x) => (x.id === unitId ? { ...x, loc: { kind: "floor", x: tx, y: ty }, stackZ } : x)));
+            setUnits((prev) => prev.map((x) => (x.id === unitId ? { ...x, loc: { kind: "floor", x: tx, y: ty }, stackZ, status: autoPromoteStatus(x) } : x)));
             showToast(containingItems.length > 0 ? `床に積み重ねました（${containingItems.length + 1}段目）` : "床に配置しました");
             return;
           }
@@ -3680,7 +3729,7 @@ const personList = site?.personList || [];
     for (let y = 0; y <= shelf.h - fp.h; y++) {
       for (let x = 0; x <= shelf.w - fp.w; x++) {
         if (canPlaceOnShelf(shelfId, u, x, y, unitId)) {
-          setUnits((prev) => prev.map((x2) => (x2.id === unitId ? { ...x2, loc: { kind: "shelf", shelfId, x, y } } : x2)));
+          setUnits((prev) => prev.map((x2) => (x2.id === unitId ? { ...x2, loc: { kind: "shelf", shelfId, x, y }, status: autoPromoteStatus(x2) } : x2)));
           showToast(`棚「${shelf.name || shelfId}」に配置しました`);
           return;
         }
@@ -3698,7 +3747,7 @@ const personList = site?.personList || [];
     const totalSlots = (rack.rows || 1) * (rack.cols || 1);
     for (let slot = 0; slot < totalSlots; slot++) {
       if (isRackSlotFree(rackId, slot, unitId)) {
-        setUnits((prev) => prev.map((x) => (x.id === unitId ? { ...x, loc: { kind: "rack", rackId, slot } } : x)));
+        setUnits((prev) => prev.map((x) => (x.id === unitId ? { ...x, loc: { kind: "rack", rackId, slot }, status: autoPromoteStatus(x) } : x)));
         showToast(`ラック「${rack.name || rackId}」のスロット${slot + 1}に配置しました`);
         return;
       }
@@ -4474,16 +4523,7 @@ const personList = site?.personList || [];
                     className="rounded-xl border p-2 text-sm hover:bg-red-50 cursor-pointer transition-colors"
                     onClick={() => {
                       setSelected({ kind: "unit", id: u.id });
-                      if (u.loc?.kind === "floor") {
-                        const fp = unitFootprintCells(u);
-                        const centerX = (u.loc.x + fp.w / 2) * cellPx;
-                        const centerY = (u.loc.y + fp.h / 2) * cellPx;
-                        const el = canvasRef.current;
-                        if (el) {
-                          const r = el.getBoundingClientRect();
-                          setPan({ x: r.width / 2 - centerX * zoom, y: r.height / 2 - centerY * zoom });
-                        }
-                      }
+                      panToUnit(u);
                     }}
                   >
                     <div className="font-medium flex items-center gap-1">
@@ -4530,6 +4570,7 @@ const personList = site?.personList || [];
                     style={{ background: "#fef2f2", border: "1px solid #fca5a5" }}
                     onClick={() => {
                       setSelected({ kind: "unit", id: a.unit.id });
+                      panToUnit(a.unit);
                     }}
                   >
                     <div className="font-bold" style={{ color: "#dc2626" }}>
@@ -4563,6 +4604,7 @@ const personList = site?.personList || [];
                       }}
                       onClick={() => {
                         setSelected({ kind: "unit", id: u.id });
+                        panToUnit(u);
                       }}
                     >
                       <div className="font-medium flex items-center gap-1">
@@ -4605,7 +4647,7 @@ const personList = site?.personList || [];
                       background: a.expired ? "#fef2f2" : "#fffbeb",
                       border: `1px solid ${a.expired ? "#fca5a5" : "#fde68a"}`,
                     }}
-                    onClick={() => setSelected({ kind: "zone", id: a.zone.id })}
+                    onClick={() => { setSelected({ kind: "zone", id: a.zone.id }); panToZone(a.zone); }}
                   >
                     <div className="font-bold" style={{ color: a.expired ? "#dc2626" : "#d97706" }}>
                       {a.expired ? "⚠ " : "⏰ "}{a.zone.name} — {a.expired ? "期限超過" : `あと${a.diffDays}日`}
@@ -4668,16 +4710,7 @@ const personList = site?.personList || [];
                     className="rounded-xl border p-2 text-sm hover:bg-blue-50 cursor-pointer transition-colors"
                     onClick={() => {
                       setSelected({ kind: "unit", id: u.id });
-                      if (u.loc?.kind === "floor") {
-                        const fp = unitFootprintCells(u);
-                        const centerX = (u.loc.x + fp.w / 2) * cellPx;
-                        const centerY = (u.loc.y + fp.h / 2) * cellPx;
-                        const el = canvasRef.current;
-                        if (el) {
-                          const r = el.getBoundingClientRect();
-                          setPan({ x: r.width / 2 - centerX * zoom, y: r.height / 2 - centerY * zoom });
-                        }
-                      }
+                      panToUnit(u);
                     }}
                   >
                     <div className="font-medium flex items-center gap-1">
