@@ -9114,11 +9114,10 @@ ${cs.units.length > 0 ? `
         const zoneUnits = (() => {
           if (isShelfZone) {
             const shelfId = z.loc.shelfId;
-            const zx = z.loc.x || 0, zy = z.loc.y || 0;
             return units.filter((u) => u.loc?.kind === "shelf" && u.loc.shelfId === shelfId).map((u) => {
               const fp = unitFootprintCells(u);
               const rp = realFP(u);
-              return { ...u, _localX: (u.loc.x || 0) - zx, _localY: (u.loc.y || 0) - zy, _fw: fp.w, _fh: fp.h, _realW: rp.w, _realH: rp.h };
+              return { ...u, _localX: (u.loc.x || 0), _localY: (u.loc.y || 0), _fw: fp.w, _fh: fp.h, _realW: rp.w, _realH: rp.h };
             }).filter((u) => u._localX >= -0.01 && u._localY >= -0.01 && u._localX + u._realW <= z.w + 0.01 && u._localY + u._realH <= z.h + 0.01);
           } else {
             return units.filter((u) => u.loc?.kind === "floor").map((u) => {
