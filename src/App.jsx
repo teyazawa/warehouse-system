@@ -601,7 +601,7 @@ function LoginModal({ open, onClose }) {
   );
 }
 
-function Modal({ title, open, onClose, children }) {
+function Modal({ title, open, onClose, children, maxWidth = "36rem" }) {
   if (!open) return null;
   return (
     <div
@@ -623,9 +623,10 @@ function Modal({ title, open, onClose, children }) {
       <div
         style={{
           width: "100%",
-          maxWidth: "36rem",
+          maxWidth,
           maxHeight: "90vh",
-          overflow: "auto",
+          overflowX: "hidden",
+          overflowY: "auto",
           borderRadius: "20px",
           backgroundColor: "#fff",
           boxShadow: "0 20px 60px -10px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(0,0,0,0.05)",
@@ -1617,6 +1618,11 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
 
   const [panels, _setPanelsRaw] = useSupabaseState(`wh_demo_panels_${wh.id}_v1`, []);
 
+  const [pricing, _setPricingRaw] = useSupabaseState(`wh_demo_pricing_${wh.id}_v1`, {
+    defaultRates: { zoneMonthlyPerTsubo: 5000, unitDailyRate: 100, unitMonthlyRate: 2500 },
+    clientRates: {},
+  });
+
   const [toast, setToast] = useState(null);
 
   // 認証付きセッター（未ログイン時はブロック、デバウンスでトースト表示）
@@ -1641,6 +1647,10 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
     if (!isLoggedIn) { return; }
     _setPanelsRaw(...args);
   }, [isLoggedIn, _setPanelsRaw]);
+  const setPricing = useCallback((...args) => {
+    if (!isLoggedIn) { _authBlock(); return; }
+    _setPricingRaw(...args);
+  }, [isLoggedIn, _setPricingRaw]);
 
   // マイグレーション: layout.panelsが存在する場合、新stateに移行（rawセッター使用）
   useEffect(() => {
@@ -1869,6 +1879,8 @@ function closeZoneDetailModal() {
 
 // 担当者管理モーダル
 const [personModalOpen, setPersonModalOpen] = useState(false);
+// 料金設定モーダル
+const [pricingModalOpen, setPricingModalOpen] = useState(false);
 const [newPersonName, setNewPersonName] = useState("");
 const personList = site?.personList || [];
 
@@ -2326,6 +2338,22 @@ const personList = site?.personList || [];
       }
     }
     return false;
+  }
+
+  // 取引先不一致チェック: 荷物のクライアントとゾーンのクライアントが異なる場合ブロック
+  function getClientMismatchZone(unit, absX, absY, w, h) {
+    const uClient = unit.client;
+    if (!uClient || uClient === "(未設定)") return null;
+    for (const z of layout.zones) {
+      if (!z.client || z.client === "(未設定)") continue;
+      if (z.isStagingArea) continue; // 仮置き場はチェックしない
+      const zx = z.x, zy = z.y, zw = z.w, zh = z.h;
+      // 矩形の重なりチェック
+      if (absX < zx + zw && absX + w > zx && absY < zy + zh && absY + h > zy) {
+        if (uClient !== z.client) return z;
+      }
+    }
+    return null;
   }
 
   // 区画内限定の衝突判定（ローカル座標 0〜zone.w/h）
@@ -3097,13 +3125,28 @@ const personList = site?.personList || [];
         // Move units (floor only for simplicity)
         const unitIds = new Set(items.filter((s) => s.kind === "unit").map((s) => s.id));
         if (unitIds.size > 0) {
-          setUnits((prev) => prev.map((u) => {
-            if (!unitIds.has(u.id)) return u;
-            if (u.loc?.kind === "floor") {
-              return { ...u, loc: { ...u.loc, x: u.loc.x + dx, y: u.loc.y + dy } };
+          // 取引先不一致チェック
+          let blocked = false;
+          for (const uid of unitIds) {
+            const u = units.find((x) => x.id === uid);
+            if (!u || u.loc?.kind !== "floor") continue;
+            const fp = unitFootprintCells(u);
+            const mz = getClientMismatchZone(u, u.loc.x + dx, u.loc.y + dy, fp.w, fp.h);
+            if (mz) {
+              showToast(`「${u.name}」は「${mz.client}」専用区画に置けません`);
+              blocked = true;
+              break;
             }
-            return u;
-          }));
+          }
+          if (!blocked) {
+            setUnits((prev) => prev.map((u) => {
+              if (!unitIds.has(u.id)) return u;
+              if (u.loc?.kind === "floor") {
+                return { ...u, loc: { ...u.loc, x: u.loc.x + dx, y: u.loc.y + dy } };
+              }
+              return u;
+            }));
+          }
         }
         // Move panels
         const panelIds = new Set(items.filter((s) => s.kind === "panel").map((s) => s.id));
@@ -3220,6 +3263,14 @@ const personList = site?.personList || [];
         setDrag(null);
         return;
       }
+      {
+        const mz = getClientMismatchZone(u, px, py, fp.w, fp.h);
+        if (mz) {
+          showToast(`この区画は「${mz.client}」専用です（荷物の取引先: ${u.client || "(未設定)"}）`);
+          setDrag(null);
+          return;
+        }
+      }
       if (!canPlaceOnFloor(u, px, py, origId)) {
         showToast("ここには置けません（他の荷物/棚と重なっています）");
         setDrag(null);
@@ -3281,6 +3332,14 @@ const personList = site?.personList || [];
         showToast("予約期限間近のため配置できません（予約OFFにするか期限を延長してください）");
         setDrag(null);
         return;
+      }
+      {
+        const mz = getClientMismatchZone(u, floorX, floorY, fp.w, fp.h);
+        if (mz) {
+          showToast(`この区画は「${mz.client}」専用です（荷物の取引先: ${u.client || "(未設定)"}）`);
+          setDrag(null);
+          return;
+        }
       }
       if (inStaging || (floorX + fp.w > fx && floorY + fp.h > fy && floorX < fx + layout.floor.cols && floorY < fy + layout.floor.rows)) {
         if (canPlaceOnFloor(u, floorX, floorY, u.id)) {
@@ -3509,6 +3568,195 @@ const personList = site?.personList || [];
       .map(([client, v]) => ({ client, ...v }))
       .sort((a, b) => b.m2 - a.m2);
   }, [units]);
+
+  // --- 料金計算ヘルパー ---
+  const TSUBO_M2 = 3.30579;
+
+  function getClientRates(clientName) {
+    const cr = pricing.clientRates?.[clientName];
+    const dr = pricing.defaultRates || { zoneMonthlyPerTsubo: 5000, unitDailyRate: 100, unitMonthlyRate: 2500 };
+    return {
+      zoneMonthlyPerTsubo: cr?.zoneMonthlyPerTsubo ?? dr.zoneMonthlyPerTsubo,
+      unitDailyRate: cr?.unitDailyRate ?? dr.unitDailyRate,
+      unitMonthlyRate: cr?.unitMonthlyRate ?? dr.unitMonthlyRate,
+    };
+  }
+
+  function calcZoneBilling(zone) {
+    const cellW = layout.floor.cell_m_w || 1.2;
+    const cellD = layout.floor.cell_m_d || 1.0;
+    const areaM2 = zone.area_m2_manual ? (zone.area_m2 || 0) : (zone.w * cellW * zone.h * cellD);
+    const tsubo = areaM2 / TSUBO_M2;
+    const rates = getClientRates(zone.client);
+    const monthlyAmount = Math.round(tsubo * rates.zoneMonthlyPerTsubo);
+    return { areaM2, tsubo, rate: rates.zoneMonthlyPerTsubo, monthlyAmount };
+  }
+
+  function calcUnitBilling(unit) {
+    const rates = getClientRates(unit.client);
+    const billingType = unit.billingType || "daily";
+    const arrDate = unit.arrivalDate ? new Date(unit.arrivalDate) : null;
+    const depDate = unit.departureDate ? new Date(unit.departureDate) : null;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    let storageDays = 0;
+    if (arrDate) {
+      const endDate = depDate || today;
+      storageDays = Math.max(1, Math.ceil((endDate - arrDate) / (1000 * 60 * 60 * 24)));
+    }
+    const storageMonths = Math.max(1, Math.ceil(storageDays / 30));
+    const qty = unit.qty || 1;
+    let amount;
+    if (billingType === "monthly") {
+      amount = storageMonths * rates.unitMonthlyRate * qty;
+    } else {
+      amount = storageDays * rates.unitDailyRate * qty;
+    }
+    return {
+      billingType,
+      rate: billingType === "monthly" ? rates.unitMonthlyRate : rates.unitDailyRate,
+      storageDays,
+      storageMonths,
+      qty,
+      amount,
+    };
+  }
+
+  // クライアント別請求サマリー
+  const clientBillingSummary = useMemo(() => {
+    const acc = new Map();
+    // ゾーン（区画）料金
+    for (const z of layout.zones) {
+      const client = z.client || "(未設定)";
+      const prev = acc.get(client) || { zones: [], units: [], zoneTotal: 0, unitTotal: 0 };
+      const billing = calcZoneBilling(z);
+      prev.zones.push({ ...z, billing });
+      prev.zoneTotal += billing.monthlyAmount;
+      acc.set(client, prev);
+    }
+    // 荷物（ユニット）料金
+    for (const u of units) {
+      if (u.loc?.kind !== "floor" && u.loc?.kind !== "rack" && u.loc?.kind !== "shelf") continue;
+      if (!u.arrivalDate) continue;
+      const client = u.client || "(未設定)";
+      const prev = acc.get(client) || { zones: [], units: [], zoneTotal: 0, unitTotal: 0 };
+      const billing = calcUnitBilling(u);
+      prev.units.push({ ...u, billing });
+      prev.unitTotal += billing.amount;
+      acc.set(client, prev);
+    }
+    return [...acc.entries()]
+      .map(([client, v]) => ({ client, ...v, total: v.zoneTotal + v.unitTotal }))
+      .sort((a, b) => b.total - a.total);
+  }, [layout.zones, units, pricing, layout.floor.cell_m_w, layout.floor.cell_m_d]);
+
+  function generateInvoice(clientName) {
+    const cs = clientBillingSummary.find((c) => c.client === clientName);
+    if (!cs) return;
+    const today = new Date();
+    const invoiceNo = `INV-${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, "0")}${String(today.getDate()).padStart(2, "0")}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+    const invoiceDate = `${today.getFullYear()}年${today.getMonth() + 1}月${today.getDate()}日`;
+
+    let zoneRows = "";
+    for (const z of cs.zones) {
+      zoneRows += `<tr>
+        <td style="border:1px solid #ccc;padding:6px 8px;">区画: ${z.name}</td>
+        <td style="border:1px solid #ccc;padding:6px 8px;text-align:right;">${z.billing.tsubo.toFixed(2)} 坪</td>
+        <td style="border:1px solid #ccc;padding:6px 8px;text-align:right;">¥${z.billing.rate.toLocaleString()}/坪/月</td>
+        <td style="border:1px solid #ccc;padding:6px 8px;text-align:center;">1ヶ月</td>
+        <td style="border:1px solid #ccc;padding:6px 8px;text-align:right;font-weight:600;">¥${z.billing.monthlyAmount.toLocaleString()}</td>
+      </tr>`;
+    }
+
+    let unitRows = "";
+    for (const u of cs.units) {
+      const b = u.billing;
+      const periodLabel = b.billingType === "monthly" ? `${b.storageMonths}ヶ月` : `${b.storageDays}日`;
+      const rateLabel = b.billingType === "monthly" ? `¥${b.rate.toLocaleString()}/月` : `¥${b.rate.toLocaleString()}/日`;
+      const qtyLabel = b.qty > 1 ? `${u.name} ×${b.qty}` : u.name;
+      unitRows += `<tr>
+        <td style="border:1px solid #ccc;padding:6px 8px;">荷物: ${qtyLabel}</td>
+        <td style="border:1px solid #ccc;padding:6px 8px;text-align:right;">${b.billingType === "monthly" ? "-" : `${(u.w_m * u.d_m).toFixed(2)} m²`}</td>
+        <td style="border:1px solid #ccc;padding:6px 8px;text-align:right;">${rateLabel}</td>
+        <td style="border:1px solid #ccc;padding:6px 8px;text-align:center;">${periodLabel}</td>
+        <td style="border:1px solid #ccc;padding:6px 8px;text-align:right;font-weight:600;">¥${b.amount.toLocaleString()}</td>
+      </tr>`;
+    }
+
+    const html = `<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>請求書 - ${clientName}</title>
+<style>
+  @media print { body { margin: 0; } @page { margin: 15mm 10mm; } }
+  body { font-family: "Hiragino Kaku Gothic Pro", "Yu Gothic", "Meiryo", sans-serif; color: #333; max-width: 800px; margin: 20px auto; padding: 20px; }
+  h1 { text-align: center; font-size: 28px; letter-spacing: 8px; border-bottom: 3px double #333; padding-bottom: 8px; margin-bottom: 24px; }
+  .header { display: flex; justify-content: space-between; margin-bottom: 24px; }
+  .header-left { font-size: 14px; }
+  .header-right { text-align: right; font-size: 13px; color: #555; }
+  .client-name { font-size: 20px; font-weight: bold; border-bottom: 1px solid #333; padding-bottom: 4px; margin-bottom: 8px; }
+  .total-box { background: #f0f4ff; border: 2px solid #3b82f6; border-radius: 8px; padding: 12px 20px; text-align: center; margin: 20px 0; }
+  .total-label { font-size: 14px; color: #555; }
+  .total-amount { font-size: 28px; font-weight: bold; color: #1e40af; }
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 13px; }
+  th { background: #f8fafc; border: 1px solid #ccc; padding: 8px; text-align: left; font-weight: 600; }
+  .section-title { font-size: 15px; font-weight: 600; margin-top: 20px; margin-bottom: 4px; padding-left: 8px; border-left: 3px solid #3b82f6; }
+  .footer { margin-top: 40px; font-size: 12px; color: #888; text-align: center; }
+  .print-btn { display: block; margin: 20px auto; padding: 10px 32px; font-size: 15px; background: #3b82f6; color: #fff; border: none; border-radius: 8px; cursor: pointer; }
+  .print-btn:hover { background: #2563eb; }
+  @media print { .print-btn { display: none; } }
+</style>
+</head>
+<body>
+<h1>請 求 書</h1>
+<div class="header">
+  <div class="header-left">
+    <div class="client-name">${clientName} 御中</div>
+    <div>下記の通りご請求申し上げます。</div>
+  </div>
+  <div class="header-right">
+    <div>請求番号: ${invoiceNo}</div>
+    <div>発行日: ${invoiceDate}</div>
+    <div style="margin-top:8px;">${site.name || "倉庫管理システム"}</div>
+  </div>
+</div>
+<div class="total-box">
+  <div class="total-label">ご請求金額（税抜）</div>
+  <div class="total-amount">¥${cs.total.toLocaleString()}</div>
+</div>
+${cs.zones.length > 0 ? `
+<div class="section-title">区画利用料</div>
+<table>
+  <thead><tr><th>項目</th><th style="text-align:right;">面積</th><th style="text-align:right;">単価</th><th style="text-align:center;">期間</th><th style="text-align:right;">金額</th></tr></thead>
+  <tbody>${zoneRows}
+    <tr style="background:#f8fafc;font-weight:700;">
+      <td colspan="4" style="border:1px solid #ccc;padding:6px 8px;text-align:right;">区画小計</td>
+      <td style="border:1px solid #ccc;padding:6px 8px;text-align:right;">¥${cs.zoneTotal.toLocaleString()}</td>
+    </tr>
+  </tbody>
+</table>` : ""}
+${cs.units.length > 0 ? `
+<div class="section-title">荷物保管料</div>
+<table>
+  <thead><tr><th>項目</th><th style="text-align:right;">面積</th><th style="text-align:right;">単価</th><th style="text-align:center;">期間</th><th style="text-align:right;">金額</th></tr></thead>
+  <tbody>${unitRows}
+    <tr style="background:#f8fafc;font-weight:700;">
+      <td colspan="4" style="border:1px solid #ccc;padding:6px 8px;text-align:right;">荷物小計</td>
+      <td style="border:1px solid #ccc;padding:6px 8px;text-align:right;">¥${cs.unitTotal.toLocaleString()}</td>
+    </tr>
+  </tbody>
+</table>` : ""}
+<div class="footer">
+  <div>※この請求書はシステムにより自動生成されたものです。</div>
+</div>
+<button class="print-btn" onclick="window.print()">印刷 / PDF保存</button>
+</body>
+</html>`;
+
+    const w = window.open("", "_blank");
+    if (w) { w.document.write(html); w.document.close(); }
+  }
 
   function addZone() {
     const defaultBgColors = ["#d1fae5", "#fef3c7", "#cffafe", "#fce7f3", "#ede9fe", "#ecfccb", "#dbeafe", "#fee2e2"];
@@ -4398,6 +4646,14 @@ const personList = site?.personList || [];
             type="button"
           >
             荷物検索
+          </button>
+          <button
+            className="rounded-xl border-2 shadow-sm font-bold"
+            style={{ padding: "8px 16px", fontSize: "14px", background: "linear-gradient(135deg, #dbeafe, #bfdbfe)", color: "#1e40af", borderColor: "#93c5fd", cursor: "pointer" }}
+            onClick={() => setPricingModalOpen(true)}
+            type="button"
+          >
+            料金設定
           </button>
           <div style={{ width: 1, height: 28, background: "#e2e8f0" }} />
           <button
@@ -6179,6 +6435,46 @@ const personList = site?.personList || [];
                       1坪グリッド表示（青線）
                     </label>
                   </div>
+                  {/* 床の契約坪数 */}
+                  <div className="mt-3 rounded-xl border bg-blue-50 p-2">
+                    {(() => {
+                      const autoM2 = layout.floor.cols * (layout.floor.cell_m_w || 1.2) * layout.floor.rows * (layout.floor.cell_m_d || 1.0);
+                      const autoTsubo = autoM2 / TSUBO_M2;
+                      const whMaxTsubo = (wh.area_m2 || 0) / TSUBO_M2;
+                      return (
+                        <div className="space-y-1 text-xs">
+                          <div className="flex justify-between text-gray-500">
+                            <span>自動計算</span>
+                            <span>{autoM2.toFixed(2)} m² ({autoTsubo.toFixed(2)} 坪)</span>
+                          </div>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-gray-600 font-medium">契約坪数</span>
+                            <input
+                              className="w-20 rounded-lg border px-2 py-0.5 text-xs text-right"
+                              type="number" min="0" step="0.1"
+                              value={layout.floor.area_m2_manual ? (layout.floor.area_m2 / TSUBO_M2).toFixed(2) : ""}
+                              placeholder={autoTsubo.toFixed(2)}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                if (v === "") {
+                                  setLayout((p) => ({ ...p, floor: { ...p.floor, area_m2_manual: false, area_m2: autoM2 } }));
+                                } else {
+                                  const tsubo = Number(v);
+                                  if (whMaxTsubo > 0 && tsubo > whMaxTsubo) {
+                                    showToast(`倉庫面積(${whMaxTsubo.toFixed(2)}坪)を超えています`);
+                                    return;
+                                  }
+                                  setLayout((p) => ({ ...p, floor: { ...p.floor, area_m2_manual: true, area_m2: tsubo * TSUBO_M2 } }));
+                                }
+                              }}
+                            />
+                          </div>
+                          {whMaxTsubo > 0 && <div className="text-[10px] text-gray-400 text-right">上限: {whMaxTsubo.toFixed(2)} 坪（倉庫面積: {wh.area_m2}m²）</div>}
+                          {!layout.floor.area_m2_manual && <div className="text-[10px] text-gray-400 text-right">空欄時は自動計算値を使用</div>}
+                        </div>
+                      );
+                    })()}
+                  </div>
                 </div>
 
                 <div className="rounded-2xl border p-3">
@@ -6770,46 +7066,39 @@ const personList = site?.personList || [];
                         </div>
                       </div>
 
-                      {/* 棚専用: 面積編集 */}
+                      {/* 棚専用: 契約坪数 */}
                       {selected.kind === "shelf" && (
                         <div className="rounded-xl border bg-teal-50 p-2">
-                          <div className="flex items-center justify-between mb-1">
-                            <div className="text-xs text-gray-500">面積(m²)</div>
-                            <label className="flex items-center gap-1 text-xs">
-                              <input
-                                type="checkbox"
-                                checked={selectedEntity.area_m2_manual || false}
-                                onChange={(e) => {
-                                  const manual = e.target.checked;
-                                  const autoArea = selectedEntity.w * layout.floor.cell_m_w * selectedEntity.h * layout.floor.cell_m_d;
-                                  setLayout((p) => ({
-                                    ...p,
-                                    shelves: (p.shelves || []).map((s) => (s.id === selected.id ? { ...s, area_m2_manual: manual, area_m2: manual ? s.area_m2 : autoArea } : s)),
-                                  }));
-                                }}
-                                className="rounded"
-                              />
-                              <span>手動入力</span>
-                            </label>
-                          </div>
-                          <input
-                            className="mt-1 w-full rounded-xl border px-2 py-1 text-sm"
-                            value={selectedEntity.area_m2?.toFixed(2) || "0"}
-                            onChange={(e) => {
-                              const v = Number(e.target.value) || 0;
-                              setLayout((p) => ({
-                                ...p,
-                                shelves: (p.shelves || []).map((s) => (s.id === selected.id ? { ...s, area_m2: v, area_m2_manual: true } : s)),
-                              }));
-                            }}
-                            disabled={!selectedEntity.area_m2_manual}
-                            inputMode="decimal"
-                          />
-                          {!selectedEntity.area_m2_manual && (
-                            <div className="mt-1 text-xs text-gray-500">
-                              自動計算: {selectedEntity.w} × {layout.floor.cell_m_w}m × {selectedEntity.h} × {layout.floor.cell_m_d}m = {(selectedEntity.w * layout.floor.cell_m_w * selectedEntity.h * layout.floor.cell_m_d).toFixed(2)}m²
-                            </div>
-                          )}
+                          {(() => {
+                            const autoM2 = selectedEntity.w * (layout.floor.cell_m_w || 1.2) * selectedEntity.h * (layout.floor.cell_m_d || 1.0);
+                            const autoTsubo = autoM2 / TSUBO_M2;
+                            return (
+                              <div className="space-y-1 text-xs">
+                                <div className="flex justify-between text-gray-400">
+                                  <span>自動計算</span>
+                                  <span>{autoM2.toFixed(2)} m² ({autoTsubo.toFixed(2)} 坪)</span>
+                                </div>
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="text-gray-600 font-medium">契約坪数</span>
+                                  <input
+                                    className="w-20 rounded-lg border px-2 py-0.5 text-xs text-right"
+                                    type="number" min="0" step="0.1"
+                                    value={selectedEntity.area_m2_manual ? (selectedEntity.area_m2 / TSUBO_M2).toFixed(2) : ""}
+                                    placeholder={autoTsubo.toFixed(2)}
+                                    onChange={(e) => {
+                                      const v = e.target.value;
+                                      if (v === "") {
+                                        setLayout((p) => ({ ...p, shelves: (p.shelves || []).map((s) => s.id === selected.id ? { ...s, area_m2_manual: false, area_m2: autoM2 } : s) }));
+                                      } else {
+                                        setLayout((p) => ({ ...p, shelves: (p.shelves || []).map((s) => s.id === selected.id ? { ...s, area_m2_manual: true, area_m2: Number(v) * TSUBO_M2 } : s) }));
+                                      }
+                                    }}
+                                  />
+                                </div>
+                                {!selectedEntity.area_m2_manual && <div className="text-[10px] text-gray-400 text-right">空欄時は自動計算値を使用</div>}
+                              </div>
+                            );
+                          })()}
                         </div>
                       )}
 
@@ -7215,6 +7504,43 @@ const personList = site?.personList || [];
                           />
                         </div>
                       )}
+                    </div>
+                    {/* ===== 区画料金 ===== */}
+                    <div className="border-t pt-2 pb-1">
+                      <div className="text-xs font-semibold text-gray-700 mb-1">料金</div>
+                      {(() => {
+                        const autoM2 = selectedEntity.w * (layout.floor.cell_m_w || 1.2) * selectedEntity.h * (layout.floor.cell_m_d || 1.0);
+                        const autoTsubo = autoM2 / TSUBO_M2;
+                        const b = calcZoneBilling(selectedEntity);
+                        return (
+                          <div className="space-y-1.5 text-xs">
+                            <div className="flex justify-between text-gray-400"><span>自動計算</span><span>{autoM2.toFixed(2)} m² ({autoTsubo.toFixed(2)} 坪)</span></div>
+                            <div>
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-gray-500">契約坪数</span>
+                                <input
+                                  className="w-20 rounded-lg border px-2 py-0.5 text-xs text-right"
+                                  type="number" min="0" step="0.1"
+                                  value={selectedEntity.area_m2_manual ? (selectedEntity.area_m2 / TSUBO_M2).toFixed(2) : ""}
+                                  placeholder={autoTsubo.toFixed(2)}
+                                  onChange={(e) => {
+                                    const v = e.target.value;
+                                    if (v === "") {
+                                      setLayout((p) => ({ ...p, zones: p.zones.map((z) => z.id === selected.id ? { ...z, area_m2_manual: false, area_m2: autoM2 } : z) }));
+                                    } else {
+                                      setLayout((p) => ({ ...p, zones: p.zones.map((z) => z.id === selected.id ? { ...z, area_m2_manual: true, area_m2: Number(v) * TSUBO_M2 } : z) }));
+                                    }
+                                  }}
+                                />
+                              </div>
+                              {!selectedEntity.area_m2_manual && <div className="text-[10px] text-gray-400 text-right">空欄時は自動計算値を使用</div>}
+                            </div>
+                            <div className="flex justify-between"><span className="text-gray-500">請求面積</span><span className="font-medium">{b.tsubo.toFixed(2)} 坪</span></div>
+                            <div className="flex justify-between"><span className="text-gray-500">坪単価/月</span><span>¥{b.rate.toLocaleString()}</span></div>
+                            <div className="flex justify-between font-semibold text-sm"><span>月額</span><span>¥{b.monthlyAmount.toLocaleString()}</span></div>
+                          </div>
+                        );
+                      })()}
                     </div>
                   </div>
                 ) : selected.kind === "panel" ? (
@@ -7749,6 +8075,39 @@ const personList = site?.personList || [];
                       )}
                     </div>
 
+                    {/* ===== 荷物料金 ===== */}
+                    <div className="border-t pt-2 pb-1">
+                      <div className="text-xs font-semibold text-gray-700 mb-1">料金</div>
+                      {(() => {
+                        const b = calcUnitBilling(selectedEntity);
+                        return (
+                          <div className="space-y-1.5 text-xs">
+                            <div className="flex items-center gap-2">
+                              <span className="text-gray-500">計算方式:</span>
+                              <select
+                                className="rounded-lg border px-2 py-0.5 text-xs"
+                                value={selectedEntity.billingType || "daily"}
+                                onChange={(e) => updateUnitFieldSilent(selectedEntity.id, "billingType", e.target.value)}
+                              >
+                                <option value="daily">日額</option>
+                                <option value="monthly">月額</option>
+                              </select>
+                            </div>
+                            <div className="flex justify-between"><span className="text-gray-500">単価</span><span>¥{b.rate.toLocaleString()}/{b.billingType === "monthly" ? "月" : "日"}</span></div>
+                            {selectedEntity.arrivalDate ? (
+                              <>
+                                <div className="flex justify-between"><span className="text-gray-500">保管期間</span><span>{b.storageDays}日{b.billingType === "monthly" ? ` (${b.storageMonths}ヶ月)` : ""}</span></div>
+                                {b.qty > 1 && <div className="flex justify-between"><span className="text-gray-500">数量</span><span>{b.qty}</span></div>}
+                                <div className="flex justify-between font-semibold text-sm"><span>合計</span><span>¥{b.amount.toLocaleString()}</span></div>
+                              </>
+                            ) : (
+                              <div className="text-gray-400">入荷日が未設定のため計算できません</div>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </div>
+
                     {/* ===== 編集履歴（折りたたみ、デフォルト閉） ===== */}
                     <div className="border-t">
                       <button
@@ -7790,9 +8149,35 @@ const personList = site?.personList || [];
           )}
 
           <div className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm">
-            <SectionTitle>料金（将来）</SectionTitle>
-            <div className="text-sm text-gray-700">m²・日 / m³・日 / 場所貸し（ゾーン契約）を組み合わせて請求。</div>
-            <div className="mt-2 text-xs text-gray-500">※この画面の占有集計（概算）を土台に、日次スナップショットへ拡張。</div>
+            <SectionTitle>請求サマリー</SectionTitle>
+            <div className="space-y-2">
+              {clientBillingSummary.length === 0 && <div className="text-xs text-gray-400">請求対象がありません</div>}
+              {clientBillingSummary.map((cs) => (
+                <div key={cs.client} className="rounded-lg border p-2 text-xs">
+                  <div className="flex items-center justify-between">
+                    <div className="font-semibold">{cs.client}</div>
+                    <div className="font-bold text-blue-600">¥{cs.total.toLocaleString()}</div>
+                  </div>
+                  {cs.zones.length > 0 && (
+                    <div className="mt-1 text-gray-500">
+                      区画: {cs.zones.length}件 ¥{cs.zoneTotal.toLocaleString()}/月
+                    </div>
+                  )}
+                  {cs.units.length > 0 && (
+                    <div className="mt-0.5 text-gray-500">
+                      荷物: {cs.units.length}件 ¥{cs.unitTotal.toLocaleString()}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    className="mt-1.5 w-full rounded-lg bg-blue-50 px-2 py-1 text-xs text-blue-700 hover:bg-blue-100 font-medium"
+                    onClick={() => generateInvoice(cs.client)}
+                  >
+                    請求書を生成
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </div>
@@ -8021,6 +8406,118 @@ const personList = site?.personList || [];
             </div>
           </div>
         )}
+      </Modal>
+
+      {/* 料金設定モーダル */}
+      <Modal
+        title="料金設定"
+        open={pricingModalOpen}
+        onClose={() => setPricingModalOpen(false)}
+        maxWidth="22rem"
+      >
+        <style>{`
+          .pricing-input::-webkit-inner-spin-button,
+          .pricing-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+          .pricing-input { -moz-appearance: textfield; }
+        `}</style>
+        <div className="space-y-5">
+          {/* デフォルト単価 */}
+          <div>
+            <div className="text-sm font-semibold text-gray-700 mb-3">デフォルト単価</div>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm text-gray-600 whitespace-nowrap">区画 坪/月</span>
+                <input
+                  className="pricing-input w-28 rounded-xl border px-3 py-1.5 text-sm text-right"
+                  type="number" min="0" inputMode="numeric"
+                  value={pricing.defaultRates?.zoneMonthlyPerTsubo ?? 5000}
+                  onChange={(e) => setPricing((p) => ({ ...p, defaultRates: { ...p.defaultRates, zoneMonthlyPerTsubo: Number(e.target.value) || 0 } }))}
+                />
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm text-gray-600 whitespace-nowrap">荷物 個/日</span>
+                <input
+                  className="pricing-input w-28 rounded-xl border px-3 py-1.5 text-sm text-right"
+                  type="number" min="0" inputMode="numeric"
+                  value={pricing.defaultRates?.unitDailyRate ?? 100}
+                  onChange={(e) => setPricing((p) => ({ ...p, defaultRates: { ...p.defaultRates, unitDailyRate: Number(e.target.value) || 0 } }))}
+                />
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm text-gray-600 whitespace-nowrap">荷物 個/月</span>
+                <input
+                  className="pricing-input w-28 rounded-xl border px-3 py-1.5 text-sm text-right"
+                  type="number" min="0" inputMode="numeric"
+                  value={pricing.defaultRates?.unitMonthlyRate ?? 2500}
+                  onChange={(e) => setPricing((p) => ({ ...p, defaultRates: { ...p.defaultRates, unitMonthlyRate: Number(e.target.value) || 0 } }))}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* 取引先別単価 */}
+          <div className="border-t pt-4">
+            <div className="text-sm font-semibold text-gray-700 mb-3">取引先別単価</div>
+            <div className="space-y-4 max-h-[50vh] overflow-y-auto">
+              {(() => {
+                const clientSet = new Set();
+                layout.zones.forEach((z) => z.client && clientSet.add(z.client));
+                units.forEach((u) => u.client && u.client !== "(未設定)" && clientSet.add(u.client));
+                const clients = [...clientSet].sort();
+                if (clients.length === 0) return <div className="text-sm text-gray-400">取引先が未登録です</div>;
+                return clients.map((c) => {
+                  const cr = pricing.clientRates?.[c] || {};
+                  const updateCR = (field, val) => {
+                    setPricing((p) => ({
+                      ...p,
+                      clientRates: {
+                        ...p.clientRates,
+                        [c]: { ...(p.clientRates?.[c] || {}), [field]: val },
+                      },
+                    }));
+                  };
+                  return (
+                    <div key={c} className="rounded-xl border p-3">
+                      <div className="text-sm font-semibold mb-2.5">{c}</div>
+                      <div className="space-y-2.5">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-xs text-gray-500 whitespace-nowrap">坪/月</span>
+                          <input
+                            className="pricing-input w-28 rounded-xl border px-3 py-1.5 text-sm text-right"
+                            type="number" min="0" inputMode="numeric"
+                            value={cr.zoneMonthlyPerTsubo ?? ""}
+                            placeholder={String(pricing.defaultRates?.zoneMonthlyPerTsubo ?? 5000)}
+                            onChange={(e) => updateCR("zoneMonthlyPerTsubo", e.target.value === "" ? undefined : Number(e.target.value))}
+                          />
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-xs text-gray-500 whitespace-nowrap">個/日</span>
+                          <input
+                            className="pricing-input w-28 rounded-xl border px-3 py-1.5 text-sm text-right"
+                            type="number" min="0" inputMode="numeric"
+                            value={cr.unitDailyRate ?? ""}
+                            placeholder={String(pricing.defaultRates?.unitDailyRate ?? 100)}
+                            onChange={(e) => updateCR("unitDailyRate", e.target.value === "" ? undefined : Number(e.target.value))}
+                          />
+                        </div>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-xs text-gray-500 whitespace-nowrap">個/月</span>
+                          <input
+                            className="pricing-input w-28 rounded-xl border px-3 py-1.5 text-sm text-right"
+                            type="number" min="0" inputMode="numeric"
+                            value={cr.unitMonthlyRate ?? ""}
+                            placeholder={String(pricing.defaultRates?.unitMonthlyRate ?? 2500)}
+                            onChange={(e) => updateCR("unitMonthlyRate", e.target.value === "" ? undefined : Number(e.target.value))}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+          </div>
+        </div>
       </Modal>
 
       {/* 担当者管理モーダル */}
