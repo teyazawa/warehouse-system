@@ -754,12 +754,20 @@ function Iso3DView({
   const containerRef = useRef(null);
   const zoomRef = useRef(zoom);
   zoomRef.current = zoom;
+  const isoCenterRef = useRef({ cx: 0, cy: 0 });
 
   const iso = getIsoMath(viewCols, viewRows, rotStep);
   const { effCols, effRows, tileW, tileH, heightScale, toIso, rotateGxGy, rotateRect } = iso;
 
-  // Reset pan when rotation or view changes
-  useEffect(() => { setPan({ x: 0, y: 0 }); }, [rotStep, viewCols, viewRows]);
+  // 回転・ビュー変更時にグリッド中央を維持してパンをリセット
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) { setPan({ x: 0, y: 0 }); return; }
+    const rect = el.getBoundingClientRect();
+    const z = zoomRef.current;
+    const { cx, cy } = isoCenterRef.current;
+    setPan({ x: rect.width / 2 - cx * z, y: rect.height / 2 - cy * z });
+  }, [rotStep, viewCols, viewRows]);
 
   // Wheel zoom (cursor-stable, no modifier key)
   useEffect(() => {
@@ -807,6 +815,10 @@ function Iso3DView({
   const maxSy = Math.max(...allCorners.map((c) => c.sy)) + 60;
   const svgW = maxSx - minSx, svgH = maxSy - minSy;
   const offX = -minSx, offY = -minSy;
+
+  // グリッド中央のスクリーン座標をrefに保存（回転時のセンタリング用）
+  const gridCenter = toIso(effCols / 2, effRows / 2);
+  isoCenterRef.current = { cx: gridCenter.sx + offX, cy: gridCenter.sy + offY - maxStackH * heightScale / 2 };
 
   // Render items (sorted back→front)
   const renderItems = [];
@@ -5590,6 +5602,19 @@ ${cs.units.length > 0 ? `
                 }}
                 onMouseDown={(e) => mode === "layout" && beginMoveFloor(e)}
                 onClick={(e) => handleItemClick(e, "floor", undefined)}
+                onDoubleClick={(e) => {
+                  e.stopPropagation();
+                  openZoneDetailModal({
+                    id: "__floor__",
+                    name: wh.name || "床",
+                    x: layout.floor.x || 0,
+                    y: layout.floor.y || 0,
+                    w: layout.floor.cols,
+                    h: layout.floor.rows,
+                    bgColor: layout.floor.floorBgColor || "#ffffff",
+                    _isVirtual: "floor",
+                  });
+                }}
               >
                 {/* Floor label - large watermark style */}
                 <div
@@ -5948,6 +5973,21 @@ ${cs.units.length > 0 ? `
                     }}
                     onMouseDown={(e) => mode === "layout" && beginMoveShelf(e, s.id)}
                     onClick={(e) => handleItemClick(e, "shelf", s.id)}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      openZoneDetailModal({
+                        id: `__shelf_${s.id}__`,
+                        name: s.name || "棚",
+                        x: s.x,
+                        y: s.y,
+                        w: s.w,
+                        h: s.h,
+                        bgColor: shelfBgColor,
+                        loc: { kind: "shelf", shelfId: s.id, x: s.x, y: s.y },
+                        _isVirtual: "shelf",
+                        _shelfId: s.id,
+                      });
+                    }}
                   >
                     {/* Grid lines inside shelf (gray cell grid) */}
                     {(() => {
