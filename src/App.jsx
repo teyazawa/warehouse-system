@@ -133,28 +133,49 @@ function MapLibreMap({ warehouses, selectedWarehouseId, onSelect, onPositionChan
       console.error("Failed to restore map state:", e);
     }
 
+    // 衛星写真 + ラベルのハイブリッドスタイル
+    const satelliteStyle = {
+      version: 8,
+      sources: {
+        satellite: {
+          type: "raster",
+          tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
+          tileSize: 256,
+          maxzoom: 19,
+          attribution: '&copy; Esri, Maxar, Earthstar Geographics',
+        },
+        labels: {
+          type: "raster",
+          tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"],
+          tileSize: 256,
+          maxzoom: 19,
+        },
+      },
+      layers: [
+        { id: "satellite-tiles", type: "raster", source: "satellite", minzoom: 0, maxzoom: 19 },
+        { id: "label-tiles", type: "raster", source: "labels", minzoom: 0, maxzoom: 19 },
+      ],
+    };
+    const osmStyle = {
+      version: 8,
+      sources: {
+        osm: {
+          type: "raster",
+          tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+          tileSize: 256,
+          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+        },
+      },
+      layers: [
+        { id: "osm-tiles", type: "raster", source: "osm", minzoom: 0, maxzoom: 19 },
+      ],
+    };
+
+    const savedMapType = localStorage.getItem("wh_map_type") || "satellite";
+
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: {
-        version: 8,
-        sources: {
-          osm: {
-            type: "raster",
-            tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
-            tileSize: 256,
-            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-          },
-        },
-        layers: [
-          {
-            id: "osm-tiles",
-            type: "raster",
-            source: "osm",
-            minzoom: 0,
-            maxzoom: 19,
-          },
-        ],
-      },
+      style: savedMapType === "satellite" ? satelliteStyle : osmStyle,
       center: initCenter,
       zoom: initZoom,
       pitch: initPitch,
@@ -163,6 +184,39 @@ function MapLibreMap({ warehouses, selectedWarehouseId, onSelect, onPositionChan
     });
 
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
+
+    // 地図/衛星 切り替えボタン
+    class MapTypeControl {
+      constructor() { this._type = savedMapType; }
+      onAdd(map) {
+        this._map = map;
+        this._container = document.createElement("div");
+        this._container.className = "maplibregl-ctrl maplibregl-ctrl-group";
+        this._btn = document.createElement("button");
+        this._btn.type = "button";
+        this._btn.style.cssText = "width:auto;padding:0 8px;font-size:12px;font-weight:600;cursor:pointer;";
+        this._btn.textContent = this._type === "satellite" ? "地図" : "衛星";
+        this._btn.title = "地図/衛星写真を切り替え";
+        this._btn.addEventListener("click", () => {
+          this._type = this._type === "satellite" ? "osm" : "satellite";
+          this._btn.textContent = this._type === "satellite" ? "地図" : "衛星";
+          localStorage.setItem("wh_map_type", this._type);
+          this._map.setStyle(this._type === "satellite" ? satelliteStyle : osmStyle);
+        });
+        this._container.appendChild(this._btn);
+        return this._container;
+      }
+      onRemove() { this._container.remove(); }
+    }
+    map.addControl(new MapTypeControl(), "top-right");
+
+    // setStyle後にマーカーを再追加
+    map.on("style.load", () => {
+      for (const id of Object.keys(markersRef.current)) {
+        const marker = markersRef.current[id];
+        marker.addTo(map);
+      }
+    });
 
     // 状態保存
     const saveState = () => {
