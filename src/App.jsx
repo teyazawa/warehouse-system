@@ -747,6 +747,7 @@ function Iso3DView({
   onUnitMouseDown, onUnitDoubleClick,
   draggingId, hasDragMoved,
   ghostBox, // { gx, gy, fw, fh, h, ok } in rotated coords (optional)
+  stackTargetId, // 重ね置き先のユニットID (optional)
 }) {
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const panDragRef = useRef(null);
@@ -922,11 +923,13 @@ function Iso3DView({
           {/* Isometric boxes for units */}
           {renderItems.map(({ u, gx, gy, fw, fh, zOff, h }, idx) => {
             const isDrag = u.id === draggingId && hasDragMoved;
+            const isStackTgt = stackTargetId === u.id;
             const color = u.bgColor || isoKindColor(u.kind, u.id);
             const bb = (onUnitMouseDown || onUnitDoubleClick) ? boxBounds(gx, gy, fw, fh, zOff, h) : null;
             return (
               <g key={u.id+"-"+idx}>
-                {renderIsoBox(gx, gy, fw, fh, zOff, h, color, null, u.fragile, blinkingUnitIds?.has(u.id), isDrag ? 0.3 : (u.status === "in_transit" ? 0.35 : 1))}
+                {isStackTgt && renderIsoBox(gx - 0.08, gy - 0.08, fw + 0.16, fh + 0.16, zOff, h, "rgba(59,130,246,0.3)", null, false, false, 1)}
+                {renderIsoBox(gx, gy, fw, fh, zOff, h, isStackTgt ? "#93c5fd" : color, null, u.fragile, blinkingUnitIds?.has(u.id), isDrag ? 0.3 : (u.status === "in_transit" ? 0.35 : 1))}
                 {bb && (
                   <div
                     style={{ position: "absolute", left: bb.x, top: bb.y, width: bb.w, height: Math.max(bb.h, 16), cursor: "grab", zIndex: 20 }}
@@ -1881,6 +1884,10 @@ function closeZoneDetailModal() {
 const [personModalOpen, setPersonModalOpen] = useState(false);
 // 料金設定モーダル
 const [pricingModalOpen, setPricingModalOpen] = useState(false);
+// 請求書モーダル
+const [invoiceModalOpen, setInvoiceModalOpen] = useState(false);
+const [invoicePeriod, setInvoicePeriod] = useState({ start: "", end: "" });
+const [invoiceFilters, setInvoiceFilters] = useState({ client: "", department: "", personInCharge: "" });
 const [newPersonName, setNewPersonName] = useState("");
 const personList = site?.personList || [];
 
@@ -2230,6 +2237,15 @@ const personList = site?.personList || [];
            inner.y + inner.h <= outer.y + outer.h + 0.001;
   }
 
+  // 重ね置き用: 緩い包含チェック（3Dアイソメ変換の誤差・同サイズ荷物の重ね置き対応）
+  function containsRectLoose(outer, inner) {
+    const tol = 0.3;
+    return inner.x >= outer.x - tol &&
+           inner.y >= outer.y - tol &&
+           inner.x + inner.w <= outer.x + outer.w + tol &&
+           inner.y + inner.h <= outer.y + outer.h + tol;
+  }
+
   function occupiedRectsFloor(excludeUnitId = null) {
     const rects = [];
     // racks block floor
@@ -2266,7 +2282,7 @@ const personList = site?.personList || [];
     return getStackAt(x, y, excludeUnitId).reduce((sum, u) => sum + (u.h_m || 0), 0);
   }
 
-  // 候補矩形を包含するフロアユニットを返す
+  // 候補矩形を包含するフロアユニットを返す（重ね置き用: 緩い判定）
   function getContainingStackItems(candidateRect, excludeUnitId = null, fpFn = null) {
     const fpFunc = fpFn || unitFootprintCells;
     const items = [];
@@ -2275,10 +2291,33 @@ const personList = site?.personList || [];
       if (u.loc?.kind !== "floor") continue;
       const fp = fpFunc(u);
       const uRect = { x: u.loc.x || 0, y: u.loc.y || 0, w: fp.w, h: fp.h };
-      if (containsRect(uRect, candidateRect)) items.push(u);
+      if (containsRectLoose(uRect, candidateRect)) items.push(u);
     }
     items.sort((a, b) => (a.stackZ || 0) - (b.stackZ || 0));
     return items;
+  }
+
+  // 重ね置きスナップ: 近くにstackableな荷物があればその位置にスナップ
+  function snapToStackTarget(x, y, fp, excludeUnitId = null) {
+    const SNAP_DIST = 1.5; // セル単位のスナップ距離
+    let best = null;
+    let bestDist = SNAP_DIST;
+    for (const u of units) {
+      if (u.id === excludeUnitId) continue;
+      if (u.loc?.kind !== "floor") continue;
+      if (!u.stackable) continue;
+      if (u.status === "in_transit") continue;
+      const ufp = unitFootprintCells(u);
+      // 候補が既存荷物の上に乗れるか（サイズ的に収まるか）
+      if (fp.w > ufp.w + 0.3 || fp.h > ufp.h + 0.3) continue;
+      const ux = u.loc.x || 0, uy = u.loc.y || 0;
+      const dist = Math.abs(x - ux) + Math.abs(y - uy);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = { x: ux, y: uy };
+      }
+    }
+    return best;
   }
 
   // ユニットの配置範囲がいずれかの仮置き場/入庫予定エリア内に収まるか判定
@@ -2308,13 +2347,11 @@ const personList = site?.personList || [];
     const candidate = { x, y, w: fp.w, h: fp.h };
     for (const r of occupiedRectsFloor(excludeUnitId)) {
       if (overlapsRect(candidate, r)) {
-        // Allow stacking: candidate fully contained within existing unit's footprint
-        if (r.kind === "unit" && containsRect(r, candidate)) {
-          const existing = units.find((e) => e.id === r.id);
-          if (existing?.stackable && u.stackable) {
-            const stackItems = getContainingStackItems(candidate, excludeUnitId);
-            const maxH = Math.min(existing.max_stack_height || 3, u.max_stack_height || 3);
-            if (stackItems.length < maxH) continue; // allow this overlap
+        // 重ね置き: 下の荷物のstackableがtrueなら、上に乗せる荷物のstackableは不問
+        if (r.kind === "unit" && containsRectLoose(r, candidate)) {
+          const stackItems = getContainingStackItems(candidate, excludeUnitId);
+          if (stackItems.some((item) => item.stackable)) {
+            continue; // allow this overlap
           }
         }
         return false;
@@ -2395,15 +2432,12 @@ const personList = site?.personList || [];
       if (rLocalX < 0 || rLocalY < 0 || rLocalX >= zone.w || rLocalY >= zone.h) continue;
 
       if (overlapsRect(candidate, r)) {
-        // スタッキング対応（候補がrに完全包含されていればOK）
-        if (containsRect(r, candidate)) {
-          if (uu.stackable && u.stackable) {
-            const stackAt = isShelfZone
-              ? units.filter((s) => s.id !== excludeUnitId && s.loc?.kind === "shelf" && s.loc.shelfId === zone.loc.shelfId && Math.abs((s.loc.x||0) - ux) < 0.01 && Math.abs((s.loc.y||0) - uy) < 0.01).filter((s) => { const sfp = fpFunc(s); return containsRect({ x: s.loc.x||0, y: s.loc.y||0, w: sfp.w, h: sfp.h }, candidate); })
-              : getContainingStackItems(candidate, excludeUnitId);
-            const maxH = Math.min(uu.max_stack_height || 3, u.max_stack_height || 3);
-            if (stackAt.length < maxH) continue;
-          }
+        // 重ね置き: 下の荷物のstackableがtrueなら、上に乗せる荷物のstackableは不問
+        if (containsRectLoose(r, candidate)) {
+          const stackAt = isShelfZone
+            ? units.filter((s) => s.id !== excludeUnitId && s.loc?.kind === "shelf" && s.loc.shelfId === zone.loc.shelfId).filter((s) => { const sfp = fpFunc(s); return containsRectLoose({ x: s.loc.x||0, y: s.loc.y||0, w: sfp.w, h: sfp.h }, candidate); })
+            : getContainingStackItems(candidate, excludeUnitId);
+          if (stackAt.some((item) => item.stackable)) continue;
         }
         return false;
       }
@@ -3271,6 +3305,10 @@ const personList = site?.personList || [];
           return;
         }
       }
+      // 重ね置きスナップ: 近くのstackable荷物にスナップ
+      const snapTarget = snapToStackTarget(px, py, fp, origId);
+      if (snapTarget) { px = snapTarget.x; py = snapTarget.y; }
+
       if (!canPlaceOnFloor(u, px, py, origId)) {
         showToast("ここには置けません（他の荷物/棚と重なっています）");
         setDrag(null);
@@ -3324,8 +3362,12 @@ const personList = site?.personList || [];
       const fy = layout.floor.y || 0;
       // 仮置き場/入庫予定エリア内ならclampをスキップ
       const inStaging = isInStagingZone(dropX, dropY, fp.w, fp.h);
-      const floorX = inStaging ? dropX : clamp(dropX, fx, fx + layout.floor.cols - fp.w);
-      const floorY = inStaging ? dropY : clamp(dropY, fy, fy + layout.floor.rows - fp.h);
+      let floorX = inStaging ? dropX : clamp(dropX, fx, fx + layout.floor.cols - fp.w);
+      let floorY = inStaging ? dropY : clamp(dropY, fy, fy + layout.floor.rows - fp.h);
+
+      // 重ね置きスナップ: 近くのstackable荷物にスナップ
+      const snapTarget = snapToStackTarget(floorX, floorY, fp, u.id);
+      if (snapTarget) { floorX = snapTarget.x; floorY = snapTarget.y; }
 
       // Check if unit's target area overlaps with floor or is in staging zone
       if (isBlockedByReservedZone(floorX, floorY, fp.w, fp.h)) {
@@ -3622,6 +3664,50 @@ const personList = site?.personList || [];
     };
   }
 
+  // 期間指定版: 区画料金
+  function calcZoneBillingForPeriod(zone, startDate, endDate) {
+    const cellW = layout.floor.cell_m_w || 1.2;
+    const cellD = layout.floor.cell_m_d || 1.0;
+    const areaM2 = zone.area_m2_manual ? (zone.area_m2 || 0) : (zone.w * cellW * zone.h * cellD);
+    const tsubo = areaM2 / TSUBO_M2;
+    const rates = getClientRates(zone.client);
+    const periodDays = Math.max(1, Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1);
+    const months = Math.max(1, Math.ceil(periodDays / 30));
+    const monthlyAmount = Math.round(tsubo * rates.zoneMonthlyPerTsubo);
+    const amount = monthlyAmount * months;
+    return { areaM2, tsubo, rate: rates.zoneMonthlyPerTsubo, monthlyAmount, months, amount };
+  }
+
+  // 期間指定版: 荷物料金
+  function calcUnitBillingForPeriod(unit, periodStart, periodEnd) {
+    const rates = getClientRates(unit.client);
+    const billingType = unit.billingType || "daily";
+    const arrDate = unit.arrivalDate ? new Date(unit.arrivalDate) : null;
+    if (!arrDate) return { billingType, rate: 0, overlapDays: 0, overlapMonths: 0, qty: unit.qty || 1, amount: 0 };
+    const depDate = unit.departureDate ? new Date(unit.departureDate) : new Date();
+    depDate.setHours(0, 0, 0, 0);
+    const effectiveStart = arrDate > periodStart ? arrDate : periodStart;
+    const effectiveEnd = depDate < periodEnd ? depDate : periodEnd;
+    if (effectiveStart > effectiveEnd) return { billingType, rate: 0, overlapDays: 0, overlapMonths: 0, qty: unit.qty || 1, amount: 0 };
+    const overlapDays = Math.max(1, Math.ceil((effectiveEnd - effectiveStart) / (1000 * 60 * 60 * 24)) + 1);
+    const overlapMonths = Math.max(1, Math.ceil(overlapDays / 30));
+    const qty = unit.qty || 1;
+    let amount;
+    if (billingType === "monthly") {
+      amount = overlapMonths * rates.unitMonthlyRate * qty;
+    } else {
+      amount = overlapDays * rates.unitDailyRate * qty;
+    }
+    return {
+      billingType,
+      rate: billingType === "monthly" ? rates.unitMonthlyRate : rates.unitDailyRate,
+      overlapDays,
+      overlapMonths,
+      qty,
+      amount,
+    };
+  }
+
   // クライアント別請求サマリー
   const clientBillingSummary = useMemo(() => {
     const acc = new Map();
@@ -3650,12 +3736,51 @@ const personList = site?.personList || [];
       .sort((a, b) => b.total - a.total);
   }, [layout.zones, units, pricing, layout.floor.cell_m_w, layout.floor.cell_m_d]);
 
-  function generateInvoice(clientName) {
-    const cs = clientBillingSummary.find((c) => c.client === clientName);
-    if (!cs) return;
+  // 期間指定＋フィルタ付き請求データ生成
+  function getFilteredBillingData(periodStart, periodEnd, filters) {
+    const acc = new Map();
+    const pStart = new Date(periodStart); pStart.setHours(0, 0, 0, 0);
+    const pEnd = new Date(periodEnd); pEnd.setHours(0, 0, 0, 0);
+    // 区画
+    for (const z of layout.zones) {
+      const client = z.client || "(未設定)";
+      if (filters.client && client !== filters.client) continue;
+      const prev = acc.get(client) || { zones: [], units: [], zoneTotal: 0, unitTotal: 0 };
+      const billing = calcZoneBillingForPeriod(z, pStart, pEnd);
+      prev.zones.push({ ...z, billing });
+      prev.zoneTotal += billing.amount;
+      acc.set(client, prev);
+    }
+    // 荷物
+    for (const u of units) {
+      if (u.loc?.kind !== "floor" && u.loc?.kind !== "rack" && u.loc?.kind !== "shelf") continue;
+      if (!u.arrivalDate) continue;
+      const client = u.client || "(未設定)";
+      if (filters.client && client !== filters.client) continue;
+      if (filters.department && (u.department || "") !== filters.department) continue;
+      if (filters.personInCharge && (u.personInCharge || "") !== filters.personInCharge) continue;
+      const prev = acc.get(client) || { zones: [], units: [], zoneTotal: 0, unitTotal: 0 };
+      const billing = calcUnitBillingForPeriod(u, pStart, pEnd);
+      if (billing.amount === 0) continue;
+      prev.units.push({ ...u, billing });
+      prev.unitTotal += billing.amount;
+      acc.set(client, prev);
+    }
+    return [...acc.entries()]
+      .map(([client, v]) => ({ client, ...v, total: v.zoneTotal + v.unitTotal }))
+      .filter((c) => c.total > 0)
+      .sort((a, b) => b.total - a.total);
+  }
+
+  function generateInvoiceForPeriod(clientData, periodStart, periodEnd) {
+    const cs = clientData;
+    const clientName = cs.client;
     const today = new Date();
     const invoiceNo = `INV-${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, "0")}${String(today.getDate()).padStart(2, "0")}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
     const invoiceDate = `${today.getFullYear()}年${today.getMonth() + 1}月${today.getDate()}日`;
+    const ps = new Date(periodStart);
+    const pe = new Date(periodEnd);
+    const periodLabel = `${ps.getFullYear()}年${ps.getMonth() + 1}月${ps.getDate()}日 〜 ${pe.getFullYear()}年${pe.getMonth() + 1}月${pe.getDate()}日`;
 
     let zoneRows = "";
     for (const z of cs.zones) {
@@ -3663,22 +3788,22 @@ const personList = site?.personList || [];
         <td style="border:1px solid #ccc;padding:6px 8px;">区画: ${z.name}</td>
         <td style="border:1px solid #ccc;padding:6px 8px;text-align:right;">${z.billing.tsubo.toFixed(2)} 坪</td>
         <td style="border:1px solid #ccc;padding:6px 8px;text-align:right;">¥${z.billing.rate.toLocaleString()}/坪/月</td>
-        <td style="border:1px solid #ccc;padding:6px 8px;text-align:center;">1ヶ月</td>
-        <td style="border:1px solid #ccc;padding:6px 8px;text-align:right;font-weight:600;">¥${z.billing.monthlyAmount.toLocaleString()}</td>
+        <td style="border:1px solid #ccc;padding:6px 8px;text-align:center;">${z.billing.months}ヶ月</td>
+        <td style="border:1px solid #ccc;padding:6px 8px;text-align:right;font-weight:600;">¥${z.billing.amount.toLocaleString()}</td>
       </tr>`;
     }
 
     let unitRows = "";
     for (const u of cs.units) {
       const b = u.billing;
-      const periodLabel = b.billingType === "monthly" ? `${b.storageMonths}ヶ月` : `${b.storageDays}日`;
+      const pLabel = b.billingType === "monthly" ? `${b.overlapMonths}ヶ月` : `${b.overlapDays}日`;
       const rateLabel = b.billingType === "monthly" ? `¥${b.rate.toLocaleString()}/月` : `¥${b.rate.toLocaleString()}/日`;
       const qtyLabel = b.qty > 1 ? `${u.name} ×${b.qty}` : u.name;
       unitRows += `<tr>
         <td style="border:1px solid #ccc;padding:6px 8px;">荷物: ${qtyLabel}</td>
         <td style="border:1px solid #ccc;padding:6px 8px;text-align:right;">${b.billingType === "monthly" ? "-" : `${(u.w_m * u.d_m).toFixed(2)} m²`}</td>
         <td style="border:1px solid #ccc;padding:6px 8px;text-align:right;">${rateLabel}</td>
-        <td style="border:1px solid #ccc;padding:6px 8px;text-align:center;">${periodLabel}</td>
+        <td style="border:1px solid #ccc;padding:6px 8px;text-align:center;">${pLabel}</td>
         <td style="border:1px solid #ccc;padding:6px 8px;text-align:right;font-weight:600;">¥${b.amount.toLocaleString()}</td>
       </tr>`;
     }
@@ -3714,6 +3839,7 @@ const personList = site?.personList || [];
   <div class="header-left">
     <div class="client-name">${clientName} 御中</div>
     <div>下記の通りご請求申し上げます。</div>
+    <div style="margin-top:8px;font-size:13px;color:#555;">請求期間: ${periodLabel}</div>
   </div>
   <div class="header-right">
     <div>請求番号: ${invoiceNo}</div>
@@ -4416,6 +4542,31 @@ ${cs.units.length > 0 ? `
   const placedOnShelf = units.filter((u) => u.loc?.kind === "shelf");
   const unplaced = units.filter((u) => u.loc?.kind === "unplaced");
 
+  // ドラッグ中のスナップ先ハイライト用ID
+  const mainStackTargetId = useMemo(() => {
+    if (!drag || (drag.type !== "move_unit" && drag.type !== "place_new")) return null;
+    if (drag.pointerX === drag.startX && drag.pointerY === drag.startY) return null;
+    const du = drag.type === "move_unit" ? units.find((x) => x.id === drag.unitId) : drag.draftUnit;
+    if (!du) return null;
+    const dfp = unitFootprintCells(du);
+    const { cx, cy } = toCell(drag.pointerX, drag.pointerY);
+    const fx = layout.floor.x || 0, fy = layout.floor.y || 0;
+    let px, py;
+    if (drag.type === "move_unit") {
+      const ddx = cx - (drag.offsetCx || 0), ddy = cy - (drag.offsetCy || 0);
+      px = clamp(ddx, fx, fx + layout.floor.cols - dfp.w);
+      py = clamp(ddy, fy, fy + layout.floor.rows - dfp.h);
+    } else {
+      px = clamp(cx, fx, fx + layout.floor.cols - dfp.w);
+      py = clamp(cy, fy, fy + layout.floor.rows - dfp.h);
+    }
+    const excludeId = drag.type === "move_unit" ? du.id : null;
+    const st = snapToStackTarget(px, py, dfp, excludeId);
+    if (!st) return null;
+    const target = units.find((x) => x.loc?.kind === "floor" && x.stackable && Math.abs((x.loc.x || 0) - st.x) < 0.01 && Math.abs((x.loc.y || 0) - st.y) < 0.01 && x.id !== excludeId);
+    return target?.id || null;
+  }, [drag, units, layout.floor]);
+
   // 出庫予定日が selectedDate と一致するユニットの点滅
   const blinkingUnitIds = useMemo(() => {
     const selDateStr = selectedDate.toISOString().slice(0, 10);
@@ -4654,6 +4805,23 @@ ${cs.units.length > 0 ? `
             type="button"
           >
             料金設定
+          </button>
+          <button
+            className="rounded-xl border-2 shadow-sm font-bold"
+            style={{ padding: "8px 16px", fontSize: "14px", background: "linear-gradient(135deg, #d1fae5, #a7f3d0)", color: "#065f46", borderColor: "#6ee7b7", cursor: "pointer" }}
+            onClick={() => {
+              const now = new Date();
+              const y = now.getFullYear(), m = now.getMonth();
+              const start = `${y}-${String(m + 1).padStart(2, "0")}-01`;
+              const lastDay = new Date(y, m + 1, 0).getDate();
+              const end = `${y}-${String(m + 1).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+              setInvoicePeriod({ start, end });
+              setInvoiceFilters({ client: "", department: "", personInCharge: "" });
+              setInvoiceModalOpen(true);
+            }}
+            type="button"
+          >
+            請求書
           </button>
           <div style={{ width: 1, height: 28, background: "#e2e8f0" }} />
           <button
@@ -6076,6 +6244,7 @@ ${cs.units.length > 0 ? `
                 const isDragging = drag?.type === "move_unit" && drag.unitId === u.id;
                 const hasMoved = isDragging && (drag.pointerX !== drag.startX || drag.pointerY !== drag.startY);
                 const isGroupMoving = isSel && drag?.type === "group_move";
+                const isStackTarget = mainStackTargetId === u.id;
                 const dragTransform = hasMoved
                   ? `translate(${(drag.pointerX - drag.startX) / zoom}px, ${(drag.pointerY - drag.startY) / zoom}px)`
                   : isGroupMoving ? groupMoveTransform : undefined;
@@ -6100,13 +6269,15 @@ ${cs.units.length > 0 ? `
                       background: u.bgColor
                         ? `rgba(${unitBgRgb.join(",")}, ${unitBgOpacity})`
                         : "linear-gradient(145deg, #ffffff 0%, #f8fafc 50%, #f1f5f9 100%)",
-                      borderColor: (shouldBlink && !isSel) ? undefined : (isSel ? "#1e293b" : (u.bgColor || "#e2e8f0")),
-                      borderWidth: isTransit ? 2 : undefined,
+                      borderColor: isStackTarget ? "#3b82f6" : (shouldBlink && !isSel) ? undefined : (isSel ? "#1e293b" : (u.bgColor || "#e2e8f0")),
+                      borderWidth: isStackTarget ? 3 : (isTransit ? 2 : undefined),
                       borderStyle: isTransit ? "dashed" : undefined,
-                      boxShadow: (shouldBlink && !isSel) ? undefined : (isSel
-                        ? "0 10px 25px -5px rgba(0,0,0,0.15), 0 4px 6px -2px rgba(0,0,0,0.1)"
-                        : "0 4px 12px -2px rgba(0,0,0,0.08), 0 2px 4px -1px rgba(0,0,0,0.04)"),
-                      zIndex: (hasMoved || isGroupMoving) ? 50 : 8,
+                      boxShadow: isStackTarget
+                        ? "0 0 20px 6px rgba(59,130,246,0.5)"
+                        : (shouldBlink && !isSel) ? undefined : (isSel
+                          ? "0 10px 25px -5px rgba(0,0,0,0.15), 0 4px 6px -2px rgba(0,0,0,0.1)"
+                          : "0 4px 12px -2px rgba(0,0,0,0.08), 0 2px 4px -1px rgba(0,0,0,0.04)"),
+                      zIndex: (hasMoved || isGroupMoving) ? 50 : 8 + (u.stackZ || 0),
                       transform: dragTransform,
                       opacity: hasMoved ? 0.7 : (isTransit ? 0.35 : undefined),
                       pointerEvents: hasMoved ? "none" : undefined,
@@ -8168,13 +8339,6 @@ ${cs.units.length > 0 ? `
                       荷物: {cs.units.length}件 ¥{cs.unitTotal.toLocaleString()}
                     </div>
                   )}
-                  <button
-                    type="button"
-                    className="mt-1.5 w-full rounded-lg bg-blue-50 px-2 py-1 text-xs text-blue-700 hover:bg-blue-100 font-medium"
-                    onClick={() => generateInvoice(cs.client)}
-                  >
-                    請求書を生成
-                  </button>
                 </div>
               ))}
             </div>
@@ -8515,6 +8679,156 @@ ${cs.units.length > 0 ? `
         </div>
       </Modal>
 
+      {/* 請求書モーダル */}
+      <Modal
+        title="請求書作成"
+        open={invoiceModalOpen}
+        onClose={() => setInvoiceModalOpen(false)}
+        maxWidth="28rem"
+      >
+        {(() => {
+          const billingData = (invoicePeriod.start && invoicePeriod.end)
+            ? getFilteredBillingData(invoicePeriod.start, invoicePeriod.end, invoiceFilters)
+            : [];
+          // フィルタ用選択肢を自動検出
+          const allClients = [...new Set([
+            ...layout.zones.map((z) => z.client).filter(Boolean),
+            ...units.filter((u) => u.arrivalDate && (u.loc?.kind === "floor" || u.loc?.kind === "rack" || u.loc?.kind === "shelf")).map((u) => u.client).filter(Boolean),
+          ])].sort();
+          const filteredUnits = units.filter((u) => u.arrivalDate && (u.loc?.kind === "floor" || u.loc?.kind === "rack" || u.loc?.kind === "shelf"));
+          const allDepartments = [...new Set(
+            filteredUnits
+              .filter((u) => !invoiceFilters.client || u.client === invoiceFilters.client)
+              .map((u) => u.department).filter(Boolean)
+          )].sort();
+          const allPersons = [...new Set(
+            filteredUnits
+              .filter((u) => !invoiceFilters.client || u.client === invoiceFilters.client)
+              .filter((u) => !invoiceFilters.department || u.department === invoiceFilters.department)
+              .map((u) => u.personInCharge).filter(Boolean)
+          )].sort();
+          const grandTotal = billingData.reduce((s, c) => s + c.total, 0);
+          return (
+            <div className="space-y-4">
+              {/* 請求期間 */}
+              <div>
+                <div className="text-xs font-semibold mb-1" style={{ color: "#64748b" }}>請求期間</div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="date"
+                    className="rounded-lg border px-2 py-1.5 text-sm flex-1"
+                    style={{ borderColor: "#e2e8f0" }}
+                    value={invoicePeriod.start}
+                    onChange={(e) => setInvoicePeriod((p) => ({ ...p, start: e.target.value }))}
+                  />
+                  <span className="text-gray-400 text-sm">〜</span>
+                  <input
+                    type="date"
+                    className="rounded-lg border px-2 py-1.5 text-sm flex-1"
+                    style={{ borderColor: "#e2e8f0" }}
+                    value={invoicePeriod.end}
+                    onChange={(e) => setInvoicePeriod((p) => ({ ...p, end: e.target.value }))}
+                  />
+                </div>
+              </div>
+              {/* フィルタ */}
+              <div>
+                <div className="text-xs font-semibold mb-1" style={{ color: "#64748b" }}>フィルタ</div>
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs w-16 text-gray-500 shrink-0">顧客名</span>
+                    <select
+                      className="flex-1 rounded-lg border px-2 py-1.5 text-sm"
+                      style={{ borderColor: "#e2e8f0" }}
+                      value={invoiceFilters.client}
+                      onChange={(e) => setInvoiceFilters({ client: e.target.value, department: "", personInCharge: "" })}
+                    >
+                      <option value="">すべて</option>
+                      {allClients.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs w-16 text-gray-500 shrink-0">部署名</span>
+                    <select
+                      className="flex-1 rounded-lg border px-2 py-1.5 text-sm"
+                      style={{ borderColor: "#e2e8f0" }}
+                      value={invoiceFilters.department}
+                      onChange={(e) => setInvoiceFilters((p) => ({ ...p, department: e.target.value, personInCharge: "" }))}
+                    >
+                      <option value="">すべて</option>
+                      {allDepartments.map((d) => <option key={d} value={d}>{d}</option>)}
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs w-16 text-gray-500 shrink-0">担当者名</span>
+                    <select
+                      className="flex-1 rounded-lg border px-2 py-1.5 text-sm"
+                      style={{ borderColor: "#e2e8f0" }}
+                      value={invoiceFilters.personInCharge}
+                      onChange={(e) => setInvoiceFilters((p) => ({ ...p, personInCharge: e.target.value }))}
+                    >
+                      <option value="">すべて</option>
+                      {allPersons.map((p) => <option key={p} value={p}>{p}</option>)}
+                    </select>
+                  </div>
+                </div>
+              </div>
+              {/* プレビュー */}
+              <div>
+                <div className="text-xs font-semibold mb-1" style={{ color: "#64748b", borderBottom: "1px solid #e2e8f0", paddingBottom: 4 }}>プレビュー</div>
+                {billingData.length === 0 ? (
+                  <div className="text-xs text-gray-400 py-2">該当する請求データがありません</div>
+                ) : (
+                  <div className="space-y-2 max-h-60 overflow-y-auto">
+                    {billingData.map((cs) => (
+                      <div key={cs.client} className="rounded-lg border p-2 text-xs">
+                        <div className="font-semibold">{cs.client}</div>
+                        {cs.zones.length > 0 && (
+                          <div className="text-gray-500 mt-0.5">
+                            区画: {cs.zones.length}件 ¥{cs.zoneTotal.toLocaleString()}
+                          </div>
+                        )}
+                        {cs.units.length > 0 && (
+                          <div className="text-gray-500 mt-0.5">
+                            荷物: {cs.units.length}件 ¥{cs.unitTotal.toLocaleString()}
+                          </div>
+                        )}
+                        <div className="text-right font-bold text-blue-600 mt-1">
+                          合計: ¥{cs.total.toLocaleString()}
+                        </div>
+                      </div>
+                    ))}
+                    {billingData.length > 1 && (
+                      <div className="text-right text-xs font-bold pt-1" style={{ borderTop: "1px solid #e2e8f0", color: "#1e40af" }}>
+                        総合計: ¥{grandTotal.toLocaleString()}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+              {/* 生成ボタン */}
+              <button
+                type="button"
+                className="w-full rounded-xl py-2.5 text-sm font-bold text-white"
+                style={{
+                  background: billingData.length > 0 ? "linear-gradient(135deg, #3b82f6, #2563eb)" : "#cbd5e1",
+                  cursor: billingData.length > 0 ? "pointer" : "not-allowed",
+                  border: "none",
+                }}
+                disabled={billingData.length === 0}
+                onClick={() => {
+                  for (const cs of billingData) {
+                    generateInvoiceForPeriod(cs, invoicePeriod.start, invoicePeriod.end);
+                  }
+                }}
+              >
+                請求書を生成{billingData.length > 0 ? `（${billingData.length}件）` : ""}
+              </button>
+            </div>
+          );
+        })()}
+      </Modal>
+
       {/* 担当者管理モーダル */}
       <Modal
         title="担当者リスト管理"
@@ -8786,38 +9100,58 @@ ${cs.units.length > 0 ? `
         const isoMath = zoneDetail3D ? getIsoMath(z.w, z.h, zoneDetailRotStep) : null;
         const isoViewItems = zoneUnits.map((u) => ({ ...u, gx: u._localX, gy: u._localY, fw: u._realW, fh: u._realH }));
 
+        // 区画内重ね置きスナップ（ローカル座標）
+        const snapToZoneStackTarget = (lx, ly, dragUnitId) => {
+          const SNAP_DIST = 1.2;
+          let best = null, bestDist = SNAP_DIST;
+          for (const zu of zoneUnits) {
+            if (zu.id === dragUnitId) continue;
+            if (!zu.stackable) continue;
+            const dist = Math.abs(lx - zu._localX) + Math.abs(ly - zu._localY);
+            if (dist < bestDist) {
+              bestDist = dist;
+              best = { x: zu._localX, y: zu._localY, targetId: zu.id };
+            }
+          }
+          return best;
+        };
+
         // ドラッグ中の移動先ローカル座標を計算するヘルパー
         const SUB = 4; // 4分割サブグリッド（0.25セル刻み）
         const calcDragTarget = (d) => {
+          let rawX, rawY;
           if (zoneDetail3D && isoMath) {
             const { tileW, tileH, invRotDelta } = isoMath;
             const zm = zoneDetailZoom;
             const dsx = (d.pointerX - d.startX) / zm;
             const dsy = (d.pointerY - d.startY) / zm;
-            // 逆アイソメトリック: スクリーン差分 → 回転グリッド差分
             const drgx = dsx / tileW + dsy / tileH;
             const drgy = dsy / tileH - dsx / tileW;
-            // 逆回転: 回転グリッド差分 → ローカル座標差分
             const { dgx, dgy } = invRotDelta(drgx, drgy);
-            return { x: Math.round((d.baseLocalX + dgx) * SUB) / SUB, y: Math.round((d.baseLocalY + dgy) * SUB) / SUB };
+            rawX = Math.round((d.baseLocalX + dgx) * SUB) / SUB;
+            rawY = Math.round((d.baseLocalY + dgy) * SUB) / SUB;
+          } else {
+            const dx = d.pointerX - d.startX;
+            const dy = d.pointerY - d.startY;
+            rawX = Math.round((d.baseLocalX + dx / zoneCellPx) * SUB) / SUB;
+            rawY = Math.round((d.baseLocalY + dy / zoneCellPx) * SUB) / SUB;
           }
-          const dx = d.pointerX - d.startX;
-          const dy = d.pointerY - d.startY;
-          const rawX = d.baseLocalX + dx / zoneCellPx;
-          const rawY = d.baseLocalY + dy / zoneCellPx;
-          return { x: Math.round(rawX * SUB) / SUB, y: Math.round(rawY * SUB) / SUB };
+          // 重ね置きスナップ
+          const snap = snapToZoneStackTarget(rawX, rawY, d.unitId);
+          if (snap) return { x: snap.x, y: snap.y, stackTargetId: snap.targetId };
+          return { x: rawX, y: rawY, stackTargetId: null };
         };
 
         // ドラッグ中のゴースト位置計算（2D/3D共通）
         const ghost = (() => {
           if (!zoneDetailDrag) return null;
           const d = zoneDetailDrag;
-          const { x: newLocalX, y: newLocalY } = calcDragTarget(d);
+          const { x: newLocalX, y: newLocalY, stackTargetId } = calcDragTarget(d);
           const u = units.find((uu) => uu.id === d.unitId);
           if (!u) return null;
           const ok = canPlaceInZone(z, u, newLocalX, newLocalY, u.id, realFP);
           const fp = realFP(u);
-          return { x: newLocalX, y: newLocalY, w: fp.w, h: fp.h, ok, unitId: u.id };
+          return { x: newLocalX, y: newLocalY, w: fp.w, h: fp.h, ok, unitId: u.id, stackTargetId };
         })();
 
         // ドラッグ中のユニットかどうか
@@ -8838,7 +9172,7 @@ ${cs.units.length > 0 ? `
               const fp = realFP(u);
               const candidate = { x: absX, y: absY, w: fp.w, h: fp.h };
               const containingItems = isShelfZone
-                ? units.filter((s) => s.id !== u.id && s.loc?.kind === "shelf" && s.loc.shelfId === z.loc.shelfId).filter((s) => { const sfp = realFP(s); return containsRect({ x: s.loc.x||0, y: s.loc.y||0, w: sfp.w, h: sfp.h }, candidate); })
+                ? units.filter((s) => s.id !== u.id && s.loc?.kind === "shelf" && s.loc.shelfId === z.loc.shelfId).filter((s) => { const sfp = realFP(s); return containsRectLoose({ x: s.loc.x||0, y: s.loc.y||0, w: sfp.w, h: sfp.h }, candidate); })
                 : getContainingStackItems(candidate, u.id);
               const newStackZ = containingItems.length > 0
                 ? Math.max(...containingItems.map(i => (i.stackZ || 0) + (i.h_m || 0)))
@@ -8975,6 +9309,7 @@ ${cs.units.length > 0 ? `
                     {/* 区画内の荷物（実寸サイズ表示） */}
                     {zoneUnits.map((u) => {
                       const isDrag = u.id === draggingId && hasDragMoved;
+                      const isStackTarget = ghost && ghost.stackTargetId === u.id;
                       const ubgRgb = hexToRgb(u.bgColor || "#ffffff");
                       const ubgOp = (u.bgOpacity ?? 100) / 100;
                       const kindIcon = u.kind === "パレット" ? "📦" : u.kind === "カゴ" ? "🧺" : u.kind === "配電盤" ? "⚡" : "📋";
@@ -8996,17 +9331,17 @@ ${cs.units.length > 0 ? `
                             background: u.bgColor
                               ? `rgba(${ubgRgb.join(",")}, ${ubgOp})`
                               : "linear-gradient(145deg, #ffffff 0%, #f8fafc 50%, #f1f5f9 100%)",
-                            border: "2px solid " + (u.bgColor || "#e2e8f0"),
+                            border: isStackTarget ? "3px solid #3b82f6" : "2px solid " + (u.bgColor || "#e2e8f0"),
                             borderRadius: 12,
                             cursor: "grab",
-                            boxShadow: "0 4px 12px -2px rgba(0,0,0,0.08)",
+                            boxShadow: isStackTarget ? "0 0 16px 4px rgba(59,130,246,0.5)" : "0 4px 12px -2px rgba(0,0,0,0.08)",
                             opacity: isDrag ? 0.4 : 1,
                             display: "flex",
                             flexDirection: "column",
                             alignItems: "center",
                             justifyContent: "center",
                             overflow: "hidden",
-                            zIndex: 5,
+                            zIndex: 5 + (u.stackZ || 0),
                             transition: isDrag ? "none" : "opacity 0.15s",
                           }}
                           onMouseDown={(e) => startDragUnit(e, u)}
@@ -9075,6 +9410,7 @@ ${cs.units.length > 0 ? `
                       onUnitDoubleClick={(e, u) => openDetailModal(u)}
                       draggingId={draggingId} hasDragMoved={hasDragMoved}
                       ghostBox={isoGhost}
+                      stackTargetId={ghost?.stackTargetId || null}
                     />
                   </div>
                 );
