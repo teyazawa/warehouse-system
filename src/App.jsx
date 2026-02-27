@@ -8415,11 +8415,6 @@ ${cs.units.length > 0 ? `
         onClose={() => setPricingModalOpen(false)}
         maxWidth="22rem"
       >
-        <style>{`
-          .pricing-input::-webkit-inner-spin-button,
-          .pricing-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
-          .pricing-input { -moz-appearance: textfield; }
-        `}</style>
         <div className="space-y-5">
           {/* デフォルト単価 */}
           <div>
@@ -8428,7 +8423,7 @@ ${cs.units.length > 0 ? `
               <div className="flex items-center justify-between gap-3">
                 <span className="text-sm text-gray-600 whitespace-nowrap">区画 坪/月</span>
                 <input
-                  className="pricing-input w-28 rounded-xl border px-3 py-1.5 text-sm text-right"
+                  className="w-28 rounded-xl border px-3 py-1.5 text-sm text-right"
                   type="number" min="0" inputMode="numeric"
                   value={pricing.defaultRates?.zoneMonthlyPerTsubo ?? 5000}
                   onChange={(e) => setPricing((p) => ({ ...p, defaultRates: { ...p.defaultRates, zoneMonthlyPerTsubo: Number(e.target.value) || 0 } }))}
@@ -8437,7 +8432,7 @@ ${cs.units.length > 0 ? `
               <div className="flex items-center justify-between gap-3">
                 <span className="text-sm text-gray-600 whitespace-nowrap">荷物 個/日</span>
                 <input
-                  className="pricing-input w-28 rounded-xl border px-3 py-1.5 text-sm text-right"
+                  className="w-28 rounded-xl border px-3 py-1.5 text-sm text-right"
                   type="number" min="0" inputMode="numeric"
                   value={pricing.defaultRates?.unitDailyRate ?? 100}
                   onChange={(e) => setPricing((p) => ({ ...p, defaultRates: { ...p.defaultRates, unitDailyRate: Number(e.target.value) || 0 } }))}
@@ -8446,7 +8441,7 @@ ${cs.units.length > 0 ? `
               <div className="flex items-center justify-between gap-3">
                 <span className="text-sm text-gray-600 whitespace-nowrap">荷物 個/月</span>
                 <input
-                  className="pricing-input w-28 rounded-xl border px-3 py-1.5 text-sm text-right"
+                  className="w-28 rounded-xl border px-3 py-1.5 text-sm text-right"
                   type="number" min="0" inputMode="numeric"
                   value={pricing.defaultRates?.unitMonthlyRate ?? 2500}
                   onChange={(e) => setPricing((p) => ({ ...p, defaultRates: { ...p.defaultRates, unitMonthlyRate: Number(e.target.value) || 0 } }))}
@@ -8483,7 +8478,7 @@ ${cs.units.length > 0 ? `
                         <div className="flex items-center justify-between gap-3">
                           <span className="text-xs text-gray-500 whitespace-nowrap">坪/月</span>
                           <input
-                            className="pricing-input w-28 rounded-xl border px-3 py-1.5 text-sm text-right"
+                            className="w-28 rounded-xl border px-3 py-1.5 text-sm text-right"
                             type="number" min="0" inputMode="numeric"
                             value={cr.zoneMonthlyPerTsubo ?? ""}
                             placeholder={String(pricing.defaultRates?.zoneMonthlyPerTsubo ?? 5000)}
@@ -8493,7 +8488,7 @@ ${cs.units.length > 0 ? `
                         <div className="flex items-center justify-between gap-3">
                           <span className="text-xs text-gray-500 whitespace-nowrap">個/日</span>
                           <input
-                            className="pricing-input w-28 rounded-xl border px-3 py-1.5 text-sm text-right"
+                            className="w-28 rounded-xl border px-3 py-1.5 text-sm text-right"
                             type="number" min="0" inputMode="numeric"
                             value={cr.unitDailyRate ?? ""}
                             placeholder={String(pricing.defaultRates?.unitDailyRate ?? 100)}
@@ -8503,7 +8498,7 @@ ${cs.units.length > 0 ? `
                         <div className="flex items-center justify-between gap-3">
                           <span className="text-xs text-gray-500 whitespace-nowrap">個/月</span>
                           <input
-                            className="pricing-input w-28 rounded-xl border px-3 py-1.5 text-sm text-right"
+                            className="w-28 rounded-xl border px-3 py-1.5 text-sm text-right"
                             type="number" min="0" inputMode="numeric"
                             value={cr.unitMonthlyRate ?? ""}
                             placeholder={String(pricing.defaultRates?.unitMonthlyRate ?? 2500)}

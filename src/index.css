@@ -47,3 +47,13 @@
 .wh-reservation-expired {
   animation: wh-reservation-expired-blink 1s ease-in-out infinite;
 }
+
+/* number入力のスピナー（増減ボタン）を非表示 */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+}
