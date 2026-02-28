@@ -1899,7 +1899,7 @@ const [pricingModalOpen, setPricingModalOpen] = useState(false);
 // 請求書モーダル
 const [invoiceModalOpen, setInvoiceModalOpen] = useState(false);
 const [invoicePeriod, setInvoicePeriod] = useState({ start: "", end: "" });
-const [invoiceFilters, setInvoiceFilters] = useState({ client: "", department: "", personInCharge: "" });
+const [invoiceFilters, setInvoiceFilters] = useState({ client: "", department: "", clientContact: "" });
 const [newPersonName, setNewPersonName] = useState("");
 const personList = site?.personList || [];
 
@@ -3770,7 +3770,7 @@ const personList = site?.personList || [];
       const client = u.client || "(未設定)";
       if (filters.client && client !== filters.client) continue;
       if (filters.department && (u.department || "") !== filters.department) continue;
-      if (filters.personInCharge && (u.personInCharge || "") !== filters.personInCharge) continue;
+      if (filters.clientContact && (u.clientContact || "") !== filters.clientContact) continue;
       const prev = acc.get(client) || { zones: [], units: [], zoneTotal: 0, unitTotal: 0 };
       const billing = calcUnitBillingForPeriod(u, pStart, pEnd);
       if (billing.amount === 0) continue;
@@ -4828,7 +4828,7 @@ ${cs.units.length > 0 ? `
               const lastDay = new Date(y, m + 1, 0).getDate();
               const end = `${y}-${String(m + 1).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
               setInvoicePeriod({ start, end });
-              setInvoiceFilters({ client: "", department: "", personInCharge: "" });
+              setInvoiceFilters({ client: "", department: "", clientContact: "" });
               setInvoiceModalOpen(true);
             }}
             type="button"
@@ -8745,7 +8745,7 @@ ${cs.units.length > 0 ? `
             filteredUnits
               .filter((u) => !invoiceFilters.client || u.client === invoiceFilters.client)
               .filter((u) => !invoiceFilters.department || u.department === invoiceFilters.department)
-              .map((u) => u.personInCharge).filter(Boolean)
+              .map((u) => u.clientContact).filter(Boolean)
           )].sort();
           const grandTotal = billingData.reduce((s, c) => s + c.total, 0);
           return (
@@ -8781,7 +8781,7 @@ ${cs.units.length > 0 ? `
                       className="flex-1 rounded-lg border px-2 py-1.5 text-sm"
                       style={{ borderColor: "#e2e8f0" }}
                       value={invoiceFilters.client}
-                      onChange={(e) => setInvoiceFilters({ client: e.target.value, department: "", personInCharge: "" })}
+                      onChange={(e) => setInvoiceFilters({ client: e.target.value, department: "", clientContact: "" })}
                     >
                       <option value="">すべて</option>
                       {allClients.map((c) => <option key={c} value={c}>{c}</option>)}
@@ -8793,19 +8793,19 @@ ${cs.units.length > 0 ? `
                       className="flex-1 rounded-lg border px-2 py-1.5 text-sm"
                       style={{ borderColor: "#e2e8f0" }}
                       value={invoiceFilters.department}
-                      onChange={(e) => setInvoiceFilters((p) => ({ ...p, department: e.target.value, personInCharge: "" }))}
+                      onChange={(e) => setInvoiceFilters((p) => ({ ...p, department: e.target.value, clientContact: "" }))}
                     >
                       <option value="">すべて</option>
                       {allDepartments.map((d) => <option key={d} value={d}>{d}</option>)}
                     </select>
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className="text-xs w-16 text-gray-500 shrink-0">担当者名</span>
+                    <span className="text-xs w-16 text-gray-500 shrink-0">顧客担当者</span>
                     <select
                       className="flex-1 rounded-lg border px-2 py-1.5 text-sm"
                       style={{ borderColor: "#e2e8f0" }}
-                      value={invoiceFilters.personInCharge}
-                      onChange={(e) => setInvoiceFilters((p) => ({ ...p, personInCharge: e.target.value }))}
+                      value={invoiceFilters.clientContact}
+                      onChange={(e) => setInvoiceFilters((p) => ({ ...p, clientContact: e.target.value }))}
                     >
                       <option value="">すべて</option>
                       {allPersons.map((p) => <option key={p} value={p}>{p}</option>)}
