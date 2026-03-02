@@ -962,123 +962,6 @@ function Iso3DView({
   );
 }
 
-// === Popup IsometricView (uses Iso3DView) ===
-
-function IsometricView({ units, layout, panels, onClose, blinkingUnitIds }) {
-  const [viewTarget, setViewTarget] = useState("floor");
-  const [rotStep, setRotStep] = useState(0);
-  const [zoomLevel, setZoomLevel] = useState(1);
-
-  const fx = layout.floor.x || 0;
-  const fy = layout.floor.y || 0;
-  const cellMW = layout.floor.cell_m_w || 1.2;
-  const cellMD = layout.floor.cell_m_d || 1.0;
-
-  function realFootprint(u) {
-    const fw = Math.max(0.2, (u.w_m || cellMW) / cellMW);
-    const fd = Math.max(0.2, (u.d_m || cellMD) / cellMD);
-    return u.rot ? { w: fd, h: fw } : { w: fw, h: fd };
-  }
-  function panelAsUnit(p) {
-    return {
-      id: p.id, kind: "配電盤", name: p.name || "配電盤",
-      w_m: p.w_m || (p.w || 2) * cellMW, d_m: p.d_m || (p.h || 2) * cellMD, h_m: p.h_m || 1.8,
-      rot: false, bgColor: p.bgColor || "#fef3c7", fragile: false,
-      loc: p.loc?.kind === "shelf" ? { kind: "shelf", shelfId: p.loc.shelfId, x: p.loc.x, y: p.loc.y } : { kind: "floor", x: p.x, y: p.y },
-    };
-  }
-
-  // Determine visible area & items based on viewTarget
-  let viewCols, viewRows, viewLabel, viewItems, viewRacks, viewZones, viewBgColor;
-  if (viewTarget === "floor") {
-    viewCols = layout.floor.cols; viewRows = layout.floor.rows; viewLabel = "床全体";
-    viewBgColor = layout.floor.floorBgColor || "#ffffff";
-    viewItems = units.filter((u) => u.loc?.kind === "floor").map((u) => { const fp = realFootprint(u); return { ...u, gx: (u.loc.x||0)-fx, gy: (u.loc.y||0)-fy, fw: fp.w, fh: fp.h }; });
-    for (const p of (panels||[])) { if (p.loc?.kind==="shelf") continue; const pu=panelAsUnit(p); const fp=realFootprint(pu); viewItems.push({...pu, gx:(p.x||0)-fx, gy:(p.y||0)-fy, fw:fp.w, fh:fp.h}); }
-    viewRacks = layout.racks.map((r) => ({ ...r, gx: r.x-fx, gy: r.y-fy }));
-    viewZones = layout.zones.filter((z) => !z.loc||z.loc.kind==="floor").map((z) => ({ ...z, gx: z.x-fx, gy: z.y-fy }));
-  } else if (viewTarget.startsWith("zone-")) {
-    const zoneId = viewTarget.slice(5); const zone = layout.zones.find((z) => z.id === zoneId);
-    if (zone) {
-      viewCols = zone.w; viewRows = zone.h; viewLabel = zone.name; viewBgColor = zone.bgColor || "#d1fae5";
-      if (zone.loc?.kind === "shelf") {
-        const shelfId = zone.loc.shelfId, zx = zone.loc.x||0, zy = zone.loc.y||0;
-        viewItems = units.filter((u) => u.loc?.kind==="shelf"&&u.loc.shelfId===shelfId).map((u) => { const fp=realFootprint(u); return {...u, gx:(u.loc.x||0)-zx, gy:(u.loc.y||0)-zy, fw:fp.w, fh:fp.h}; }).filter((u) => u.gx>=0&&u.gy>=0&&u.gx<zone.w&&u.gy<zone.h);
-        for (const p of (panels||[])) { if (p.loc?.kind!=="shelf"||p.loc.shelfId!==shelfId) continue; const pgx=(p.loc.x||0)-zx,pgy=(p.loc.y||0)-zy; if(pgx<0||pgy<0||pgx>=zone.w||pgy>=zone.h) continue; const pu=panelAsUnit(p); const fp=realFootprint(pu); viewItems.push({...pu,gx:pgx,gy:pgy,fw:fp.w,fh:fp.h}); }
-      } else {
-        viewItems = units.filter((u) => u.loc?.kind==="floor").map((u) => { const fp=realFootprint(u); return {...u, gx:(u.loc.x||0)-zone.x, gy:(u.loc.y||0)-zone.y, fw:fp.w, fh:fp.h}; }).filter((u) => u.gx>=0&&u.gy>=0&&u.gx<zone.w&&u.gy<zone.h);
-        for (const p of (panels||[])) { if(p.loc?.kind==="shelf") continue; const pgx=(p.x||0)-zone.x,pgy=(p.y||0)-zone.y; if(pgx<0||pgy<0||pgx>=zone.w||pgy>=zone.h) continue; const pu=panelAsUnit(p); const fp=realFootprint(pu); viewItems.push({...pu,gx:pgx,gy:pgy,fw:fp.w,fh:fp.h}); }
-      }
-      viewRacks = []; viewZones = [];
-    } else { viewCols=1;viewRows=1;viewLabel="?";viewItems=[];viewRacks=[];viewZones=[]; }
-  } else if (viewTarget.startsWith("rack-")) {
-    const rackId = viewTarget.slice(5); const rack = layout.racks.find((r) => r.id === rackId);
-    if (rack) {
-      viewCols=rack.w; viewRows=rack.h; viewLabel=rack.name; viewBgColor=rack.bgColor||"#f1f5f9";
-      viewItems = units.filter((u) => u.loc?.kind==="rack"&&u.loc.rackId===rackId).map((u) => { const slot=u.loc.slot||0; const rCols=rack.cols||1; const col=slot%rCols; const row=Math.floor(slot/rCols); return {...u, gx:col*Math.floor(rack.w/rCols), gy:row*Math.floor(rack.h/(rack.rows||1)), fw:Math.floor(rack.w/rCols), fh:Math.floor(rack.h/(rack.rows||1))}; });
-      viewRacks=[]; viewZones=[];
-    } else { viewCols=1;viewRows=1;viewLabel="?";viewItems=[];viewRacks=[];viewZones=[]; }
-  } else if (viewTarget.startsWith("shelf-")) {
-    const shelfId = viewTarget.slice(6); const shelf = (layout.shelves||[]).find((s) => s.id === shelfId);
-    if (shelf) {
-      viewCols=shelf.w; viewRows=shelf.h; viewLabel=shelf.name||"棚"; viewBgColor=shelf.bgColor||"#f0fdfa";
-      viewItems = units.filter((u) => u.loc?.kind==="shelf"&&u.loc.shelfId===shelfId).map((u) => { const fp=realFootprint(u); return {...u, gx:u.loc.x||0, gy:u.loc.y||0, fw:fp.w, fh:fp.h}; });
-      for (const p of (panels||[])) { if(p.loc?.kind!=="shelf"||p.loc.shelfId!==shelfId) continue; const pu=panelAsUnit(p); const fp=realFootprint(pu); viewItems.push({...pu,gx:p.loc.x||0,gy:p.loc.y||0,fw:fp.w,fh:fp.h}); }
-      viewRacks=[];
-      viewZones = layout.zones.filter((z) => z.loc?.kind==="shelf"&&z.loc.shelfId===shelfId).map((z) => ({...z, gx:z.loc.x||0, gy:z.loc.y||0}));
-    } else { viewCols=1;viewRows=1;viewLabel="?";viewItems=[];viewRacks=[];viewZones=[]; }
-  } else { viewCols=layout.floor.cols; viewRows=layout.floor.rows; viewLabel="床全体"; viewItems=[]; viewRacks=[]; viewZones=[]; }
-
-  const { effCols, effRows } = getIsoMath(viewCols, viewRows, rotStep);
-  const rotLabels = ["0°", "90°", "180°", "270°"];
-
-  return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 50000, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onClose}>
-      <div style={{ background: "#fff", borderRadius: 24, boxShadow: "0 25px 60px rgba(0,0,0,0.3)", padding: 24, maxWidth: "90vw", maxHeight: "90vh", overflow: "auto" }} onClick={(e) => e.stopPropagation()}>
-        {/* Header */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-          <div style={{ fontSize: 18, fontWeight: 800, color: "#1e293b" }}>3D ビュー</div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <select value={viewTarget} onChange={(e) => setViewTarget(e.target.value)} style={{ borderRadius: 12, border: "2px solid #e2e8f0", padding: "8px 12px", fontSize: 13, fontWeight: 600, background: "#f8fafc", cursor: "pointer" }}>
-              <option value="floor">床全体</option>
-              {layout.zones.map((z) => <option key={z.id} value={`zone-${z.id}`}>区画: {z.name}</option>)}
-              {layout.racks.map((r) => <option key={r.id} value={`rack-${r.id}`}>ラック: {r.name}</option>)}
-              {(layout.shelves||[]).map((s) => <option key={s.id} value={`shelf-${s.id}`}>棚: {s.name||s.id}</option>)}
-            </select>
-            <button type="button" onClick={onClose} style={{ background: "#f1f5f9", border: "none", borderRadius: 12, padding: "8px 16px", fontWeight: 700, cursor: "pointer" }}>閉じる</button>
-          </div>
-        </div>
-        {/* Controls */}
-        <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 12, flexWrap: "wrap" }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#64748b" }}>{viewLabel} ({effCols} x {effRows} セル)</div>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <button type="button" onClick={() => setRotStep((r) => (r+3)%4)} style={{ background: "#f1f5f9", border: "2px solid #e2e8f0", borderRadius: 10, padding: "4px 10px", fontSize: 16, cursor: "pointer", fontWeight: 700 }} title="左に90°回転">↶</button>
-            <span style={{ fontSize: 12, fontWeight: 600, color: "#64748b", minWidth: 30, textAlign: "center" }}>{rotLabels[rotStep]}</span>
-            <button type="button" onClick={() => setRotStep((r) => (r+1)%4)} style={{ background: "#f1f5f9", border: "2px solid #e2e8f0", borderRadius: 10, padding: "4px 10px", fontSize: 16, cursor: "pointer", fontWeight: 700 }} title="右に90°回転">↷</button>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <button type="button" onClick={() => setZoomLevel((z) => Math.max(0.3,z-0.2))} style={{ background: "#f1f5f9", border: "2px solid #e2e8f0", borderRadius: 10, padding: "4px 10px", fontSize: 16, cursor: "pointer", fontWeight: 700 }}>−</button>
-            <span style={{ fontSize: 12, fontWeight: 600, color: "#64748b", minWidth: 40, textAlign: "center" }}>{Math.round(zoomLevel*100)}%</span>
-            <button type="button" onClick={() => setZoomLevel((z) => Math.min(3,z+0.2))} style={{ background: "#f1f5f9", border: "2px solid #e2e8f0", borderRadius: 10, padding: "4px 10px", fontSize: 16, cursor: "pointer", fontWeight: 700 }}>+</button>
-          </div>
-        </div>
-        {/* 3D View */}
-        <Iso3DView
-          viewCols={viewCols} viewRows={viewRows} viewBgColor={viewBgColor}
-          viewItems={viewItems} viewRacks={viewRacks} viewZones={viewZones}
-          rotStep={rotStep} zoom={zoomLevel} onZoomChange={setZoomLevel}
-          blinkingUnitIds={blinkingUnitIds} maxHeight="65vh"
-        />
-        {/* Legend */}
-        <div style={{ marginTop: 16, display: "flex", flexWrap: "wrap", gap: 12, fontSize: 12, color: "#64748b", alignItems: "center" }}>
-          <span>荷物: {viewItems.length}個</span>
-          <span style={{ color: "#94a3b8", fontSize: 11 }}>※ ドラッグでスクロール / ホイールで拡大縮小</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // 日本の祝日判定（外部ライブラリ不要）
 function getJapaneseHolidays(year) {
   const holidays = new Set();
@@ -1851,7 +1734,6 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
   useEffect(() => { unitsRef.current = units; }, [units]);
 
   const canvasRef = useRef(null);
-  const [isoViewOpen, setIsoViewOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
 const [detailUnit, setDetailUnit] = useState(null);
 
@@ -4797,7 +4679,17 @@ ${cs.units.length > 0 ? `
           <button
             className="rounded-xl border-2 shadow-sm font-bold"
             style={{ padding: "8px 16px", fontSize: "14px", background: "linear-gradient(135deg, #ede9fe, #ddd6fe)", color: "#7c3aed", borderColor: "#a78bfa", cursor: "pointer" }}
-            onClick={() => setIsoViewOpen(true)}
+            onClick={() => {
+              openZoneDetailModal({
+                id: "__floor__",
+                name: wh.name || "床",
+                x: layout.floor.x || 0, y: layout.floor.y || 0,
+                w: layout.floor.cols, h: layout.floor.rows,
+                bgColor: layout.floor.floorBgColor || "#ffffff",
+                _isVirtual: "floor",
+              });
+              setZoneDetail3D(true);
+            }}
             type="button"
           >
             3Dビュー
@@ -5269,16 +5161,6 @@ ${cs.units.length > 0 ? `
           </button>
         </div>
       </Modal>
-
-      {isoViewOpen && (
-        <IsometricView
-          units={units}
-          layout={layout}
-          panels={panels}
-          onClose={() => setIsoViewOpen(false)}
-          blinkingUnitIds={blinkingUnitIds}
-        />
-      )}
 
       {/* Body */}
       <div
@@ -9128,6 +9010,18 @@ ${cs.units.length > 0 ? `
           }
         })();
 
+        // 区画オーバーレイ（床→全フロア区画、棚→棚内区画をローカル座標に変換）
+        const overlayZones = (() => {
+          if (z._isVirtual === "floor") {
+            return layout.zones.filter(zz => !zz.loc || zz.loc.kind === "floor")
+              .map(zz => ({ ...zz, _lx: zz.x - z.x, _ly: zz.y - z.y }));
+          } else if (z._isVirtual === "shelf") {
+            return layout.zones.filter(zz => zz.loc?.kind === "shelf" && zz.loc.shelfId === z._shelfId)
+              .map(zz => ({ ...zz, _lx: zz.loc.x || 0, _ly: zz.loc.y || 0 }));
+          }
+          return [];
+        })();
+
         // 動的スケール: モーダル内に区画が収まるよう計算
         const maxModalW = Math.min(window.innerWidth - 80, 1200);
         const maxModalH = Math.min(window.innerHeight - 160, 800);
@@ -9209,7 +9103,18 @@ ${cs.units.length > 0 ? `
               const absX = isShelfZone ? (z.loc.x || 0) + newLocalX : z.x + newLocalX;
               const absY = isShelfZone ? (z.loc.y || 0) + newLocalY : z.y + newLocalY;
               const fp = realFP(u);
-              const candidate = { x: absX, y: absY, w: fp.w, h: fp.h };
+              // 取引先不一致チェック（床のみ、棚は区画がないため不要）
+              if (!isShelfZone) {
+                const mz = getClientMismatchZone(u, absX, absY, fp.w, fp.h);
+                if (mz) {
+                  showToast(`この区画は「${mz.client}」専用です（荷物の取引先: ${u.client || "(未設定)"}）`);
+                  setZoneDetailDrag(null);
+                  return;
+                }
+              }
+              const candidate = isShelfZone
+                ? { x: newLocalX, y: newLocalY, w: fp.w, h: fp.h }
+                : { x: absX, y: absY, w: fp.w, h: fp.h };
               const containingItems = isShelfZone
                 ? units.filter((s) => s.id !== u.id && s.loc?.kind === "shelf" && s.loc.shelfId === z.loc.shelfId).filter((s) => { const sfp = realFP(s); return containsRectLoose({ x: s.loc.x||0, y: s.loc.y||0, w: sfp.w, h: sfp.h }, candidate); })
                 : getContainingStackItems(candidate, u.id);
@@ -9217,7 +9122,7 @@ ${cs.units.length > 0 ? `
                 ? Math.max(...containingItems.map(i => (i.stackZ || 0) + (i.h_m || 0)))
                 : 0;
               if (isShelfZone) {
-                setUnits((prev) => prev.map((uu) => uu.id === u.id ? { ...uu, loc: { ...uu.loc, x: absX, y: absY }, stackZ: newStackZ } : uu));
+                setUnits((prev) => prev.map((uu) => uu.id === u.id ? { ...uu, loc: { ...uu.loc, x: newLocalX, y: newLocalY }, stackZ: newStackZ } : uu));
               } else {
                 setUnits((prev) => prev.map((uu) => uu.id === u.id ? { ...uu, loc: { kind: "floor", x: absX, y: absY }, stackZ: newStackZ } : uu));
               }
@@ -9288,6 +9193,48 @@ ${cs.units.length > 0 ? `
                   {z.name || "区画"}{z.client ? ` (${z.client})` : ""} — {z.w}×{z.h} セル
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
+                  {/* ビュー切替ドロップダウン */}
+                  <select
+                    value={z.id}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      let newZone;
+                      if (val === "__floor__") {
+                        newZone = {
+                          id: "__floor__", name: wh.name || "床",
+                          x: layout.floor.x || 0, y: layout.floor.y || 0,
+                          w: layout.floor.cols, h: layout.floor.rows,
+                          bgColor: layout.floor.floorBgColor || "#ffffff",
+                          _isVirtual: "floor",
+                        };
+                      } else if (val.startsWith("__shelf_")) {
+                        const shelfId = val.slice(8, -2);
+                        const shelf = (layout.shelves || []).find(s => s.id === shelfId);
+                        if (!shelf) return;
+                        newZone = {
+                          id: val, name: shelf.name || "棚",
+                          x: shelf.x, y: shelf.y, w: shelf.w, h: shelf.h,
+                          bgColor: shelf.bgColor || "#f0fdfa",
+                          loc: { kind: "shelf", shelfId: shelf.id, x: shelf.x, y: shelf.y },
+                          _isVirtual: "shelf", _shelfId: shelf.id,
+                        };
+                      } else {
+                        newZone = layout.zones.find(zz => zz.id === val);
+                        if (!newZone) return;
+                      }
+                      setZoneDetailZone(newZone);
+                      setZoneDetailDrag(null);
+                    }}
+                    style={{ borderRadius: 12, border: "2px solid #e2e8f0", padding: "6px 10px", fontSize: 13, fontWeight: 600 }}
+                  >
+                    <option value="__floor__">床全体</option>
+                    {layout.zones.filter(zz => !zz.loc || zz.loc.kind === "floor").map(zz => (
+                      <option key={zz.id} value={zz.id}>区画: {zz.name}</option>
+                    ))}
+                    {(layout.shelves || []).map(s => (
+                      <option key={`__shelf_${s.id}__`} value={`__shelf_${s.id}__`}>棚: {s.name || s.id}</option>
+                    ))}
+                  </select>
                   {/* 2D/3D切替 */}
                   <button
                     className="rounded-xl border px-3 py-1.5 text-sm font-bold"
@@ -9344,6 +9291,29 @@ ${cs.units.length > 0 ? `
                         backgroundColor: (i + 1) % SUB === 0 ? "rgba(0,0,0,0.10)" : "rgba(0,0,0,0.03)",
                       }} />
                     ))}
+
+                    {/* 区画オーバーレイ */}
+                    {overlayZones.map((oz) => {
+                      const bgRgb = hexToRgb(oz.bgColor || "#d1fae5");
+                      const labelRgb = hexToRgb(oz.labelColor || "#000000");
+                      return (
+                        <div key={`oz-${oz.id}`} style={{
+                          position: "absolute",
+                          left: oz._lx * zoneCellPx, top: oz._ly * zoneCellPx,
+                          width: oz.w * zoneCellPx, height: oz.h * zoneCellPx,
+                          background: `rgba(${bgRgb.join(",")}, ${(oz.bgOpacity ?? 90) / 100})`,
+                          border: `2px solid ${oz.bgColor || "#10b981"}`,
+                          borderRadius: 8, zIndex: 1, pointerEvents: "none",
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                        }}>
+                          <div style={{
+                            fontSize: `${oz.labelFontSize || 1.5}rem`, fontWeight: 900,
+                            color: `rgba(${labelRgb.join(",")}, 0.15)`,
+                            textAlign: "center", pointerEvents: "none",
+                          }}>{oz.name}</div>
+                        </div>
+                      );
+                    })}
 
                     {/* 区画内の荷物（実寸サイズ表示） */}
                     {zoneUnits.map((u) => {
@@ -9443,6 +9413,7 @@ ${cs.units.length > 0 ? `
                     <Iso3DView
                       viewCols={z.w} viewRows={z.h} viewBgColor={z.bgColor || "#d1fae5"}
                       viewItems={isoViewItems}
+                      viewZones={overlayZones.map(oz => ({ ...oz, gx: oz._lx, gy: oz._ly }))}
                       rotStep={zoneDetailRotStep} zoom={zoneDetailZoom} onZoomChange={setZoneDetailZoom}
                       blinkingUnitIds={blinkingUnitIds} maxHeight="60vh"
                       onUnitMouseDown={(e, u) => startDragUnit(e, u)}
