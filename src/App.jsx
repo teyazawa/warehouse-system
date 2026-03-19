@@ -1497,14 +1497,8 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
         x: 0,
         y: 0,
       },
-      zones: [
-        { id: "z-" + uid(), name: "取引先A 専有区画", client: "取引先A", x: 2, y: 2, w: 10, h: 7, labelColor: "#000000", bgColor: "#d1fae5", bgOpacity: 90 },
-        { id: "z-" + uid(), name: "取引先B 専有区画", client: "取引先B", x: 2, y: 10, w: 8, h: 6, labelColor: "#000000", bgColor: "#dbeafe", bgOpacity: 90 },
-      ],
-      racks: [
-        { id: "r-" + uid(), name: "ラック1", x: 18, y: 3, w: 12, h: 7, rows: 3, cols: 6, labelColor: "#ffffff", bgColor: "#f1f5f9", bgOpacity: 95 },
-        { id: "r-" + uid(), name: "ラック2", x: 18, y: 12, w: 10, h: 6, rows: 3, cols: 5, labelColor: "#ffffff", bgColor: "#f1f5f9", bgOpacity: 95 },
-      ],
+      zones: [],
+      racks: [],
       shelves: [],
     }),
     []
