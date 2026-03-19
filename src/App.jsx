@@ -1784,6 +1784,17 @@ const [invoicePeriod, setInvoicePeriod] = useState({ start: "", end: "" });
 const [invoiceFilters, setInvoiceFilters] = useState({ client: "", department: "", clientContact: "" });
 const [newPersonName, setNewPersonName] = useState("");
 const personList = site?.personList || [];
+// 顧客スプレッドシート管理モーダル
+const [customerSheetModalOpen, setCustomerSheetModalOpen] = useState(false);
+const [selectedSheetClient, setSelectedSheetClient] = useState("");
+const [sheetUrlInput, setSheetUrlInput] = useState("");
+const customerSheetUrls = site?.customerSheetUrls || {};
+const allClientNames = useMemo(() => {
+  const s = new Set();
+  layout.zones.forEach(z => z.client && s.add(z.client));
+  units.forEach(u => u.client && u.client !== "(未設定)" && s.add(u.client));
+  return [...s].sort();
+}, [layout.zones, units]);
 
   // Internal pan/zoom (kept simple)
   const [zoom, setZoom] = useState(1);
@@ -4728,6 +4739,14 @@ ${cs.units.length > 0 ? `
             請求書
           </button>
           <div style={{ width: 1, height: 28, background: "#e2e8f0" }} />
+          <button
+            className="rounded-xl border-2 shadow-sm font-bold"
+            style={{ padding: "8px 16px", fontSize: "14px", background: "linear-gradient(135deg, #fff7ed, #fed7aa)", color: "#c2410c", borderColor: "#fdba74", cursor: "pointer" }}
+            onClick={() => setCustomerSheetModalOpen(true)}
+            type="button"
+          >
+            顧客リスト
+          </button>
           <button
             className="rounded-xl border-2 shadow-sm font-bold"
             style={{ padding: "8px 16px", fontSize: "14px", background: "linear-gradient(135deg, #ccfbf1, #99f6e4)", color: "#0d9488", borderColor: "#5eead4", cursor: "pointer" }}
@@ -7984,6 +8003,15 @@ ${cs.units.length > 0 ? `
                               onBlur={(e) => updateUnitField(selectedEntity.id, "client", e.target.value, "顧客名変更")}
                               placeholder="顧客名"
                             />
+                            {selectedEntity.client && customerSheetUrls[selectedEntity.client] && (
+                              <button
+                                type="button"
+                                className="mt-1 inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-orange-700 bg-orange-50 border border-orange-200 hover:bg-orange-100 transition-colors"
+                                onClick={() => window.open(customerSheetUrls[selectedEntity.client], "_blank")}
+                              >
+                                📋 スプレッドシート
+                              </button>
+                            )}
                           </div>
                           {/* 部署名 */}
                           <div>
@@ -8806,6 +8834,119 @@ ${cs.units.length > 0 ? `
             type="button"
             className="w-full rounded-2xl border px-4 py-2 text-sm hover:bg-gray-50"
             onClick={() => { setPersonModalOpen(false); setNewPersonName(""); }}
+          >
+            閉じる
+          </button>
+        </div>
+      </Modal>
+
+      {/* 顧客スプレッドシート管理モーダル */}
+      <Modal
+        title="顧客スプレッドシート管理"
+        open={customerSheetModalOpen}
+        onClose={() => { setCustomerSheetModalOpen(false); setSelectedSheetClient(""); setSheetUrlInput(""); }}
+      >
+        <div className="space-y-4">
+          <div className="flex gap-2 items-end">
+            <div className="flex-1">
+              <div className="text-xs text-gray-500 mb-1">顧客を選択</div>
+              <select
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+                value={selectedSheetClient}
+                onChange={(e) => {
+                  const c = e.target.value;
+                  setSelectedSheetClient(c);
+                  setSheetUrlInput(customerSheetUrls[c] || "");
+                }}
+              >
+                <option value="">-- 選択してください --</option>
+                {allClientNames.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+          </div>
+          {selectedSheetClient && (
+            <div className="space-y-2">
+              <div className="text-xs text-gray-500">スプレッドシートURL</div>
+              <input
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+                placeholder="https://docs.google.com/spreadsheets/d/..."
+                value={sheetUrlInput}
+                onChange={(e) => setSheetUrlInput(e.target.value)}
+              />
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  className="rounded-xl bg-orange-600 px-4 py-2 text-sm text-white hover:bg-orange-700 disabled:opacity-50"
+                  disabled={!sheetUrlInput.trim()}
+                  onClick={() => {
+                    onUpdateSite({ ...site, customerSheetUrls: { ...customerSheetUrls, [selectedSheetClient]: sheetUrlInput.trim() } });
+                  }}
+                >
+                  保存
+                </button>
+                <button
+                  type="button"
+                  className="rounded-xl bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+                  disabled={!customerSheetUrls[selectedSheetClient]}
+                  onClick={() => window.open(customerSheetUrls[selectedSheetClient], "_blank")}
+                >
+                  開く
+                </button>
+                {customerSheetUrls[selectedSheetClient] && (
+                  <button
+                    type="button"
+                    className="rounded-xl border border-red-300 px-4 py-2 text-sm text-red-600 hover:bg-red-50"
+                    onClick={() => {
+                      const next = { ...customerSheetUrls };
+                      delete next[selectedSheetClient];
+                      onUpdateSite({ ...site, customerSheetUrls: next });
+                      setSheetUrlInput("");
+                    }}
+                  >
+                    削除
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+          <div className="border-t pt-3">
+            <div className="text-xs text-gray-500 mb-2">登録済み顧客一覧</div>
+            {allClientNames.length === 0 && <div className="text-sm text-gray-400">顧客が未登録です</div>}
+            <div className="space-y-1 max-h-60 overflow-y-auto">
+              {allClientNames.map(c => (
+                <div key={c} className="flex items-center justify-between rounded-xl border px-3 py-2">
+                  <span className="text-sm">{c}</span>
+                  <div className="flex items-center gap-2">
+                    {customerSheetUrls[c] ? (
+                      <button
+                        type="button"
+                        className="text-xs text-blue-600 hover:text-blue-800 font-semibold"
+                        onClick={() => window.open(customerSheetUrls[c], "_blank")}
+                      >
+                        開く
+                      </button>
+                    ) : (
+                      <span className="text-xs text-gray-400">URL未設定</span>
+                    )}
+                    <button
+                      type="button"
+                      className="text-xs text-orange-600 hover:text-orange-800"
+                      onClick={() => {
+                        setSelectedSheetClient(c);
+                        setSheetUrlInput(customerSheetUrls[c] || "");
+                      }}
+                    >
+                      編集
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <button
+            type="button"
+            className="w-full rounded-2xl border px-4 py-2 text-sm hover:bg-gray-50"
+            onClick={() => { setCustomerSheetModalOpen(false); setSelectedSheetClient(""); setSheetUrlInput(""); }}
           >
             閉じる
           </button>
