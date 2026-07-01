@@ -5851,8 +5851,8 @@ ${cs.units.length > 0 ? `
                                 ? "0 2px 4px rgba(0,0,0,0.06), inset 0 1px 0 rgba(255,255,255,0.8)"
                                 : "inset 0 1px 2px rgba(0,0,0,0.04)",
                             }}
-                            onMouseDown={(e) => e.stopPropagation()}
-                            onClick={(e) => e.stopPropagation()}
+                            onMouseDown={(e) => { if (occupant) e.stopPropagation(); }}
+                            onClick={(e) => { if (occupant) e.stopPropagation(); }}
                           >
                             {occupant ? (
                               <div
