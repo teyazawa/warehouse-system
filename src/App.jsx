@@ -1768,6 +1768,29 @@ function closeZoneDetailModal() {
   setZoneDetail3D(false);
 }
 
+// ラック拡大モーダル用State
+const [rackDetailOpen, setRackDetailOpen] = useState(false);
+const [rackDetailRack, setRackDetailRack] = useState(null);
+const [rackDetailDrag, setRackDetailDrag] = useState(null);
+const [rackDetail3D, setRackDetail3D] = useState(false);
+const [rackDetailRotStep, setRackDetailRotStep] = useState(0);
+const [rackDetailZoom, setRackDetailZoom] = useState(1);
+
+function openRackDetailModal(rack) {
+  setRackDetailRack(rack);
+  setRackDetailDrag(null);
+  setRackDetail3D(false);
+  setRackDetailRotStep(0);
+  setRackDetailZoom(1);
+  setRackDetailOpen(true);
+}
+function closeRackDetailModal() {
+  setRackDetailOpen(false);
+  setRackDetailRack(null);
+  setRackDetailDrag(null);
+  setRackDetail3D(false);
+}
+
 // 担当者管理モーダル
 const [personModalOpen, setPersonModalOpen] = useState(false);
 // 料金設定モーダル
@@ -2438,11 +2461,15 @@ const allClientNames = useMemo(() => {
 
   function beginMoveUnit(e, unitId) {
     e.stopPropagation();
+    e.preventDefault();
     const u = units.find((x) => x.id === unitId);
     if (!u) return;
 
+    // ラック内の荷物ドラッグは常に単体移動（group_moveへの誤爆を防ぐ）
+    const isInRack = u.loc?.kind === "rack";
+
     // If this unit is part of a multi-selection, start group move
-    if (selectionSet.length > 1 && isItemSelected("unit", unitId)) {
+    if (!isInRack && selectionSet.length > 1 && isItemSelected("unit", unitId)) {
       setDrag({
         type: "group_move",
         startX: e.clientX,
@@ -2467,6 +2494,17 @@ const allClientNames = useMemo(() => {
         const wp = shelfLocalToWorld(shelf, u.loc.x, u.loc.y);
         unitWorldX = wp.worldX;
         unitWorldY = wp.worldY;
+      }
+    } else if (u.loc.kind === "rack") {
+      const rack = layout.racks.find((rr) => rr.id === u.loc.rackId);
+      if (rack) {
+        const slot = u.loc.slot ?? 0;
+        const row = Math.floor(slot / rack.cols);
+        const col = slot % rack.cols;
+        const slotW = rack.w / rack.cols;
+        const slotH = rack.h / rack.rows;
+        unitWorldX = rack.x + col * slotW;
+        unitWorldY = rack.y + row * slotH;
       }
     }
     const offsetCx = cx - unitWorldX;
@@ -2783,8 +2821,8 @@ const allClientNames = useMemo(() => {
       return;
     }
 
-    const dx = Math.round((e.clientX - drag.startX) / zoom / cellPx);
-    const dy = Math.round((e.clientY - drag.startY) / zoom / cellPx);
+    const dx = Math.round((e.clientX - drag.startX) / zoom / cellPx * 10) / 10;
+    const dy = Math.round((e.clientY - drag.startY) / zoom / cellPx * 10) / 10;
 
     if (drag.type === "move_unit") {
       // ドラッグ中はワールド座標で位置を更新（床・棚間の移動に対応）
@@ -2793,8 +2831,8 @@ const allClientNames = useMemo(() => {
     }
 
     if (drag.type === "resize_unit") {
-      const newW = Math.max(1, drag.baseSize.w + dx);
-      const newH = Math.max(1, drag.baseSize.h + dy);
+      const newW = Math.max(1, Math.round(drag.baseSize.w + dx));
+      const newH = Math.max(1, Math.round(drag.baseSize.h + dy));
       const newWm = +(newW * (layout.floor.cell_m_w || 1.2)).toFixed(2);
       const newDm = +(newH * (layout.floor.cell_m_d || 1.0)).toFixed(2);
       setUnits((prev) =>
@@ -2810,8 +2848,8 @@ const allClientNames = useMemo(() => {
         ...prev,
         floor: {
           ...prev.floor,
-          x: drag.baseRect.x + dx,
-          y: drag.baseRect.y + dy,
+          x: +(drag.baseRect.x + dx).toFixed(1),
+          y: +(drag.baseRect.y + dy).toFixed(1),
         },
       }));
       return;
@@ -2834,15 +2872,15 @@ const allClientNames = useMemo(() => {
           let newW = drag.baseRect.w;
           let newH = drag.baseRect.h;
 
-          if (corner.includes("e")) newW = Math.max(2, drag.baseRect.w + dx);
+          if (corner.includes("e")) newW = Math.max(0.1, +(drag.baseRect.w + dx).toFixed(1));
           if (corner.includes("w")) {
-            newW = Math.max(2, drag.baseRect.w - dx);
-            newX = drag.baseRect.x + drag.baseRect.w - newW;
+            newW = Math.max(0.1, +(drag.baseRect.w - dx).toFixed(1));
+            newX = +(drag.baseRect.x + drag.baseRect.w - newW).toFixed(1);
           }
-          if (corner.includes("s")) newH = Math.max(2, drag.baseRect.h + dy);
+          if (corner.includes("s")) newH = Math.max(0.1, +(drag.baseRect.h + dy).toFixed(1));
           if (corner.includes("n")) {
-            newH = Math.max(2, drag.baseRect.h - dy);
-            newY = drag.baseRect.y + drag.baseRect.h - newH;
+            newH = Math.max(0.1, +(drag.baseRect.h - dy).toFixed(1));
+            newY = +(drag.baseRect.y + drag.baseRect.h - newH).toFixed(1);
           }
 
           return { ...z, x: newX, y: newY, w: newW, h: newH };
@@ -2859,8 +2897,8 @@ const allClientNames = useMemo(() => {
           if (drag.type === "move_rack") {
             return {
               ...r,
-              x: drag.baseRect.x + dx,
-              y: drag.baseRect.y + dy,
+              x: +(drag.baseRect.x + dx).toFixed(1),
+              y: +(drag.baseRect.y + dy).toFixed(1),
             };
           }
           // 4隅リサイズ対応
@@ -2870,15 +2908,15 @@ const allClientNames = useMemo(() => {
           let newW = drag.baseRect.w;
           let newH = drag.baseRect.h;
 
-          if (corner.includes("e")) newW = Math.max(4, drag.baseRect.w + dx);
+          if (corner.includes("e")) newW = Math.max(0.1, +(drag.baseRect.w + dx).toFixed(1));
           if (corner.includes("w")) {
-            newW = Math.max(4, drag.baseRect.w - dx);
-            newX = drag.baseRect.x + drag.baseRect.w - newW;
+            newW = Math.max(0.1, +(drag.baseRect.w - dx).toFixed(1));
+            newX = +(drag.baseRect.x + drag.baseRect.w - newW).toFixed(1);
           }
-          if (corner.includes("s")) newH = Math.max(3, drag.baseRect.h + dy);
+          if (corner.includes("s")) newH = Math.max(0.1, +(drag.baseRect.h + dy).toFixed(1));
           if (corner.includes("n")) {
-            newH = Math.max(3, drag.baseRect.h - dy);
-            newY = drag.baseRect.y + drag.baseRect.h - newH;
+            newH = Math.max(0.1, +(drag.baseRect.h - dy).toFixed(1));
+            newY = +(drag.baseRect.y + drag.baseRect.h - newH).toFixed(1);
           }
 
           return { ...r, x: newX, y: newY, w: newW, h: newH };
@@ -2895,8 +2933,8 @@ const allClientNames = useMemo(() => {
           if (drag.type === "move_shelf") {
             return {
               ...s,
-              x: drag.baseRect.x + dx,
-              y: drag.baseRect.y + dy,
+              x: +(drag.baseRect.x + dx).toFixed(1),
+              y: +(drag.baseRect.y + dy).toFixed(1),
             };
           }
           // 4隅リサイズ対応
@@ -2906,15 +2944,15 @@ const allClientNames = useMemo(() => {
           let newW = drag.baseRect.w;
           let newH = drag.baseRect.h;
 
-          if (corner.includes("e")) newW = Math.max(2, drag.baseRect.w + dx);
+          if (corner.includes("e")) newW = Math.max(0.1, +(drag.baseRect.w + dx).toFixed(1));
           if (corner.includes("w")) {
-            newW = Math.max(2, drag.baseRect.w - dx);
-            newX = drag.baseRect.x + drag.baseRect.w - newW;
+            newW = Math.max(0.1, +(drag.baseRect.w - dx).toFixed(1));
+            newX = +(drag.baseRect.x + drag.baseRect.w - newW).toFixed(1);
           }
-          if (corner.includes("s")) newH = Math.max(2, drag.baseRect.h + dy);
+          if (corner.includes("s")) newH = Math.max(0.1, +(drag.baseRect.h + dy).toFixed(1));
           if (corner.includes("n")) {
-            newH = Math.max(2, drag.baseRect.h - dy);
-            newY = drag.baseRect.y + drag.baseRect.h - newH;
+            newH = Math.max(0.1, +(drag.baseRect.h - dy).toFixed(1));
+            newY = +(drag.baseRect.y + drag.baseRect.h - newH).toFixed(1);
           }
 
           const autoArea = newW * prev.floor.cell_m_w * newH * prev.floor.cell_m_d;
@@ -2949,15 +2987,15 @@ const allClientNames = useMemo(() => {
           let newW = drag.baseRect.w;
           let newH = drag.baseRect.h;
 
-          if (corner.includes("e")) newW = Math.max(1, drag.baseRect.w + dx);
+          if (corner.includes("e")) newW = Math.max(0.1, +(drag.baseRect.w + dx).toFixed(1));
           if (corner.includes("w")) {
-            newW = Math.max(1, drag.baseRect.w - dx);
-            newX = drag.baseRect.x + drag.baseRect.w - newW;
+            newW = Math.max(0.1, +(drag.baseRect.w - dx).toFixed(1));
+            newX = +(drag.baseRect.x + drag.baseRect.w - newW).toFixed(1);
           }
-          if (corner.includes("s")) newH = Math.max(1, drag.baseRect.h + dy);
+          if (corner.includes("s")) newH = Math.max(0.1, +(drag.baseRect.h + dy).toFixed(1));
           if (corner.includes("n")) {
-            newH = Math.max(1, drag.baseRect.h - dy);
-            newY = drag.baseRect.y + drag.baseRect.h - newH;
+            newH = Math.max(0.1, +(drag.baseRect.h - dy).toFixed(1));
+            newY = +(drag.baseRect.y + drag.baseRect.h - newH).toFixed(1);
           }
 
           // Clamp resize within floor bounds
@@ -3156,6 +3194,7 @@ const allClientNames = useMemo(() => {
       const slot = findRackSlotAtCell(cx, cy);
       if (slot && isRackSlotFree(slot.rackId, slot.slot, origId)) {
         commitPlacement({ kind: "rack", rackId: slot.rackId, slot: slot.slot });
+        setMultiSelected([]);
         setDrag(null);
         return;
       }
@@ -3235,6 +3274,24 @@ const allClientNames = useMemo(() => {
       // Apply grab offset so the unit's top-left aligns consistently with visual position
       const dropX = cx - (drag.offsetCx || 0);
       const dropY = cy - (drag.offsetCy || 0);
+
+      // Check if dropped on a rack slot
+      const rackSlot = findRackSlotAtCell(cx, cy);
+      if (rackSlot) {
+        if (isRackSlotFree(rackSlot.rackId, rackSlot.slot, u.id)) {
+          setUnits((prev) => prev.map((x) =>
+            x.id === u.id ? { ...x, loc: { kind: "rack", rackId: rackSlot.rackId, slot: rackSlot.slot }, status: autoPromoteStatus(x) } : x
+          ));
+          setSelected({ kind: "unit", id: u.id });
+          setMultiSelected([]);
+          setDrag(null);
+          return;
+        } else {
+          showToast("このスロットは既に使用されています");
+          setDrag(null);
+          return;
+        }
+      }
 
       // Check if dropped on a shelf (detect at pointer position)
       const shelf = findShelfAtCell(cx, cy);
@@ -5742,9 +5799,11 @@ ${cs.units.length > 0 ? `
                       zIndex: isSel && drag?.type === "group_move" ? 50 : 4,
                       transform: isSel && groupMoveTransform ? groupMoveTransform : undefined,
                       transition: drag?.type === "group_move" ? "none" : undefined,
+                      userSelect: "none",
                     }}
                     onMouseDown={(e) => mode === "layout" && beginMoveRack(e, r.id)}
                     onClick={(e) => handleItemClick(e, "rack", r.id)}
+                    onDoubleClick={(e) => { e.stopPropagation(); openRackDetailModal(r); }}
                   >
                     {/* Rack label - watermark style */}
                     <div
@@ -5792,10 +5851,14 @@ ${cs.units.length > 0 ? `
                                 ? "0 2px 4px rgba(0,0,0,0.06), inset 0 1px 0 rgba(255,255,255,0.8)"
                                 : "inset 0 1px 2px rgba(0,0,0,0.04)",
                             }}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onClick={(e) => e.stopPropagation()}
                           >
                             {occupant ? (
                               <div
                                 className="h-full w-full rounded-lg p-1 text-[10px] cursor-pointer transition-shadow hover:shadow-md"
+                                draggable={false}
+                                onDragStart={(e) => e.preventDefault()}
                                 onMouseDown={(e) => beginMoveUnit(e, occupant.id)}
                                 onClick={(e) => handleItemClick(e, "unit", occupant.id)}
                                 onDoubleClick={(e) => {
@@ -6323,6 +6386,31 @@ ${cs.units.length > 0 ? `
                 const fp = unitFootprintCells(u);
                 const dropX = cx - (drag.offsetCx || 0);
                 const dropY = cy - (drag.offsetCy || 0);
+
+                // Check if pointer is over a rack slot
+                const rackSlot = findRackSlotAtCell(cx, cy);
+                if (rackSlot) {
+                  const rack = layout.racks.find((rr) => rr.id === rackSlot.rackId);
+                  if (rack) {
+                    const slotW = rack.w / rack.cols;
+                    const slotH = rack.h / rack.rows;
+                    const free = isRackSlotFree(rackSlot.rackId, rackSlot.slot, u.id);
+                    return (
+                      <div
+                        className="absolute pointer-events-none rounded-lg"
+                        style={{
+                          left: (rack.x + rackSlot.col * slotW) * cellPx,
+                          top: (rack.y + rackSlot.row * slotH) * cellPx,
+                          width: slotW * cellPx,
+                          height: slotH * cellPx,
+                          border: `3px dashed ${free ? "#3b82f6" : "#ef4444"}`,
+                          backgroundColor: free ? "rgba(59, 130, 246, 0.15)" : "rgba(239, 68, 68, 0.15)",
+                          zIndex: 50,
+                        }}
+                      />
+                    );
+                  }
+                }
 
                 // Check if pointer is over a shelf
                 const shelf = findShelfAtCell(cx, cy);
@@ -7114,9 +7202,15 @@ ${cs.units.length > 0 ? `
                           <div className="text-xs text-gray-500">幅(W)</div>
                           <input
                             className="mt-1 w-full rounded-xl border px-2 py-1 text-sm"
+                            type="number"
+                            step="0.1"
+                            min="0.1"
                             value={selectedEntity.w}
                             onChange={(e) => {
-                              const v = clamp(Number(e.target.value) || 1, 1, layout.floor.cols);
+                              if (e.target.value === "") return;
+                              const raw = Number(e.target.value);
+                              if (!Number.isFinite(raw)) return;
+                              const v = clamp(Math.round(raw * 10) / 10, 0.1, layout.floor.cols);
                               if (selected.kind === "zone")
                                 setLayout((p) => ({
                                   ...p,
@@ -7137,16 +7231,22 @@ ${cs.units.length > 0 ? `
                               if (selected.kind === "panel")
                                 setPanels((p) => p.map((pn) => (pn.id === selected.id ? { ...pn, w: v } : pn)));
                             }}
-                            inputMode="numeric"
+                            inputMode="decimal"
                           />
                         </div>
                         <div>
                           <div className="text-xs text-gray-500">高さ(H)</div>
                           <input
                             className="mt-1 w-full rounded-xl border px-2 py-1 text-sm"
+                            type="number"
+                            step="0.1"
+                            min="0.1"
                             value={selectedEntity.h}
                             onChange={(e) => {
-                              const v = clamp(Number(e.target.value) || 1, 1, layout.floor.rows);
+                              if (e.target.value === "") return;
+                              const raw = Number(e.target.value);
+                              if (!Number.isFinite(raw)) return;
+                              const v = clamp(Math.round(raw * 10) / 10, 0.1, layout.floor.rows);
                               if (selected.kind === "zone")
                                 setLayout((p) => ({
                                   ...p,
@@ -7167,7 +7267,7 @@ ${cs.units.length > 0 ? `
                               if (selected.kind === "panel")
                                 setPanels((p) => p.map((pn) => (pn.id === selected.id ? { ...pn, h: v } : pn)));
                             }}
-                            inputMode="numeric"
+                            inputMode="decimal"
                           />
                         </div>
                       </div>
@@ -9565,6 +9665,308 @@ ${cs.units.length > 0 ? `
               <div className="border-t px-5 py-3 text-xs text-gray-500 flex justify-between">
                 <span>ドラッグで移動 / ダブルクリックで詳細</span>
                 <span>{zoneUnits.length} 個の荷物</span>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ラック拡大モーダル */}
+      {rackDetailOpen && rackDetailRack && (() => {
+        const r = layout.racks.find((rr) => rr.id === rackDetailRack.id) || rackDetailRack;
+        const rows = Math.max(1, r.rows || 1);
+        const cols = Math.max(1, r.cols || 1);
+        const totalSlots = rows * cols;
+
+        // このラックに入っている荷物
+        const rackUnits = units
+          .filter((u) => u.loc?.kind === "rack" && u.loc.rackId === r.id)
+          .map((u) => {
+            const slot = u.loc.slot ?? 0;
+            const row = Math.floor(slot / cols);
+            const col = slot % cols;
+            return { ...u, _slot: slot, _row: row, _col: col };
+          });
+
+        // モーダルサイズを動的スケール
+        const maxModalW = Math.min(window.innerWidth - 80, 1200);
+        const maxModalH = Math.min(window.innerHeight - 200, 700);
+        const slotSize = Math.min(
+          Math.floor(maxModalW / cols),
+          Math.floor(maxModalH / rows),
+          160
+        );
+        const gridW = cols * slotSize;
+        const gridH = rows * slotSize;
+
+        // 3Dビュー用アイテム
+        const isoMath = rackDetail3D ? getIsoMath(cols, rows, rackDetailRotStep) : null;
+        const isoViewItems = rackUnits.map((u) => ({
+          ...u,
+          gx: u._col,
+          gy: u._row,
+          fw: 1,
+          fh: 1,
+          zOff: 0,
+          h: u.h_m || 1,
+        }));
+
+        // ドラッグ先スロット計算
+        const calcDragTargetSlot = (d) => {
+          if (rackDetail3D && isoMath) {
+            const { tileW, tileH, invRotDelta } = isoMath;
+            const zm = rackDetailZoom;
+            const dsx = (d.pointerX - d.startX) / zm;
+            const dsy = (d.pointerY - d.startY) / zm;
+            const drgx = dsx / tileW + dsy / tileH;
+            const drgy = dsy / tileH - dsx / tileW;
+            const { dgx, dgy } = invRotDelta(drgx, drgy);
+            const newCol = clamp(Math.round(d.baseCol + dgx), 0, cols - 1);
+            const newRow = clamp(Math.round(d.baseRow + dgy), 0, rows - 1);
+            return newRow * cols + newCol;
+          }
+          const dx = d.pointerX - d.startX;
+          const dy = d.pointerY - d.startY;
+          const newCol = clamp(Math.round(d.baseCol + dx / slotSize), 0, cols - 1);
+          const newRow = clamp(Math.round(d.baseRow + dy / slotSize), 0, rows - 1);
+          return newRow * cols + newCol;
+        };
+
+        const ghostSlot = rackDetailDrag ? calcDragTargetSlot(rackDetailDrag) : null;
+        const draggingId = rackDetailDrag?.unitId;
+        const hasDragMoved = rackDetailDrag && (rackDetailDrag.pointerX !== rackDetailDrag.startX || rackDetailDrag.pointerY !== rackDetailDrag.startY);
+
+        // ドロップ処理: 空スロット→移動、占有スロット→入れ替え
+        const handleDrop = () => {
+          if (!rackDetailDrag) return;
+          if (!requireAuth()) { setRackDetailDrag(null); return; }
+          const targetSlot = calcDragTargetSlot(rackDetailDrag);
+          const u = units.find((uu) => uu.id === rackDetailDrag.unitId);
+          if (u && targetSlot !== u.loc.slot) {
+            const occupant = units.find(
+              (uu) => uu.id !== u.id && uu.loc?.kind === "rack" && uu.loc.rackId === r.id && uu.loc.slot === targetSlot
+            );
+            setUnits((prev) => prev.map((uu) => {
+              if (uu.id === u.id) return { ...uu, loc: { ...uu.loc, slot: targetSlot } };
+              if (occupant && uu.id === occupant.id) return { ...uu, loc: { ...uu.loc, slot: u.loc.slot } };
+              return uu;
+            }));
+          }
+          setRackDetailDrag(null);
+        };
+
+        // ドラッグ開始ヘルパー
+        const startDragUnit = (e, u) => {
+          e.stopPropagation();
+          e.preventDefault();
+          const ru = rackUnits.find((uu) => uu.id === u.id);
+          if (!ru) return;
+          setRackDetailDrag({
+            unitId: u.id,
+            startX: e.clientX,
+            startY: e.clientY,
+            pointerX: e.clientX,
+            pointerY: e.clientY,
+            baseCol: ru._col,
+            baseRow: ru._row,
+          });
+        };
+
+        const bgRgb = hexToRgb(r.bgColor || "#f1f5f9");
+        const bgOpacity = (r.bgOpacity ?? 95) / 100;
+
+        return (
+          <div
+            style={{
+              position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+              zIndex: 99998,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              backgroundColor: "rgba(0, 0, 0, 0.6)",
+            }}
+            onClick={(e) => { if (e.target === e.currentTarget) closeRackDetailModal(); }}
+            onMouseMove={(e) => {
+              if (!rackDetailDrag) return;
+              setRackDetailDrag((prev) => prev ? { ...prev, pointerX: e.clientX, pointerY: e.clientY } : null);
+            }}
+            onMouseUp={handleDrop}
+          >
+            <div
+              style={{
+                background: "white",
+                borderRadius: 16,
+                boxShadow: "0 25px 50px -12px rgba(0,0,0,0.25)",
+                maxWidth: maxModalW + 48,
+                maxHeight: window.innerHeight - 40,
+                overflow: "auto",
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* ヘッダー */}
+              <div className="flex items-center justify-between border-b px-5 py-4 gap-3">
+                <div className="text-lg font-semibold flex-1 min-w-0">
+                  {r.name || "ラック"} — {cols}×{rows} スロット ({rackUnits.length}/{totalSlots})
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <button
+                    className={"rounded-xl border px-3 py-1.5 text-sm " + (rackDetail3D ? "bg-indigo-500 text-white border-indigo-500" : "hover:bg-gray-50")}
+                    onClick={() => setRackDetail3D((v) => !v)}
+                  >
+                    {rackDetail3D ? "2D" : "3D"}
+                  </button>
+                  {rackDetail3D && (
+                    <button
+                      className="rounded-xl border px-3 py-1.5 text-sm hover:bg-gray-50"
+                      onClick={() => setRackDetailRotStep((s) => (s + 1) % 4)}
+                      title="90°回転"
+                    >
+                      ⟳
+                    </button>
+                  )}
+                  <button
+                    className="rounded-xl border px-3 py-1.5 text-sm hover:bg-gray-50"
+                    onClick={closeRackDetailModal}
+                  >
+                    閉じる
+                  </button>
+                </div>
+              </div>
+
+              {/* === 2Dスロットビュー === */}
+              {!rackDetail3D && (
+                <div className="px-5 py-4 flex justify-center">
+                  <div
+                    style={{
+                      position: "relative",
+                      width: gridW,
+                      height: gridH,
+                      backgroundColor: `rgba(${bgRgb.join(",")}, ${bgOpacity})`,
+                      borderRadius: 12,
+                      border: `2px solid ${r.bgColor || "#94a3b8"}`,
+                      userSelect: "none",
+                      padding: 0,
+                    }}
+                  >
+                    {/* スロット格子 */}
+                    {Array.from({ length: totalSlots }).map((_, i) => {
+                      const row = Math.floor(i / cols);
+                      const col = i % cols;
+                      const occupant = rackUnits.find((u) => u._slot === i);
+                      const isDragSrc = occupant && occupant.id === draggingId && hasDragMoved;
+                      const isDragTarget = hasDragMoved && ghostSlot === i;
+                      return (
+                        <div
+                          key={i}
+                          style={{
+                            position: "absolute",
+                            left: col * slotSize + 4,
+                            top: row * slotSize + 4,
+                            width: slotSize - 8,
+                            height: slotSize - 8,
+                            background: occupant
+                              ? "linear-gradient(145deg, #ffffff 0%, #f8fafc 100%)"
+                              : "rgba(255,255,255,0.5)",
+                            border: isDragTarget
+                              ? "3px dashed #3b82f6"
+                              : occupant ? "2px solid #cbd5e1" : "2px dashed rgba(148,163,184,0.4)",
+                            borderRadius: 10,
+                            boxShadow: occupant
+                              ? "0 2px 6px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.8)"
+                              : "inset 0 1px 3px rgba(0,0,0,0.04)",
+                            opacity: isDragSrc ? 0.4 : 1,
+                            overflow: "hidden",
+                            transition: isDragSrc ? "none" : "all 0.15s",
+                          }}
+                        >
+                          {occupant ? (
+                            <div
+                              className="h-full w-full flex flex-col cursor-grab"
+                              style={{ padding: 6 }}
+                              onMouseDown={(e) => startDragUnit(e, occupant)}
+                              onDoubleClick={(e) => { e.stopPropagation(); openDetailModal(occupant); }}
+                            >
+                              {/* 画像サムネイル */}
+                              {(occupant.images || []).length > 0 && (
+                                <div style={{ width: "100%", height: slotSize * 0.45, marginBottom: 4, borderRadius: 6, overflow: "hidden", background: "#f1f5f9" }}>
+                                  <img
+                                    src={occupant.images[0].fileId
+                                      ? `https://drive.google.com/thumbnail?id=${occupant.images[0].fileId}&sz=w200`
+                                      : occupant.images[0].url}
+                                    alt=""
+                                    style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                                  />
+                                </div>
+                              )}
+                              <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 2 }}>
+                                <span style={{ fontSize: 10, fontWeight: 700, color: "#334155" }}>{occupant.kind}</span>
+                                <span
+                                  className="inline-block rounded-full px-1.5"
+                                  style={{
+                                    fontSize: 9,
+                                    background: getStatusColor(occupant.status),
+                                    color: "#fff",
+                                  }}
+                                >
+                                  {getStatusLabel(occupant.status)}
+                                </span>
+                              </div>
+                              <div style={{ fontSize: 11, fontWeight: 600, color: "#0f172a", lineHeight: 1.2, wordBreak: "break-all", maxHeight: "2.4em", overflow: "hidden" }}>
+                                {occupant.name || occupant.client}
+                              </div>
+                              {occupant.client && occupant.name && (
+                                <div style={{ fontSize: 10, color: "#64748b", marginTop: 1, wordBreak: "break-all", maxHeight: "1.2em", overflow: "hidden" }}>
+                                  {occupant.client}
+                                </div>
+                              )}
+                              {occupant.sku && (
+                                <div style={{ fontSize: 9, color: "#94a3b8", marginTop: 1, wordBreak: "break-all" }}>
+                                  {occupant.sku}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="h-full w-full flex items-center justify-center" style={{ fontSize: 12, color: "#94a3b8" }}>
+                              #{i + 1}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* === 3Dアイソメトリックビュー === */}
+              {rackDetail3D && isoMath && (() => {
+                const isoGhost = (hasDragMoved && ghostSlot != null) ? (() => {
+                  const u = units.find((uu) => uu.id === draggingId);
+                  if (!u) return null;
+                  const gRow = Math.floor(ghostSlot / cols);
+                  const gCol = ghostSlot % cols;
+                  const { rx, ry, rw, rh } = isoMath.rotateRect(gCol, gRow, 1, 1);
+                  return { gx: rx, gy: ry, fw: rw, fh: rh, ok: true, h: u.h_m || 1 };
+                })() : null;
+
+                return (
+                  <div className="px-5 py-4 flex justify-center">
+                    <Iso3DView
+                      viewCols={cols} viewRows={rows}
+                      viewBgColor={r.bgColor || "#f1f5f9"}
+                      viewItems={isoViewItems}
+                      rotStep={rackDetailRotStep} zoom={rackDetailZoom} onZoomChange={setRackDetailZoom}
+                      blinkingUnitIds={blinkingUnitIds} maxHeight="60vh"
+                      onUnitMouseDown={(e, u) => startDragUnit(e, u)}
+                      onUnitDoubleClick={(e, u) => openDetailModal(u)}
+                      draggingId={draggingId} hasDragMoved={hasDragMoved}
+                      ghostBox={isoGhost}
+                    />
+                  </div>
+                );
+              })()}
+
+              {/* フッター情報 */}
+              <div className="border-t px-5 py-3 text-xs text-gray-500 flex justify-between">
+                <span>ドラッグで移動 / ダブルクリックで詳細 / スロット同士は入れ替え</span>
+                <span>{rackUnits.length}/{totalSlots} スロット占有</span>
               </div>
             </div>
           </div>
