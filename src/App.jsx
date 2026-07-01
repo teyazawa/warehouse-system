@@ -1544,6 +1544,83 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
     _setPricingRaw(...args);
   }, [isLoggedIn, _setPricingRaw]);
 
+  // ========== Undo/Redo (layout + units + panels の履歴 上限50) ==========
+  const HISTORY_LIMIT = 50;
+  const [historyPast, setHistoryPast] = useState([]);
+  const [historyFuture, setHistoryFuture] = useState([]);
+  const layoutRef = useRef(layout);
+  const panelsRef = useRef(panels);
+  useEffect(() => { layoutRef.current = layout; }, [layout]);
+  useEffect(() => { panelsRef.current = panels; }, [panels]);
+  // unitsRef は下で既に定義済み
+
+  const pushHistory = useCallback(() => {
+    if (!isLoggedIn) return;
+    const snap = {
+      layout: layoutRef.current,
+      units: unitsRef.current,
+      panels: panelsRef.current,
+    };
+    setHistoryPast((prev) => {
+      const next = [...prev, snap];
+      return next.length > HISTORY_LIMIT ? next.slice(next.length - HISTORY_LIMIT) : next;
+    });
+    setHistoryFuture((prev) => (prev.length === 0 ? prev : []));
+  }, [isLoggedIn]);
+
+  const undo = useCallback(() => {
+    if (historyPast.length === 0) return;
+    const target = historyPast[historyPast.length - 1];
+    const currentSnap = {
+      layout: layoutRef.current,
+      units: unitsRef.current,
+      panels: panelsRef.current,
+    };
+    const nextFuture = [...historyFuture, currentSnap];
+    setHistoryPast(historyPast.slice(0, -1));
+    setHistoryFuture(nextFuture.length > HISTORY_LIMIT ? nextFuture.slice(nextFuture.length - HISTORY_LIMIT) : nextFuture);
+    _setLayoutRaw(target.layout);
+    _setUnitsRaw(target.units);
+    _setPanelsRaw(target.panels);
+  }, [historyPast, historyFuture, _setLayoutRaw, _setUnitsRaw, _setPanelsRaw]);
+
+  const redo = useCallback(() => {
+    if (historyFuture.length === 0) return;
+    const target = historyFuture[historyFuture.length - 1];
+    const currentSnap = {
+      layout: layoutRef.current,
+      units: unitsRef.current,
+      panels: panelsRef.current,
+    };
+    const nextPast = [...historyPast, currentSnap];
+    setHistoryFuture(historyFuture.slice(0, -1));
+    setHistoryPast(nextPast.length > HISTORY_LIMIT ? nextPast.slice(nextPast.length - HISTORY_LIMIT) : nextPast);
+    _setLayoutRaw(target.layout);
+    _setUnitsRaw(target.units);
+    _setPanelsRaw(target.panels);
+  }, [historyPast, historyFuture, _setLayoutRaw, _setUnitsRaw, _setPanelsRaw]);
+
+  // Ctrl+Z / Ctrl+Y (Ctrl+Shift+Z) キーボードショートカット
+  useEffect(() => {
+    const onKey = (e) => {
+      // input/textarea 内では発火させない
+      const tag = e.target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || e.target?.isContentEditable) return;
+      const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0;
+      const mod = isMac ? e.metaKey : e.ctrlKey;
+      if (!mod) return;
+      if (e.key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+      } else if ((e.key === "z" && e.shiftKey) || e.key === "y") {
+        e.preventDefault();
+        redo();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undo, redo]);
+
   // マイグレーション: layout.panelsが存在する場合、新stateに移行（rawセッター使用）
   useEffect(() => {
     if (layout.panels && layout.panels.length > 0) {
@@ -2464,6 +2541,7 @@ const allClientNames = useMemo(() => {
     e.preventDefault();
     const u = units.find((x) => x.id === unitId);
     if (!u) return;
+    pushHistory();
 
     // ラック内の荷物ドラッグは常に単体移動（group_moveへの誤爆を防ぐ）
     const isInRack = u.loc?.kind === "rack";
@@ -2524,6 +2602,7 @@ const allClientNames = useMemo(() => {
 
   function beginMoveFloor(e) {
     e.stopPropagation();
+    pushHistory();
     setSelected({ kind: "floor" });
     setDrag({
       type: "move_floor",
@@ -2537,6 +2616,7 @@ const allClientNames = useMemo(() => {
     e.stopPropagation();
     const z = layout.zones.find((x) => x.id === id);
     if (!z) return;
+    pushHistory();
     if (selectionSet.length > 1 && isItemSelected("zone", id)) {
       setDrag({ type: "group_move", startX: e.clientX, startY: e.clientY, pointerX: e.clientX, pointerY: e.clientY });
       return;
@@ -2564,6 +2644,7 @@ const allClientNames = useMemo(() => {
     e.stopPropagation();
     const z = layout.zones.find((x) => x.id === id);
     if (!z) return;
+    pushHistory();
     setSelected({ kind: "zone", id });
     setDrag({ type: "resize_zone", id, corner, startX: e.clientX, startY: e.clientY, baseRect: { ...z } });
   }
@@ -2572,6 +2653,7 @@ const allClientNames = useMemo(() => {
     e.stopPropagation();
     const r = layout.racks.find((x) => x.id === id);
     if (!r) return;
+    pushHistory();
     if (selectionSet.length > 1 && isItemSelected("rack", id)) {
       setDrag({ type: "group_move", startX: e.clientX, startY: e.clientY, pointerX: e.clientX, pointerY: e.clientY });
       return;
@@ -2585,6 +2667,7 @@ const allClientNames = useMemo(() => {
     e.stopPropagation();
     const r = layout.racks.find((x) => x.id === id);
     if (!r) return;
+    pushHistory();
     setSelected({ kind: "rack", id });
     setDrag({ type: "resize_rack", id, corner, startX: e.clientX, startY: e.clientY, baseRect: { ...r } });
   }
@@ -2593,6 +2676,7 @@ const allClientNames = useMemo(() => {
     e.stopPropagation();
     const s = (layout.shelves || []).find((x) => x.id === id);
     if (!s) return;
+    pushHistory();
     if (selectionSet.length > 1 && isItemSelected("shelf", id)) {
       setDrag({ type: "group_move", startX: e.clientX, startY: e.clientY, pointerX: e.clientX, pointerY: e.clientY });
       return;
@@ -2606,6 +2690,7 @@ const allClientNames = useMemo(() => {
     e.stopPropagation();
     const s = (layout.shelves || []).find((x) => x.id === id);
     if (!s) return;
+    pushHistory();
     setSelected({ kind: "shelf", id });
     setDrag({ type: "resize_shelf", id, corner, startX: e.clientX, startY: e.clientY, baseRect: { ...s } });
   }
@@ -2614,6 +2699,7 @@ const allClientNames = useMemo(() => {
     e.stopPropagation();
     const p = panels.find((x) => x.id === id);
     if (!p) return;
+    pushHistory();
     if (selectionSet.length > 1 && isItemSelected("panel", id)) {
       setDrag({ type: "group_move", startX: e.clientX, startY: e.clientY, pointerX: e.clientX, pointerY: e.clientY });
       return;
@@ -2642,12 +2728,14 @@ const allClientNames = useMemo(() => {
     e.stopPropagation();
     const p = panels.find((x) => x.id === id);
     if (!p) return;
+    pushHistory();
     setSelected({ kind: "panel", id });
     setDrag({ type: "resize_panel", id, corner, startX: e.clientX, startY: e.clientY, baseRect: { ...p } });
   }
 
   function beginResizeFloor(e, corner) {
     e.stopPropagation();
+    pushHistory();
     setDrag({
       type: "resize_floor",
       corner,
@@ -2768,6 +2856,7 @@ const allClientNames = useMemo(() => {
 
   function beginPlaceNew(e, draftUnit) {
     e.stopPropagation();
+    pushHistory();
     clearSelection();
     setDrag({
       type: "place_new",
@@ -2783,6 +2872,7 @@ const allClientNames = useMemo(() => {
     e.stopPropagation();
     const u = units.find((x) => x.id === unitId);
     if (!u) return;
+    pushHistory();
     setSelected({ kind: "unit", id: unitId });
     const fp = unitFootprintCells(u);
     setDrag({
@@ -3841,6 +3931,7 @@ ${cs.units.length > 0 ? `
   }
 
   function addZone() {
+    pushHistory();
     const defaultBgColors = ["#d1fae5", "#fef3c7", "#cffafe", "#fce7f3", "#ede9fe", "#ecfccb", "#dbeafe", "#fee2e2"];
     const bgColor = defaultBgColors[layout.zones.length % defaultBgColors.length];
     const zfx = layout.floor.x || 0;
@@ -3882,6 +3973,7 @@ ${cs.units.length > 0 ? `
   }
 
   function addRack() {
+    pushHistory();
     const defaultBgColors = ["#f1f5f9", "#e2e8f0", "#f5f5f4", "#fef3c7", "#ecfccb", "#cffafe"];
     const bgColor = defaultBgColors[layout.racks.length % defaultBgColors.length];
     const rfx = layout.floor.x || 0;
@@ -3896,6 +3988,7 @@ ${cs.units.length > 0 ? `
   }
 
   function addShelf() {
+    pushHistory();
     const colors = Object.keys(SHELF_COLORS);
     const shelvesLen = (layout.shelves || []).length;
     const nextColor = colors[shelvesLen % colors.length];
@@ -3928,6 +4021,7 @@ ${cs.units.length > 0 ? `
   }
 
   function addPanel() {
+    pushHistory();
     const panelW = 2, panelH = 2;
     const fx = layout.floor.x || 0;
     const fy = layout.floor.y || 0;
@@ -3961,6 +4055,7 @@ ${cs.units.length > 0 ? `
   function removeSelected() {
     const items = selectionSet;
     if (items.length === 0) return;
+    pushHistory();
 
     const unitIds = new Set(items.filter((s) => s.kind === "unit").map((s) => s.id));
     const zoneIds = new Set(items.filter((s) => s.kind === "zone").map((s) => s.id));
@@ -4276,6 +4371,7 @@ ${cs.units.length > 0 ? `
       // ========== 画像 ==========
       images: [],
     };
+    pushHistory();
     setUnits((prev) => [u, ...prev]);
     setSelected({ kind: "unit", id: u.id });
     setCreateModalOpen(false);
@@ -6520,6 +6616,28 @@ ${cs.units.length > 0 ? `
             <div className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm">
               <SectionTitle>レイアウト編集</SectionTitle>
 
+              {/* Undo/Redo ボタン */}
+              <div className="mb-3 flex gap-2">
+                <button
+                  type="button"
+                  className="flex-1 rounded-xl border px-3 py-1.5 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-50"
+                  onClick={undo}
+                  disabled={historyPast.length === 0}
+                  title="元に戻す (Ctrl+Z)"
+                >
+                  ↶ 戻す ({historyPast.length})
+                </button>
+                <button
+                  type="button"
+                  className="flex-1 rounded-xl border px-3 py-1.5 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-50"
+                  onClick={redo}
+                  disabled={historyFuture.length === 0}
+                  title="やり直す (Ctrl+Y)"
+                >
+                  ↷ 進む ({historyFuture.length})
+                </button>
+              </div>
+
               <div className="grid grid-cols-3 gap-2">
                 {[
                   { label: "区画", emoji: "\u25A6", color: "#d1fae5", textColor: "#065f46", onClick: addZone },
@@ -7629,6 +7747,7 @@ ${cs.units.length > 0 ? `
                               onClick={(e) => {
                                 e.stopPropagation();
                                 if (!requireAuth()) return;
+                                pushHistory();
                                 setUnits((prev) => prev.filter((x) => x.id !== u.id));
                                 showToast("削除しました");
                               }}
@@ -7883,6 +8002,7 @@ ${cs.units.length > 0 ? `
                         type="button"
                         onClick={() => {
                           if (!requireAuth()) return;
+                          pushHistory();
                           setUnits((prev) => prev.filter((u) => u.id !== selectedEntity.id));
                           clearSelection();
                           showToast("削除しました");
