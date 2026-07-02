@@ -1752,6 +1752,7 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
   const [selected, setSelected] = useState(null); // {kind:'unit'|'zone'|'rack', id}
   const [multiSelected, setMultiSelected] = useState([]); // [{kind, id}, ...]
   const [highlightUnitId, setHighlightUnitId] = useState(null); // 検索からの赤点滅
+  const [contextMenu, setContextMenu] = useState(null); // {x, y, kind, id}
 
   function isItemSelected(kind, id) {
     if (selected?.kind === kind && selected?.id === id) return true;
@@ -1803,6 +1804,142 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
 
   const unitsRef = useRef(units);
   useEffect(() => { unitsRef.current = units; }, [units]);
+
+  // 前面/背面移動: レイヤー分離 (背景層=zone/shelf/rack, 前景層=unit)
+  // 荷物は常に区画より上に表示されるよう、bring-to-front はレイヤー内でのみ最大値を取る
+  const zDefault = { zone: 1, shelf: 2, rack: 4, unit: 0 };
+  const UNIT_BASE_Z = 1000;
+  const isBgKind = (k) => k === "zone" || k === "rack" || k === "shelf";
+  const getObjZ = (kind, id) => {
+    if (kind === "zone") return layoutRef.current.zones.find((z) => z.id === id)?.zOrder ?? zDefault.zone;
+    if (kind === "rack") return layoutRef.current.racks.find((r) => r.id === id)?.zOrder ?? zDefault.rack;
+    if (kind === "shelf") return (layoutRef.current.shelves || []).find((s) => s.id === id)?.zOrder ?? zDefault.shelf;
+    if (kind === "unit") return unitsRef.current.find((u) => u.id === id)?.zOrder ?? zDefault.unit;
+    return 0;
+  };
+  const getLayerZs = (kind) => {
+    if (isBgKind(kind)) return [
+      ...layoutRef.current.zones.map((z) => z.zOrder ?? zDefault.zone),
+      ...layoutRef.current.racks.map((r) => r.zOrder ?? zDefault.rack),
+      ...(layoutRef.current.shelves || []).map((s) => s.zOrder ?? zDefault.shelf),
+    ];
+    if (kind === "unit") return unitsRef.current.map((u) => u.zOrder ?? zDefault.unit);
+    return [];
+  };
+  const setObjZ = (kind, id, zOrder) => {
+    pushHistory();
+    if (kind === "zone") setLayout((p) => ({ ...p, zones: p.zones.map((z) => z.id === id ? { ...z, zOrder } : z) }));
+    else if (kind === "rack") setLayout((p) => ({ ...p, racks: p.racks.map((r) => r.id === id ? { ...r, zOrder } : r) }));
+    else if (kind === "shelf") setLayout((p) => ({ ...p, shelves: (p.shelves || []).map((s) => s.id === id ? { ...s, zOrder } : s) }));
+    else if (kind === "unit") setUnits((prev) => prev.map((u) => u.id === id ? { ...u, zOrder } : u));
+  };
+  const zBringToFront = (kind, id) => { const zs = getLayerZs(kind); setObjZ(kind, id, (zs.length ? Math.max(...zs) : 0) + 1); setContextMenu(null); };
+  const zBringToBack = (kind, id) => { const zs = getLayerZs(kind); setObjZ(kind, id, (zs.length ? Math.min(...zs) : 0) - 1); setContextMenu(null); };
+  const zBringForward = (kind, id) => { setObjZ(kind, id, getObjZ(kind, id) + 1); setContextMenu(null); };
+  const zBringBackward = (kind, id) => { setObjZ(kind, id, getObjZ(kind, id) - 1); setContextMenu(null); };
+
+  const openContextMenu = (e, kind, id) => {
+    if (mode !== "layout") return;
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({ x: e.clientX, y: e.clientY, kind, id });
+  };
+
+  // コンテキストメニュー外クリック / Escape で閉じる
+  useEffect(() => {
+    if (!contextMenu) return;
+    const closeOnClick = () => setContextMenu(null);
+    const closeOnEsc = (e) => { if (e.key === "Escape") setContextMenu(null); };
+    window.addEventListener("mousedown", closeOnClick);
+    window.addEventListener("keydown", closeOnEsc);
+    return () => {
+      window.removeEventListener("mousedown", closeOnClick);
+      window.removeEventListener("keydown", closeOnEsc);
+    };
+  }, [contextMenu]);
+
+  // 矢印キーで選択中オブジェクトを移動（layoutモードのみ、Shift=0.1セル、通常=1セル）
+  useEffect(() => {
+    const onArrow = (e) => {
+      if (mode !== "layout") return;
+      const tag = e.target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || e.target?.isContentEditable) return;
+      const dirs = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+      if (!dirs[e.key]) return;
+      const [dxs, dys] = dirs[e.key];
+      const step = e.shiftKey ? 1 : 0.1;
+      const dx = dxs * step;
+      const dy = dys * step;
+      const targets = selectionSet;
+      if (targets.length === 0) return;
+      e.preventDefault();
+      pushHistory();
+      const zoneTargets = targets.filter((t) => t.kind === "zone");
+      const rackTargets = targets.filter((t) => t.kind === "rack");
+      const shelfTargets = targets.filter((t) => t.kind === "shelf");
+      const unitTargets = targets.filter((t) => t.kind === "unit");
+      const hasFloor = targets.some((t) => t.kind === "floor");
+      const fx1 = (v) => +v.toFixed(1);
+      // 区画内ユニット判定用に事前スナップショット
+      const zonesSnap = zoneTargets.map((zt) => layoutRef.current.zones.find((z) => z.id === zt.id)).filter(Boolean);
+      const zoneUnitMoves = new Set();
+      const fpFor = (u) => {
+        if (u.w_cells != null && u.h_cells != null) {
+          const fw = Math.max(1, u.w_cells);
+          const fd = Math.max(1, u.h_cells);
+          return u.rot ? { w: fd, h: fw } : { w: fw, h: fd };
+        }
+        return { w: 1, h: 1 };
+      };
+      for (const z of zonesSnap) {
+        const isFloorZone = !z.loc || z.loc.kind === "floor";
+        const zx = isFloorZone ? z.x : (z.loc.x || 0);
+        const zy = isFloorZone ? z.y : (z.loc.y || 0);
+        for (const u of unitsRef.current) {
+          if (isFloorZone && u.loc?.kind === "floor") {
+            const fp = fpFor(u);
+            const ux = u.loc.x || 0, uy = u.loc.y || 0;
+            if (ux >= zx && uy >= zy && ux + fp.w <= zx + z.w && uy + fp.h <= zy + z.h) zoneUnitMoves.add(u.id);
+          } else if (!isFloorZone && u.loc?.kind === "shelf" && u.loc.shelfId === z.loc.shelfId) {
+            const fp = fpFor(u);
+            const ux = u.loc.x || 0, uy = u.loc.y || 0;
+            if (ux >= zx && uy >= zy && ux + fp.w <= zx + z.w && uy + fp.h <= zy + z.h) zoneUnitMoves.add(u.id);
+          }
+        }
+      }
+      setLayout((prev) => {
+        let next = prev;
+        if (zoneTargets.length > 0) {
+          next = { ...next, zones: next.zones.map((z) => {
+            if (!zoneTargets.some((t) => t.id === z.id)) return z;
+            if (z.loc?.kind === "shelf") return { ...z, loc: { ...z.loc, x: fx1((z.loc.x || 0) + dx), y: fx1((z.loc.y || 0) + dy) } };
+            return { ...z, x: fx1(z.x + dx), y: fx1(z.y + dy) };
+          }) };
+        }
+        if (rackTargets.length > 0) {
+          next = { ...next, racks: next.racks.map((r) => rackTargets.some((t) => t.id === r.id) ? { ...r, x: fx1(r.x + dx), y: fx1(r.y + dy) } : r) };
+        }
+        if (shelfTargets.length > 0) {
+          next = { ...next, shelves: (next.shelves || []).map((s) => shelfTargets.some((t) => t.id === s.id) ? { ...s, x: fx1(s.x + dx), y: fx1(s.y + dy) } : s) };
+        }
+        if (hasFloor) {
+          next = { ...next, floor: { ...next.floor, x: fx1((next.floor.x || 0) + dx), y: fx1((next.floor.y || 0) + dy) } };
+        }
+        return next;
+      });
+      if (unitTargets.length > 0 || zoneUnitMoves.size > 0) {
+        setUnits((prev) => prev.map((u) => {
+          const isDirect = unitTargets.some((t) => t.id === u.id);
+          const isCascade = zoneUnitMoves.has(u.id) && !isDirect;
+          if (!isDirect && !isCascade) return u;
+          const ux = u.loc.x || 0, uy = u.loc.y || 0;
+          return { ...u, loc: { ...u.loc, x: fx1(ux + dx), y: fx1(uy + dy) } };
+        }));
+      }
+    };
+    window.addEventListener("keydown", onArrow);
+    return () => window.removeEventListener("keydown", onArrow);
+  }, [mode, selectionSet, pushHistory]);
 
   const canvasRef = useRef(null);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -2225,7 +2362,8 @@ const allClientNames = useMemo(() => {
   }
 
   function overlapsRect(a, b) {
-    return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    const EPS = 0.001;
+    return a.x < b.x + b.w - EPS && a.x + a.w > b.x + EPS && a.y < b.y + b.h - EPS && a.y + a.h > b.y + EPS;
   }
 
   // 矩形outerが矩形innerを完全に包含するか（浮動小数点許容）
@@ -2624,7 +2762,7 @@ const allClientNames = useMemo(() => {
     setSelected({ kind: "zone", id });
     setMultiSelected([]);
     // pointer tracking for shelf drop support (like panels)
-    const { cx, cy } = toCell(e.clientX, e.clientY);
+    const { wx, wy } = toCell(e.clientX, e.clientY);
     let zoneWorldX = z.x, zoneWorldY = z.y;
     if (z.loc?.kind === "shelf") {
       const shelf = (layout.shelves || []).find((s) => s.id === z.loc.shelfId);
@@ -2635,8 +2773,8 @@ const allClientNames = useMemo(() => {
       startX: e.clientX, startY: e.clientY,
       pointerX: e.clientX, pointerY: e.clientY,
       baseRect: { ...z },
-      offsetCx: cx - zoneWorldX,
-      offsetCy: cy - zoneWorldY,
+      offsetCx: +(wx / cellPx - zoneWorldX).toFixed(1),
+      offsetCy: +(wy / cellPx - zoneWorldY).toFixed(1),
     });
   }
 
@@ -3454,9 +3592,9 @@ const allClientNames = useMemo(() => {
       const z = layout.zones.find((x) => x.id === drag.id);
       if (!z) { setDrag(null); return; }
 
-      const { cx, cy } = toCell(drag.pointerX, drag.pointerY);
-      const dropX = cx - (drag.offsetCx || 0);
-      const dropY = cy - (drag.offsetCy || 0);
+      const { cx, cy, wx, wy } = toCell(drag.pointerX, drag.pointerY);
+      const dropX = +(wx / cellPx - (drag.offsetCx || 0)).toFixed(1);
+      const dropY = +(wy / cellPx - (drag.offsetCy || 0)).toFixed(1);
 
       // 旧区画の位置・配置情報を記録（内部ユニット連動用）
       const oldLoc = z.loc || { kind: "floor" };
@@ -3476,19 +3614,28 @@ const allClientNames = useMemo(() => {
         return false;
       }
 
-      // Check if dropped on a shelf
-      const shelf = findShelfAtCell(cx, cy);
+      // Check if dropped on a shelf (only if zone fits fully within shelf; otherwise treat as floor zone)
+      const shelfCandidate = findShelfAtCell(cx, cy);
+      const shelf = (shelfCandidate && z.w <= shelfCandidate.w && z.h <= shelfCandidate.h) ? shelfCandidate : null;
       if (shelf) {
         const local = worldToShelfLocal(shelf, dropX, dropY);
-        const clampedX = clamp(Math.floor(local.localX), 0, Math.max(0, shelf.w - z.w));
-        const clampedY = clamp(Math.floor(local.localY), 0, Math.max(0, shelf.h - z.h));
+        // 棚内の他区画とのエッジスナップ (0.5 セル以内で吸着)
+        const shelfNeighbors = layout.zones
+          .filter((oz) => oz.id !== z.id && oz.loc?.kind === "shelf" && oz.loc?.shelfId === shelf.id)
+          .map((oz) => ({ x: oz.x, y: oz.y, w: oz.w, h: oz.h }));
+        const SNAP_S = 0.5;
+        let sx = local.localX, sy = local.localY;
+        for (const n of shelfNeighbors) {
+          if (Math.abs(sx - (n.x + n.w)) < SNAP_S) sx = n.x + n.w;
+          if (Math.abs((sx + z.w) - n.x) < SNAP_S) sx = n.x - z.w;
+          if (Math.abs(sy - (n.y + n.h)) < SNAP_S) sy = n.y + n.h;
+          if (Math.abs((sy + z.h) - n.y) < SNAP_S) sy = n.y - z.h;
+        }
+        const clampedX = clamp(+sx.toFixed(1), 0, Math.max(0, shelf.w - z.w));
+        const clampedY = clamp(+sy.toFixed(1), 0, Math.max(0, shelf.h - z.h));
         // 棚内の他の区画との重なりチェック
         const zoneCandidate = { x: clampedX, y: clampedY, w: z.w, h: z.h };
-        const shelfZoneOverlap = layout.zones.some((oz) => {
-          if (oz.id === z.id) return false;
-          if (oz.loc?.kind !== "shelf" || oz.loc?.shelfId !== shelf.id) return false;
-          return overlapsRect(zoneCandidate, { x: oz.x, y: oz.y, w: oz.w, h: oz.h });
-        });
+        const shelfZoneOverlap = shelfNeighbors.some((n) => overlapsRect(zoneCandidate, n));
         if (shelfZoneOverlap) {
           showToast("他のオブジェクトと重なるため移動できません");
           setDrag(null);
@@ -3516,17 +3663,30 @@ const allClientNames = useMemo(() => {
       // Drop on floor
       const fx = layout.floor.x || 0;
       const fy = layout.floor.y || 0;
-      const floorX = clamp(dropX, fx, fx + layout.floor.cols - z.w);
-      const floorY = clamp(dropY, fy, fy + layout.floor.rows - z.h);
-      // 床上の他のオブジェクト（区画・ラック・棚）との重なりチェック
-      const floorZoneCandidate = { x: floorX, y: floorY, w: z.w, h: z.h };
-      const floorOverlap = [
+      // 隣接エッジスナップ (0.5 セル以内で他オブジェクトの辺に吸着)
+      const neighborsFloor = [
         ...layout.zones.filter((oz) => oz.id !== z.id && (!oz.loc || oz.loc.kind === "floor")).map((oz) => ({ x: oz.x, y: oz.y, w: oz.w, h: oz.h })),
         ...layout.racks.map((r) => ({ x: r.x, y: r.y, w: r.w, h: r.h })),
         ...(layout.shelves || []).map((s) => { const vr = getShelfVisualRect(s); return { x: vr.x, y: vr.y, w: vr.w, h: vr.h }; }),
-      ].some((obs) => overlapsRect(floorZoneCandidate, obs));
+      ];
+      const SNAP = 0.5;
+      let snapX = dropX, snapY = dropY;
+      for (const n of neighborsFloor) {
+        if (Math.abs(snapX - (n.x + n.w)) < SNAP) snapX = n.x + n.w;
+        if (Math.abs((snapX + z.w) - n.x) < SNAP) snapX = n.x - z.w;
+        if (Math.abs(snapY - (n.y + n.h)) < SNAP) snapY = n.y + n.h;
+        if (Math.abs((snapY + z.h) - n.y) < SNAP) snapY = n.y - z.h;
+      }
+      const floorX = clamp(+snapX.toFixed(1), fx, fx + layout.floor.cols - z.w);
+      const floorY = clamp(+snapY.toFixed(1), fy, fy + layout.floor.rows - z.h);
+      // 区画同士の重なりのみブロック（棚・ラックとの重なりは許可: 区画は視覚的グループなのでまたがってOK）
+      const floorZoneCandidate = { x: floorX, y: floorY, w: z.w, h: z.h };
+      const otherZoneRects = layout.zones
+        .filter((oz) => oz.id !== z.id && (!oz.loc || oz.loc.kind === "floor"))
+        .map((oz) => ({ x: oz.x, y: oz.y, w: oz.w, h: oz.h }));
+      const floorOverlap = otherZoneRects.some((obs) => overlapsRect(floorZoneCandidate, obs));
       if (floorOverlap) {
-        showToast("他のオブジェクトと重なるため移動できません");
+        showToast("他の区画と重なるため移動できません");
         setDrag(null);
         return;
       }
@@ -3968,7 +4128,7 @@ ${cs.units.length > 0 ? `
     if (px === null) { px = zfx + layout.floor.cols + 10; py = zfy; }
     setLayout((prev) => ({
       ...prev,
-      zones: [...prev.zones, { id: "z-" + uid(), name: "新規区画", client: "取引先A", x: px, y: py, w: zw, h: zh, labelColor: "#000000", bgColor, bgOpacity: 90, loc: { kind: "floor" }, reserved: false, reservationEndDate: null }],
+      zones: [...prev.zones, { id: "z-" + uid(), name: "新規区画", client: "取引先A", x: px, y: py, w: zw, h: zh, labelColor: "#000000", bgColor, bgOpacity: 90, borderEnabled: true, borderColor: "#334155", loc: { kind: "floor" }, reserved: false, reservationEndDate: null }],
     }));
   }
 
@@ -4932,6 +5092,42 @@ ${cs.units.length > 0 ? `
         </div>
       )}
 
+      {contextMenu && (
+        <div
+          style={{
+            position: "fixed",
+            left: contextMenu.x,
+            top: contextMenu.y,
+            zIndex: 100000,
+            background: "white",
+            border: "1px solid #cbd5e1",
+            borderRadius: 8,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+            padding: 4,
+            minWidth: 150,
+            userSelect: "none",
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+          onContextMenu={(e) => e.preventDefault()}
+        >
+          {[
+            { label: "最前面へ", fn: zBringToFront },
+            { label: "一つ前へ", fn: zBringForward },
+            { label: "一つ後ろへ", fn: zBringBackward },
+            { label: "最背面へ", fn: zBringToBack },
+          ].map((item) => (
+            <button
+              key={item.label}
+              onClick={() => item.fn(contextMenu.kind, contextMenu.id)}
+              className="w-full text-left px-3 py-1.5 text-sm hover:bg-slate-100 rounded"
+              style={{ background: "transparent", border: "none", cursor: "pointer" }}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* 荷物リスト作成モーダル */}
       <Modal title="荷物リスト作成" open={listModalOpen} onClose={() => setListModalOpen(false)}>
         <div className="space-y-4">
@@ -5785,20 +5981,24 @@ ${cs.units.length > 0 ? `
                   ? `translate(${(drag.pointerX - drag.startX) / zoom}px, ${(drag.pointerY - drag.startY) / zoom}px)`
                   : (zSel && groupMoveTransform ? groupMoveTransform : undefined);
                 // 予約状態の計算
-                let reservationBorderColor = z.bgColor || "#10b981";
+                const userBorderEnabled = z.borderEnabled ?? true;
+                const userBorderColor = z.borderColor || z.bgColor || "#10b981";
+                let effectiveBorderColor = userBorderColor;
+                let effectiveBorderEnabled = userBorderEnabled;
                 let reservationExpired = false;
                 if (z.reserved && z.reservationEndDate) {
                   const today = new Date(); today.setHours(0,0,0,0);
                   const endD = new Date(z.reservationEndDate); endD.setHours(0,0,0,0);
                   const diff = Math.ceil((endD - today) / (1000*60*60*24));
-                  if (diff <= 0) { reservationBorderColor = "#ef4444"; reservationExpired = true; }
-                  else if (diff <= 3) { reservationBorderColor = "#fbbf24"; }
+                  if (diff <= 0) { effectiveBorderColor = "#ef4444"; reservationExpired = true; effectiveBorderEnabled = true; }
+                  else if (diff <= 3) { effectiveBorderColor = "#fbbf24"; effectiveBorderEnabled = true; }
                 }
                 return (
                   <div
                     key={z.id}
                     className={
-                      `absolute rounded-2xl border-2 ` +
+                      `absolute rounded-2xl ` +
+                      (effectiveBorderEnabled ? "border-2 " : "") +
                       (reservationExpired ? "wh-reservation-expired " : "") +
                       (zSel ? "ring-2 ring-black" : "")
                     }
@@ -5807,9 +6007,9 @@ ${cs.units.length > 0 ? `
                       top: z.y * cellPx,
                       width: z.w * cellPx,
                       height: z.h * cellPx,
-                      zIndex: (hasMovedZone || (zSel && drag?.type === "group_move")) ? 50 : 1,
+                      zIndex: (hasMovedZone || (zSel && drag?.type === "group_move")) ? 50 : (z.zOrder ?? 1),
                       backgroundColor: `rgba(${bgRgb.join(",")}, ${bgOpacity})`,
-                      borderColor: reservationBorderColor,
+                      borderColor: effectiveBorderEnabled ? effectiveBorderColor : undefined,
                       transform: zoneDragTransform,
                       opacity: hasMovedZone ? 0.7 : undefined,
                       pointerEvents: hasMovedZone ? "none" : undefined,
@@ -5818,6 +6018,7 @@ ${cs.units.length > 0 ? `
                     onMouseDown={(e) => mode === "layout" && beginMoveZone(e, z.id)}
                     onClick={(e) => handleItemClick(e, "zone", z.id)}
                     onDoubleClick={(e) => { e.stopPropagation(); openZoneDetailModal(z); }}
+                    onContextMenu={(e) => openContextMenu(e, "zone", z.id)}
                   >
                     {/* 予約ゾーンのハッチングオーバーレイ */}
                     {z.reserved && (
@@ -5892,7 +6093,7 @@ ${cs.units.length > 0 ? `
                       boxShadow: isSel
                         ? "0 8px 20px -4px rgba(0,0,0,0.15), inset 0 1px 0 rgba(255,255,255,0.5)"
                         : "0 4px 12px -2px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.5)",
-                      zIndex: isSel && drag?.type === "group_move" ? 50 : 4,
+                      zIndex: isSel && drag?.type === "group_move" ? 50 : (r.zOrder ?? 4),
                       transform: isSel && groupMoveTransform ? groupMoveTransform : undefined,
                       transition: drag?.type === "group_move" ? "none" : undefined,
                       userSelect: "none",
@@ -5900,6 +6101,7 @@ ${cs.units.length > 0 ? `
                     onMouseDown={(e) => mode === "layout" && beginMoveRack(e, r.id)}
                     onClick={(e) => handleItemClick(e, "rack", r.id)}
                     onDoubleClick={(e) => { e.stopPropagation(); openRackDetailModal(r); }}
+                    onContextMenu={(e) => openContextMenu(e, "rack", r.id)}
                   >
                     {/* Rack label - watermark style */}
                     <div
@@ -6022,11 +6224,12 @@ ${cs.units.length > 0 ? `
                       backgroundColor: `${shelfBgColor}e6`,
                       transform: `${isSel && groupMoveTransform ? groupMoveTransform + " " : ""}rotate(${shelfRotation}deg)`,
                       transformOrigin: "center center",
-                      zIndex: isSel && drag?.type === "group_move" ? 50 : 2,
+                      zIndex: isSel && drag?.type === "group_move" ? 50 : (s.zOrder ?? 2),
                       transition: drag?.type === "group_move" ? "none" : undefined,
                     }}
                     onMouseDown={(e) => mode === "layout" && beginMoveShelf(e, s.id)}
                     onClick={(e) => handleItemClick(e, "shelf", s.id)}
+                    onContextMenu={(e) => openContextMenu(e, "shelf", s.id)}
                     onDoubleClick={(e) => {
                       e.stopPropagation();
                       openZoneDetailModal({
@@ -6120,8 +6323,8 @@ ${cs.units.length > 0 ? `
                       );
                     })()}
 
-                    {/* Units on shelf - positioned relative to shelf grid */}
-                    {shelfUnits.map((u) => {
+                    {/* Units on shelf: 回転棚のみ棚内レンダリング (非回転棚は外側で描画してz-index を独立に扱う) */}
+                    {shelfRotation !== 0 && shelfUnits.map((u) => {
                       const fp = unitFootprintCells(u);
                       const isUnitSel = isItemSelected("unit", u.id);
                       const kindIcon = u.kind === "パレット" ? "📦" : u.kind === "カゴ" ? "🧺" : u.kind === "配電盤" ? "⚡" : "📋";
@@ -6161,6 +6364,7 @@ ${cs.units.length > 0 ? `
                             if (mode === "operate") beginMoveUnit(e, u.id);
                           }}
                           onClick={(e) => { e.stopPropagation(); handleItemClick(e, "unit", u.id); }}
+                          onContextMenu={(e) => openContextMenu(e, "unit", u.id)}
                           onDoubleClick={(e) => {
                             e.stopPropagation();
                             openDetailModal(u);
@@ -6248,11 +6452,14 @@ ${cs.units.length > 0 ? `
                       const shelfZoneDragTransform = hasMovedShelfZone
                         ? `translate(${(drag.pointerX - drag.startX) / zoom}px, ${(drag.pointerY - drag.startY) / zoom}px)`
                         : undefined;
+                      const shelfZoneBorderEnabled = z.borderEnabled ?? true;
+                      const shelfZoneBorderColor = z.borderColor || z.bgColor || "#10b981";
                       return (
                         <div
                           key={z.id}
                           className={
-                            "absolute rounded-2xl border-2 " +
+                            "absolute rounded-2xl " +
+                            (shelfZoneBorderEnabled ? "border-2 " : "") +
                             (zSel ? "ring-2 ring-black" : "")
                           }
                           style={{
@@ -6261,8 +6468,8 @@ ${cs.units.length > 0 ? `
                             width: z.w * cellPx,
                             height: z.h * cellPx,
                             backgroundColor: `rgba(${zBgRgb.join(",")}, ${zBgOpacity})`,
-                            borderColor: z.bgColor || "#10b981",
-                            zIndex: hasMovedShelfZone ? 50 : 3,
+                            borderColor: shelfZoneBorderEnabled ? shelfZoneBorderColor : undefined,
+                            zIndex: hasMovedShelfZone ? 50 : (z.zOrder ?? 3),
                             transform: shelfZoneDragTransform,
                             opacity: hasMovedShelfZone ? 0.7 : undefined,
                             pointerEvents: hasMovedShelfZone ? "none" : undefined,
@@ -6273,6 +6480,7 @@ ${cs.units.length > 0 ? `
                             if (mode === "layout") beginMoveZone(e, z.id);
                           }}
                           onClick={(e) => { e.stopPropagation(); handleItemClick(e, "zone", z.id); }}
+                          onContextMenu={(e) => openContextMenu(e, "zone", z.id)}
                           onDoubleClick={(e) => { e.stopPropagation(); openZoneDetailModal(z); }}
                         >
                           <div
@@ -6327,6 +6535,75 @@ ${cs.units.length > 0 ? `
                 );
               })}
 
+              {/* Shelf units (非回転棚): 棚コンテキスト外で描画してz-indexを全体で管理 */}
+              {(layout.shelves || []).flatMap((s) => {
+                if ((s.rotation || 0) !== 0) return [];
+                return units
+                  .filter((u) => u.loc?.kind === "shelf" && u.loc?.shelfId === s.id)
+                  .map((u) => {
+                    const fp = unitFootprintCells(u);
+                    const isUnitSel = isItemSelected("unit", u.id);
+                    const kindIcon = u.kind === "パレット" ? "📦" : u.kind === "カゴ" ? "🧺" : u.kind === "配電盤" ? "⚡" : "📋";
+                    const unitBgRgb = hexToRgb(u.bgColor || "#ffffff");
+                    const unitBgOpacity = (u.bgOpacity ?? 100) / 100;
+                    const isDraggingUnit = drag?.type === "move_unit" && drag.unitId === u.id;
+                    const hasMovedUnit = isDraggingUnit && (drag.pointerX !== drag.startX || drag.pointerY !== drag.startY);
+                    const dragTr = hasMovedUnit
+                      ? `translate(${(drag.pointerX - drag.startX) / zoom}px, ${(drag.pointerY - drag.startY) / zoom}px)`
+                      : undefined;
+                    const worldX = s.x + (u.loc.x || 0);
+                    const worldY = s.y + (u.loc.y || 0);
+                    return (
+                      <div
+                        key={`shelfUnit-${u.id}`}
+                        className={
+                          "absolute rounded-xl border-2 cursor-pointer " +
+                          (hasMovedUnit ? "" : "transition-all duration-150 ") +
+                          (highlightUnitId === u.id ? "wh-search-highlight" : (isUnitSel ? "ring-2 ring-black shadow-lg" : "hover:shadow-lg"))
+                        }
+                        style={{
+                          left: worldX * cellPx + 1,
+                          top: worldY * cellPx + 1,
+                          width: fp.w * cellPx - 2,
+                          height: fp.h * cellPx - 2,
+                          background: u.bgColor
+                            ? `rgba(${unitBgRgb.join(",")}, ${unitBgOpacity})`
+                            : "linear-gradient(145deg, #ffffff 0%, #f8fafc 100%)",
+                          borderColor: isUnitSel ? "#1e293b" : (u.bgColor || "#e2e8f0"),
+                          boxShadow: "0 2px 6px rgba(0,0,0,0.12)",
+                          zIndex: hasMovedUnit ? 50 : (UNIT_BASE_Z + (u.zOrder ?? 0) + (u.stackZ || 0)),
+                          transform: dragTr,
+                          opacity: hasMovedUnit ? 0.7 : undefined,
+                          pointerEvents: hasMovedUnit ? "none" : undefined,
+                          transition: hasMovedUnit ? "none" : undefined,
+                        }}
+                        onMouseDown={(e) => {
+                          e.stopPropagation();
+                          if (mode === "operate") beginMoveUnit(e, u.id);
+                        }}
+                        onClick={(e) => { e.stopPropagation(); handleItemClick(e, "unit", u.id); }}
+                        onContextMenu={(e) => openContextMenu(e, "unit", u.id)}
+                        onDoubleClick={(e) => { e.stopPropagation(); openDetailModal(u); }}
+                        title={u.name}
+                      >
+                        {mode === "operate" && (
+                          <div
+                            className="absolute cursor-se-resize"
+                            style={{
+                              bottom: 0, right: 0, width: 0, height: 0,
+                              borderStyle: "solid", borderWidth: "0 0 12px 12px",
+                              borderColor: "transparent transparent #64748b transparent",
+                              zIndex: 100,
+                            }}
+                            onMouseDown={(e) => { e.stopPropagation(); beginResizeUnit(e, u.id); }}
+                            title="リサイズ"
+                          />
+                        )}
+                      </div>
+                    );
+                  });
+              })}
+
               {/* Units on floor - improved styling */}
               {placedOnFloor.map((u) => {
                 const fp = unitFootprintCells(u);
@@ -6371,7 +6648,7 @@ ${cs.units.length > 0 ? `
                         : (shouldBlink && !isSel) ? undefined : (isSel
                           ? "0 10px 25px -5px rgba(0,0,0,0.15), 0 4px 6px -2px rgba(0,0,0,0.1)"
                           : "0 4px 12px -2px rgba(0,0,0,0.08), 0 2px 4px -1px rgba(0,0,0,0.04)"),
-                      zIndex: (hasMoved || isGroupMoving) ? 50 : 8 + (u.stackZ || 0),
+                      zIndex: (hasMoved || isGroupMoving) ? 50 : (UNIT_BASE_Z + (u.zOrder ?? 0) + (u.stackZ || 0)),
                       transform: dragTransform,
                       opacity: hasMoved ? 0.7 : (isTransit ? 0.35 : undefined),
                       pointerEvents: hasMoved ? "none" : undefined,
@@ -6379,6 +6656,7 @@ ${cs.units.length > 0 ? `
                     }}
                     onMouseDown={(e) => mode === "operate" && beginMoveUnit(e, u.id)}
                     onClick={(e) => handleItemClick(e, "unit", u.id)}
+                    onContextMenu={(e) => openContextMenu(e, "unit", u.id)}
                     onDoubleClick={(e) => {
                       e.stopPropagation();
                       openDetailModal(u);
@@ -7092,6 +7370,38 @@ ${cs.units.length > 0 ? `
                                   className="w-8 h-8 rounded cursor-pointer border"
                                 />
                                 <span className="text-xs text-gray-600">ラベル</span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="color"
+                                  value={selectedEntity.borderColor || selectedEntity.bgColor || "#334155"}
+                                  disabled={!(selectedEntity.borderEnabled ?? true)}
+                                  onChange={(e) =>
+                                    setLayout((p) => ({
+                                      ...p,
+                                      zones: p.zones.map((z) =>
+                                        z.id === selected.id ? { ...z, borderColor: e.target.value } : z
+                                      ),
+                                    }))
+                                  }
+                                  className="w-8 h-8 rounded cursor-pointer border disabled:opacity-40"
+                                />
+                                <span className="text-xs text-gray-600">枠線</span>
+                                <label className="ml-auto flex items-center gap-1 text-xs text-gray-600 cursor-pointer select-none">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedEntity.borderEnabled ?? true}
+                                    onChange={(e) =>
+                                      setLayout((p) => ({
+                                        ...p,
+                                        zones: p.zones.map((z) =>
+                                          z.id === selected.id ? { ...z, borderEnabled: e.target.checked } : z
+                                        ),
+                                      }))
+                                    }
+                                  />
+                                  表示
+                                </label>
                               </div>
                             </div>
                           </div>
@@ -9651,13 +9961,15 @@ ${cs.units.length > 0 ? `
                     {overlayZones.map((oz) => {
                       const bgRgb = hexToRgb(oz.bgColor || "#d1fae5");
                       const labelRgb = hexToRgb(oz.labelColor || "#000000");
+                      const ozBorderEnabled = oz.borderEnabled ?? true;
+                      const ozBorderColor = oz.borderColor || oz.bgColor || "#10b981";
                       return (
                         <div key={`oz-${oz.id}`} style={{
                           position: "absolute",
                           left: oz._lx * zoneCellPx, top: oz._ly * zoneCellPx,
                           width: oz.w * zoneCellPx, height: oz.h * zoneCellPx,
                           background: `rgba(${bgRgb.join(",")}, ${(oz.bgOpacity ?? 90) / 100})`,
-                          border: `2px solid ${oz.bgColor || "#10b981"}`,
+                          border: ozBorderEnabled ? `2px solid ${ozBorderColor}` : "none",
                           borderRadius: 8, zIndex: 1, pointerEvents: "none",
                           display: "flex", alignItems: "center", justifyContent: "center",
                         }}>
