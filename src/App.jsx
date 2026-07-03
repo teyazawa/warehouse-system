@@ -2231,6 +2231,28 @@ const allClientNames = useMemo(() => {
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
 
+  // 倉庫を開いた/切り替えた時に自動で床の中央にフォーカス (wh.idごとに1回だけ実行)
+  // Supabaseからの layout ロードを待つため 700ms 遅延
+  const initialFocusWhIdRef = useRef(null);
+  useEffect(() => {
+    if (initialFocusWhIdRef.current === wh.id) return;
+    const timer = setTimeout(() => {
+      try {
+        const el = canvasRef.current;
+        if (!el) return;
+        const r = el.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) return;
+        const floor = layoutRef.current?.floor;
+        if (!floor || !floor.cols || !floor.rows) return;
+        const floorCenterX = ((floor.x || 0) + floor.cols / 2) * cellPx;
+        const floorCenterY = ((floor.y || 0) + floor.rows / 2) * cellPx;
+        setPan({ x: r.width / 2 - floorCenterX * zoom, y: r.height / 2 - floorCenterY * zoom });
+        initialFocusWhIdRef.current = wh.id;
+      } catch (err) { /* ignore */ }
+    }, 700);
+    return () => clearTimeout(timer);
+  }, [wh.id]);
+
   // Drag state (units + layout objects + pan)
   const [drag, setDrag] = useState(null);
   // drag variants:
@@ -2953,7 +2975,7 @@ const allClientNames = useMemo(() => {
       type: "move_floor",
       startX: e.clientX,
       startY: e.clientY,
-      baseRect: { x: layout.floor.x || 0, y: layout.floor.y || 0 },
+      baseRect: { x: layout.floor.x || 0, y: layout.floor.y || 0, cols: layout.floor.cols, rows: layout.floor.rows },
     });
   }
 
@@ -3608,10 +3630,16 @@ const allClientNames = useMemo(() => {
     }
 
     if (drag.type === "move_floor") {
-      // 床移動完了時、床上の全オブジェクトも同じ距離だけ移動
+      // 床移動完了時、床上のオブジェクトも同じ距離だけ移動
       const totalDx = (layout.floor.x || 0) - (drag.baseRect.x || 0);
       const totalDy = (layout.floor.y || 0) - (drag.baseRect.y || 0);
       if (totalDx !== 0 || totalDy !== 0) {
+        // 移動前の床rect (床から離れて置かれた棚を除外するのに使う)
+        const origFloor = { x: drag.baseRect.x || 0, y: drag.baseRect.y || 0, w: drag.baseRect.cols, h: drag.baseRect.rows };
+        const isShelfOnFloor = (s) => {
+          const vr = getShelfVisualRect(s);
+          return overlapsRect(vr, origFloor);
+        };
         setUnits((prev) => prev.map((u) => {
           if (u.loc?.kind !== "floor") return u;
           return { ...u, loc: { ...u.loc, x: u.loc.x + totalDx, y: u.loc.y + totalDy } };
@@ -3620,6 +3648,7 @@ const allClientNames = useMemo(() => {
           ...prev,
           zones: prev.zones.map((z) => (!z.loc || z.loc.kind === "floor") ? { ...z, x: z.x + totalDx, y: z.y + totalDy } : z),
           racks: prev.racks.map((r) => ({ ...r, x: r.x + totalDx, y: r.y + totalDy })),
+          shelves: (prev.shelves || []).map((s) => isShelfOnFloor(s) ? { ...s, x: s.x + totalDx, y: s.y + totalDy } : s),
         }));
         setPanels((prev) => prev.map((p) => ({ ...p, x: p.x + totalDx, y: p.y + totalDy })));
       }
