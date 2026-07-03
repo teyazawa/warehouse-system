@@ -6393,7 +6393,7 @@ ${cs.units.length > 0 ? `
                         style={{
                           fontSize: `${z.labelFontSize || 1.5}rem`,
                           fontWeight: 900,
-                          color: `rgba(${labelRgb.join(",")}, 0.15)`,
+                          color: `rgba(${labelRgb.join(",")}, ${(z.labelOpacity ?? 15) / 100})`,
                           userSelect: "none",
                           textAlign: "center",
                           lineHeight: 1.2,
@@ -6472,7 +6472,7 @@ ${cs.units.length > 0 ? `
                         style={{
                           fontSize: `${r.labelFontSize || 1.5}rem`,
                           fontWeight: 900,
-                          color: `rgba(${labelRgb.join(",")}, 0.2)`,
+                          color: `rgba(${labelRgb.join(",")}, ${(r.labelOpacity ?? 20) / 100})`,
                           userSelect: "none",
                         }}
                       >
@@ -6669,7 +6669,7 @@ ${cs.units.length > 0 ? `
                             style={{
                               fontSize: `${s.labelFontSize || 2.5}rem`,
                               fontWeight: 900,
-                              color: `rgba(${labelRgb.join(",")}, 0.12)`,
+                              color: `rgba(${labelRgb.join(",")}, ${(s.labelOpacity ?? 12) / 100})`,
                               userSelect: "none",
                             }}
                           >
@@ -7759,6 +7759,18 @@ ${cs.units.length > 0 ? `
                                   className="w-8 h-8 rounded cursor-pointer border"
                                 />
                                 <span className="text-xs text-gray-600">ラベル</span>
+                                <div className="ml-2 flex flex-1 items-center gap-1.5">
+                                  <span className="text-[10px] text-gray-500 whitespace-nowrap">濃さ {selectedEntity.labelOpacity ?? 15}%</span>
+                                  <input
+                                    type="range" min="5" max="100" step="1"
+                                    value={selectedEntity.labelOpacity ?? 15}
+                                    onChange={(e) => {
+                                      const v = Number(e.target.value);
+                                      setLayout((p) => ({ ...p, zones: p.zones.map((z) => z.id === selected.id ? { ...z, labelOpacity: v } : z) }));
+                                    }}
+                                    className="flex-1 h-1 accent-slate-600"
+                                  />
+                                </div>
                               </div>
                               <div className="flex items-center gap-2">
                                 <input
@@ -7908,6 +7920,18 @@ ${cs.units.length > 0 ? `
                                   className="w-8 h-8 rounded cursor-pointer border"
                                 />
                                 <span className="text-xs text-gray-600">ラベル</span>
+                                <div className="ml-2 flex flex-1 items-center gap-1.5">
+                                  <span className="text-[10px] text-gray-500 whitespace-nowrap">濃さ {selectedEntity.labelOpacity ?? 20}%</span>
+                                  <input
+                                    type="range" min="5" max="100" step="1"
+                                    value={selectedEntity.labelOpacity ?? 20}
+                                    onChange={(e) => {
+                                      const v = Number(e.target.value);
+                                      setLayout((p) => ({ ...p, racks: p.racks.map((r) => r.id === selected.id ? { ...r, labelOpacity: v } : r) }));
+                                    }}
+                                    className="flex-1 h-1 accent-slate-600"
+                                  />
+                                </div>
                               </div>
                             </div>
                           </div>
@@ -8211,6 +8235,18 @@ ${cs.units.length > 0 ? `
                                   className="w-8 h-8 rounded cursor-pointer border"
                                 />
                                 <span className="text-xs text-gray-600">ラベル</span>
+                                <div className="ml-2 flex flex-1 items-center gap-1.5">
+                                  <span className="text-[10px] text-gray-500 whitespace-nowrap">濃さ {selectedEntity.labelOpacity ?? 12}%</span>
+                                  <input
+                                    type="range" min="5" max="100" step="1"
+                                    value={selectedEntity.labelOpacity ?? 12}
+                                    onChange={(e) => {
+                                      const v = Number(e.target.value);
+                                      setLayout((p) => ({ ...p, shelves: (p.shelves || []).map((s) => s.id === selected.id ? { ...s, labelOpacity: v } : s) }));
+                                    }}
+                                    className="flex-1 h-1 accent-slate-600"
+                                  />
+                                </div>
                               </div>
                             </div>
                           </div>
@@ -10391,7 +10427,7 @@ ${cs.units.length > 0 ? `
                         }}>
                           <div style={{
                             fontSize: `${oz.labelFontSize || 1.5}rem`, fontWeight: 900,
-                            color: `rgba(${labelRgb.join(",")}, 0.15)`,
+                            color: `rgba(${labelRgb.join(",")}, ${(oz.labelOpacity ?? 15) / 100})`,
                             textAlign: "center", pointerEvents: "none",
                           }}>{oz.name}</div>
                         </div>
