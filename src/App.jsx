@@ -648,6 +648,178 @@ function Modal({ title, open, onClose, children, maxWidth = "36rem" }) {
   );
 }
 
+// サイズプリセット編集: 荷物(unit) / 棚(shelf) の追加・削除・編集
+function SizePresetsEditor({ sizePresets, setSizePresets, onClose }) {
+  const [tab, setTab] = useState("units");
+  const [draft, setDraft] = useState({ name: "", w_m: "1.0", d_m: "1.0", h_m: "1.0", icon: "\u{1f4e6}", w_cells: "4", h_cells: "3" });
+
+  const list = tab === "units" ? (sizePresets.units || []) : (sizePresets.shelves || []);
+
+  const addPreset = () => {
+    if (!draft.name.trim()) return;
+    const id = (tab === "units" ? "up-" : "sp-") + Math.random().toString(36).slice(2, 8);
+    let preset;
+    if (tab === "units") {
+      preset = { id, name: draft.name.trim(), icon: draft.icon || "\u{1f4e6}", w_m: Number(draft.w_m) || 1, d_m: Number(draft.d_m) || 1, h_m: Number(draft.h_m) || 1 };
+    } else {
+      preset = { id, name: draft.name.trim(), w_cells: Number(draft.w_cells) || 1, h_cells: Number(draft.h_cells) || 1 };
+    }
+    setSizePresets((prev) => ({ ...prev, [tab]: [...(prev[tab] || []), preset] }));
+    setDraft({ name: "", w_m: "1.0", d_m: "1.0", h_m: "1.0", icon: "\u{1f4e6}", w_cells: "4", h_cells: "3" });
+  };
+
+  const updatePreset = (id, field, value) => {
+    setSizePresets((prev) => ({
+      ...prev,
+      [tab]: (prev[tab] || []).map((p) => p.id === id ? { ...p, [field]: value } : p),
+    }));
+  };
+
+  const deletePreset = (id) => {
+    if (!confirm("このプリセットを削除しますか？")) return;
+    setSizePresets((prev) => ({ ...prev, [tab]: (prev[tab] || []).filter((p) => p.id !== id) }));
+  };
+
+  const movePreset = (id, dir) => {
+    setSizePresets((prev) => {
+      const arr = [...(prev[tab] || [])];
+      const idx = arr.findIndex((p) => p.id === id);
+      if (idx < 0) return prev;
+      const target = idx + dir;
+      if (target < 0 || target >= arr.length) return prev;
+      [arr[idx], arr[target]] = [arr[target], arr[idx]];
+      return { ...prev, [tab]: arr };
+    });
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-2 border-b pb-2">
+        <button
+          type="button"
+          className={`px-3 py-1.5 rounded-lg text-sm font-medium ${tab === "units" ? "bg-blue-100 text-blue-700 border border-blue-300" : "text-gray-600 hover:bg-gray-50"}`}
+          onClick={() => setTab("units")}
+        >
+          荷物 ({(sizePresets.units || []).length})
+        </button>
+        <button
+          type="button"
+          className={`px-3 py-1.5 rounded-lg text-sm font-medium ${tab === "shelves" ? "bg-teal-100 text-teal-700 border border-teal-300" : "text-gray-600 hover:bg-gray-50"}`}
+          onClick={() => setTab("shelves")}
+        >
+          棚 ({(sizePresets.shelves || []).length})
+        </button>
+      </div>
+
+      {/* 一覧 */}
+      <div className="space-y-2 max-h-80 overflow-y-auto">
+        {list.length === 0 && <div className="text-sm text-gray-500 text-center py-4">プリセットがありません</div>}
+        {list.map((p, i) => (
+          <div key={p.id} className="rounded-xl border p-2.5 bg-gray-50">
+            <div className="flex items-center gap-2">
+              {tab === "units" && (
+                <input
+                  className="w-10 rounded border px-1 py-1 text-sm text-center"
+                  value={p.icon || ""}
+                  onChange={(e) => updatePreset(p.id, "icon", e.target.value)}
+                  title="アイコン"
+                />
+              )}
+              <input
+                className="flex-1 rounded border px-2 py-1 text-sm font-medium"
+                value={p.name}
+                onChange={(e) => updatePreset(p.id, "name", e.target.value)}
+                placeholder="名前"
+              />
+              <button type="button" className="px-1.5 py-0.5 text-xs rounded border hover:bg-white" onClick={() => movePreset(p.id, -1)} disabled={i === 0} title="上へ">↑</button>
+              <button type="button" className="px-1.5 py-0.5 text-xs rounded border hover:bg-white" onClick={() => movePreset(p.id, 1)} disabled={i === list.length - 1} title="下へ">↓</button>
+              <button type="button" className="px-2 py-0.5 text-xs rounded border border-red-300 text-red-600 hover:bg-red-50" onClick={() => deletePreset(p.id)}>削除</button>
+            </div>
+            {tab === "units" ? (
+              <div className="mt-2 grid grid-cols-3 gap-2">
+                <label className="text-xs text-gray-600">幅(m)
+                  <input type="number" step="0.1" className="mt-1 w-full rounded border px-2 py-1 text-sm" value={p.w_m} onChange={(e) => updatePreset(p.id, "w_m", Number(e.target.value) || 0)} />
+                </label>
+                <label className="text-xs text-gray-600">奥行(m)
+                  <input type="number" step="0.1" className="mt-1 w-full rounded border px-2 py-1 text-sm" value={p.d_m} onChange={(e) => updatePreset(p.id, "d_m", Number(e.target.value) || 0)} />
+                </label>
+                <label className="text-xs text-gray-600">高さ(m)
+                  <input type="number" step="0.1" className="mt-1 w-full rounded border px-2 py-1 text-sm" value={p.h_m} onChange={(e) => updatePreset(p.id, "h_m", Number(e.target.value) || 0)} />
+                </label>
+              </div>
+            ) : (
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <label className="text-xs text-gray-600">幅(セル)
+                  <input type="number" min="1" step="1" className="mt-1 w-full rounded border px-2 py-1 text-sm" value={p.w_cells} onChange={(e) => updatePreset(p.id, "w_cells", Math.max(1, parseInt(e.target.value) || 1))} />
+                </label>
+                <label className="text-xs text-gray-600">高さ(セル)
+                  <input type="number" min="1" step="1" className="mt-1 w-full rounded border px-2 py-1 text-sm" value={p.h_cells} onChange={(e) => updatePreset(p.id, "h_cells", Math.max(1, parseInt(e.target.value) || 1))} />
+                </label>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* 新規追加 */}
+      <div className="rounded-xl border-2 border-dashed border-emerald-300 p-3 bg-emerald-50/50">
+        <div className="text-xs font-semibold text-emerald-800 mb-2">＋新規プリセット追加</div>
+        <div className="flex items-center gap-2 mb-2">
+          {tab === "units" && (
+            <input
+              className="w-12 rounded border px-2 py-1 text-sm text-center"
+              value={draft.icon}
+              onChange={(e) => setDraft((s) => ({ ...s, icon: e.target.value }))}
+              placeholder="\u{1f4e6}"
+              title="アイコン"
+            />
+          )}
+          <input
+            className="flex-1 rounded border px-2 py-1 text-sm"
+            value={draft.name}
+            onChange={(e) => setDraft((s) => ({ ...s, name: e.target.value }))}
+            placeholder="プリセット名 (例: 大パレット)"
+          />
+        </div>
+        {tab === "units" ? (
+          <div className="grid grid-cols-3 gap-2 mb-2">
+            <label className="text-xs">幅(m)
+              <input type="number" step="0.1" className="mt-1 w-full rounded border px-2 py-1 text-sm" value={draft.w_m} onChange={(e) => setDraft((s) => ({ ...s, w_m: e.target.value }))} />
+            </label>
+            <label className="text-xs">奥行(m)
+              <input type="number" step="0.1" className="mt-1 w-full rounded border px-2 py-1 text-sm" value={draft.d_m} onChange={(e) => setDraft((s) => ({ ...s, d_m: e.target.value }))} />
+            </label>
+            <label className="text-xs">高さ(m)
+              <input type="number" step="0.1" className="mt-1 w-full rounded border px-2 py-1 text-sm" value={draft.h_m} onChange={(e) => setDraft((s) => ({ ...s, h_m: e.target.value }))} />
+            </label>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-2 mb-2">
+            <label className="text-xs">幅(セル)
+              <input type="number" min="1" step="1" className="mt-1 w-full rounded border px-2 py-1 text-sm" value={draft.w_cells} onChange={(e) => setDraft((s) => ({ ...s, w_cells: e.target.value }))} />
+            </label>
+            <label className="text-xs">高さ(セル)
+              <input type="number" min="1" step="1" className="mt-1 w-full rounded border px-2 py-1 text-sm" value={draft.h_cells} onChange={(e) => setDraft((s) => ({ ...s, h_cells: e.target.value }))} />
+            </label>
+          </div>
+        )}
+        <button
+          type="button"
+          className="w-full rounded-lg bg-emerald-600 text-white py-1.5 text-sm font-medium hover:bg-emerald-700 disabled:opacity-40"
+          onClick={addPreset}
+          disabled={!draft.name.trim()}
+        >
+          プリセット追加
+        </button>
+      </div>
+
+      <div className="flex justify-end pt-2">
+        <button type="button" className="rounded-lg border px-4 py-1.5 text-sm hover:bg-gray-50" onClick={onClose}>閉じる</button>
+      </div>
+    </div>
+  );
+}
+
 function Badge({ children, color = "gray" }) {
   const styles = {
     gray:   { bg: "#f1f5f9", fg: "#475569" },
@@ -1515,6 +1687,25 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
     clientRates: {},
   });
 
+  // サイズプリセット (荷物/棚) - 全倉庫共通・Supabase同期
+  const [sizePresets, _setSizePresetsRaw] = useSupabaseState("wh_demo_size_presets_v1", {
+    units: [
+      { id: "up-pallet", name: "パレット", icon: "\u{1f4e6}", w_m: 1.2, d_m: 1.0, h_m: 1.6, color: "#dbeafe", activeColor: "#3b82f6" },
+      { id: "up-basket", name: "カゴ", icon: "\u{1f6d2}", w_m: 0.8, d_m: 0.6, h_m: 0.7, color: "#d1fae5", activeColor: "#10b981" },
+      { id: "up-single", name: "単体荷物", icon: "\u{1f4e6}", w_m: 0.4, d_m: 0.3, h_m: 0.25, color: "#fef3c7", activeColor: "#f59e0b" },
+      { id: "up-panel", name: "配電盤", icon: "\u{26a1}", w_m: 1.0, d_m: 0.5, h_m: 1.8, color: "#fef9c3", activeColor: "#eab308" },
+    ],
+    shelves: [
+      { id: "sp-small", name: "小棚 (4×3)", w_cells: 4, h_cells: 3 },
+      { id: "sp-medium", name: "中棚 (6×4)", w_cells: 6, h_cells: 4 },
+      { id: "sp-large", name: "大棚 (10×5)", w_cells: 10, h_cells: 5 },
+    ],
+  });
+  const setSizePresets = useCallback((...args) => {
+    if (!isLoggedIn) { _authBlock(); return; }
+    _setSizePresetsRaw(...args);
+  }, [isLoggedIn, _setSizePresetsRaw]);
+
   const [toast, setToast] = useState(null);
 
   // 認証付きセッター（未ログイン時はブロック、デバウンスでトースト表示）
@@ -1864,10 +2055,10 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
     };
   }, [contextMenu]);
 
-  // 矢印キーで選択中オブジェクトを移動（layoutモードのみ、Shift=0.1セル、通常=1セル）
+  // 矢印キーで選択中オブジェクトを移動（layout/storage両方で有効。通常=0.1セル、Shift=1セル）
+  // storageモードでは荷物のみ動かせる（レイアウト構造は変えない）
   useEffect(() => {
     const onArrow = (e) => {
-      if (mode !== "layout") return;
       const tag = e.target?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || e.target?.isContentEditable) return;
       const dirs = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
@@ -1878,13 +2069,16 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
       const dy = dys * step;
       const targets = selectionSet;
       if (targets.length === 0) return;
+      // storageモードでは荷物のみ矢印キーで動かせる (レイアウト構造は動かさない)
+      const isLayout = mode === "layout";
+      const zoneTargets = isLayout ? targets.filter((t) => t.kind === "zone") : [];
+      const rackTargets = isLayout ? targets.filter((t) => t.kind === "rack") : [];
+      const shelfTargets = isLayout ? targets.filter((t) => t.kind === "shelf") : [];
+      const unitTargets = targets.filter((t) => t.kind === "unit");
+      const hasFloor = isLayout && targets.some((t) => t.kind === "floor");
+      if (zoneTargets.length === 0 && rackTargets.length === 0 && shelfTargets.length === 0 && unitTargets.length === 0 && !hasFloor) return;
       e.preventDefault();
       pushHistory();
-      const zoneTargets = targets.filter((t) => t.kind === "zone");
-      const rackTargets = targets.filter((t) => t.kind === "rack");
-      const shelfTargets = targets.filter((t) => t.kind === "shelf");
-      const unitTargets = targets.filter((t) => t.kind === "unit");
-      const hasFloor = targets.some((t) => t.kind === "floor");
       const fx1 = (v) => +v.toFixed(1);
       // 区画内ユニット判定用に事前スナップショット
       const zonesSnap = zoneTargets.map((zt) => layoutRef.current.zones.find((z) => z.id === zt.id)).filter(Boolean);
@@ -2079,6 +2273,9 @@ const allClientNames = useMemo(() => {
 
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [listModalOpen, setListModalOpen] = useState(false);
+  const [sizePresetsModalOpen, setSizePresetsModalOpen] = useState(false);
+  // 新規棚作成時に使うプリセットID (nullなら従来のデフォルト)
+  const [selectedShelfPresetId, setSelectedShelfPresetId] = useState(null);
   const [listSearchKey, setListSearchKey] = useState("personInCharge"); // 検索キー
   const [listSearchValue, setListSearchValue] = useState(""); // 検索値
 
@@ -2705,8 +2902,10 @@ const allClientNames = useMemo(() => {
 
     setSelected({ kind: "unit", id: unitId });
     setMultiSelected([]);
-    // Calculate grab offset: where within the unit the user clicked (in cell coords)
-    const { cx, cy } = toCell(e.clientX, e.clientY);
+    // クリック位置(cell fractional)を計算し、荷物の左上との差分を0.1精度で保持
+    const { wx, wy } = toCell(e.clientX, e.clientY);
+    const clickCx = wx / cellPx;
+    const clickCy = wy / cellPx;
     let unitWorldX = 0, unitWorldY = 0;
     if (u.loc.kind === "floor") {
       unitWorldX = u.loc.x;
@@ -2730,8 +2929,8 @@ const allClientNames = useMemo(() => {
         unitWorldY = rack.y + row * slotH;
       }
     }
-    const offsetCx = cx - unitWorldX;
-    const offsetCy = cy - unitWorldY;
+    const offsetCx = +(clickCx - unitWorldX).toFixed(1);
+    const offsetCy = +(clickCy - unitWorldY).toFixed(1);
     setDrag({
       type: "move_unit",
       unitId,
@@ -3530,13 +3729,13 @@ const allClientNames = useMemo(() => {
         return;
       }
 
-      const { cx, cy } = toCell(drag.pointerX, drag.pointerY);
+      const { cx, cy, wx, wy } = toCell(drag.pointerX, drag.pointerY);
       const fp = unitFootprintCells(u);
-      // Apply grab offset so the unit's top-left aligns consistently with visual position
-      const dropX = cx - (drag.offsetCx || 0);
-      const dropY = cy - (drag.offsetCy || 0);
+      // Apply grab offset so the unit's top-left aligns consistently with visual position (0.1精度)
+      const dropX = +(wx / cellPx - (drag.offsetCx || 0)).toFixed(1);
+      const dropY = +(wy / cellPx - (drag.offsetCy || 0)).toFixed(1);
 
-      // Check if dropped on a rack slot
+      // Check if dropped on a rack slot (rackはスロット離散なのでcx,cy=整数で判定)
       const rackSlot = findRackSlotAtCell(cx, cy);
       if (rackSlot) {
         if (isRackSlotFree(rackSlot.rackId, rackSlot.slot, u.id)) {
@@ -3558,8 +3757,8 @@ const allClientNames = useMemo(() => {
       const shelf = findShelfAtCell(cx, cy);
       if (shelf) {
         const local = worldToShelfLocal(shelf, dropX, dropY);
-        const clampedX = clamp(Math.floor(local.localX), 0, shelf.w - fp.w);
-        const clampedY = clamp(Math.floor(local.localY), 0, shelf.h - fp.h);
+        const clampedX = clamp(+local.localX.toFixed(1), 0, +(shelf.w - fp.w).toFixed(1));
+        const clampedY = clamp(+local.localY.toFixed(1), 0, +(shelf.h - fp.h).toFixed(1));
 
         if (canPlaceOnShelf(shelf.id, u, clampedX, clampedY, u.id)) {
           setUnits((prev) => prev.map((x) =>
@@ -3577,10 +3776,10 @@ const allClientNames = useMemo(() => {
       // Check if dropped on floor or staging zone
       const fx = layout.floor.x || 0;
       const fy = layout.floor.y || 0;
-      // 仮置き場/入庫予定エリア内ならclampをスキップ
+      // 仮置き場/入庫予定エリア内ならclampをスキップ (0.1精度維持)
       const inStaging = isInStagingZone(dropX, dropY, fp.w, fp.h);
-      let floorX = inStaging ? dropX : clamp(dropX, fx, fx + layout.floor.cols - fp.w);
-      let floorY = inStaging ? dropY : clamp(dropY, fy, fy + layout.floor.rows - fp.h);
+      let floorX = +(inStaging ? dropX : clamp(dropX, fx, fx + layout.floor.cols - fp.w)).toFixed(1);
+      let floorY = +(inStaging ? dropY : clamp(dropY, fy, fy + layout.floor.rows - fp.h)).toFixed(1);
 
       // 重ね置きスナップ: 近くのstackable荷物にスナップ
       const snapTarget = snapToStackTarget(floorX, floorY, fp, u.id);
@@ -4187,7 +4386,11 @@ ${cs.units.length > 0 ? `
     const colors = Object.keys(SHELF_COLORS);
     const shelvesLen = (layout.shelves || []).length;
     const nextColor = colors[shelvesLen % colors.length];
-    const area_m2 = 6 * layout.floor.cell_m_w * 4 * layout.floor.cell_m_d;
+    // 選択中のプリセットがあればそのサイズ、なければデフォルト 6×4
+    const preset = selectedShelfPresetId ? (sizePresets.shelves || []).find((p) => p.id === selectedShelfPresetId) : null;
+    const w = preset?.w_cells ?? 6;
+    const h = preset?.h_cells ?? 4;
+    const area_m2 = w * layout.floor.cell_m_w * h * layout.floor.cell_m_d;
     const sfx = layout.floor.x || 0;
     const sfy = layout.floor.y || 0;
     setLayout((prev) => ({
@@ -4199,8 +4402,8 @@ ${cs.units.length > 0 ? `
           name: `棚${shelvesLen + 1}`,
           x: sfx + 14,
           y: sfy + 4,
-          w: 6,
-          h: 4,
+          w,
+          h,
           area_m2: area_m2,
           area_m2_manual: false,
           color: nextColor,
@@ -4279,6 +4482,101 @@ ${cs.units.length > 0 ? `
       setPanels((prev) => prev.filter((p) => !panelIds.has(p.id)));
     }
     clearSelection();
+  }
+
+  function duplicateSelected() {
+    const items = selectionSet;
+    if (items.length === 0) return;
+
+    const OFFSET = 1; // 既存から1セルずらす
+    // 現在の状態から複製オブジェクトを事前構築 (setStateはasyncなので更新前の値を参照)
+    const zoneCopies = [];
+    const rackCopies = [];
+    const shelfCopies = [];
+    const unitCopies = [];
+    const newSelection = [];
+
+    for (const it of items) {
+      if (it.kind === "zone") {
+        const z = layout.zones.find((x) => x.id === it.id);
+        if (!z) continue;
+        const nz = { ...z, id: "z-" + uid(), name: `${z.name || "区画"} (コピー)` };
+        if (z.loc?.kind === "shelf") nz.loc = { ...z.loc, x: +((z.loc.x || 0) + OFFSET).toFixed(1), y: +((z.loc.y || 0) + OFFSET).toFixed(1) };
+        else { nz.x = +(z.x + OFFSET).toFixed(1); nz.y = +(z.y + OFFSET).toFixed(1); }
+        zoneCopies.push(nz);
+        newSelection.push({ kind: "zone", id: nz.id });
+      } else if (it.kind === "rack") {
+        const r = layout.racks.find((x) => x.id === it.id);
+        if (!r) continue;
+        const nr = { ...r, id: "r-" + uid(), name: `${r.name || "ラック"} (コピー)`, x: +(r.x + OFFSET).toFixed(1), y: +(r.y + OFFSET).toFixed(1) };
+        rackCopies.push(nr);
+        newSelection.push({ kind: "rack", id: nr.id });
+      } else if (it.kind === "shelf") {
+        const s = (layout.shelves || []).find((x) => x.id === it.id);
+        if (!s) continue;
+        const ns = { ...s, id: "s-" + uid(), name: `${s.name || "棚"} (コピー)`, x: +(s.x + OFFSET).toFixed(1), y: +(s.y + OFFSET).toFixed(1) };
+        shelfCopies.push(ns);
+        newSelection.push({ kind: "shelf", id: ns.id });
+      } else if (it.kind === "unit") {
+        const u = units.find((x) => x.id === it.id);
+        if (!u) continue;
+        // 荷物は元の配置に応じてコピー先を決める:
+        //  floor: 床上に OFFSET だけずらして配置 (見えるように)
+        //  shelf: 同じ棚上に OFFSET だけずらして配置
+        //  rack/unplaced: 未配置 (rackは離散スロット競合を避ける)
+        let newLoc;
+        if (u.loc?.kind === "floor") {
+          newLoc = { kind: "floor", x: +((u.loc.x || 0) + OFFSET).toFixed(1), y: +((u.loc.y || 0) + OFFSET).toFixed(1) };
+        } else if (u.loc?.kind === "shelf") {
+          newLoc = { kind: "shelf", shelfId: u.loc.shelfId, x: +((u.loc.x || 0) + OFFSET).toFixed(1), y: +((u.loc.y || 0) + OFFSET).toFixed(1) };
+        } else {
+          newLoc = { kind: "unplaced" };
+        }
+        const nu = {
+          ...u,
+          id: "u-" + uid(),
+          name: `${u.name || "荷物"} (コピー)`,
+          loc: newLoc,
+          status: newLoc.kind === "unplaced" ? "unplaced" : u.status,
+          // 出入庫履歴・画像はコピーしない (誤って共有されないように)
+          arrivalHistory: [],
+          departureHistory: [],
+          imageUrls: [],
+          createdAt: new Date().toISOString(),
+        };
+        unitCopies.push(nu);
+        newSelection.push({ kind: "unit", id: nu.id });
+      }
+    }
+
+    if (newSelection.length === 0) {
+      showToast("複製できるオブジェクトがありません");
+      return;
+    }
+
+    pushHistory();
+
+    if (zoneCopies.length > 0 || rackCopies.length > 0 || shelfCopies.length > 0) {
+      setLayout((prev) => ({
+        ...prev,
+        zones: [...prev.zones, ...zoneCopies],
+        racks: [...prev.racks, ...rackCopies],
+        shelves: [...(prev.shelves || []), ...shelfCopies],
+      }));
+    }
+    if (unitCopies.length > 0) {
+      setUnits((prev) => [...prev, ...unitCopies]);
+    }
+
+    // 複製後は新しいアイテムを選択状態にする
+    if (newSelection.length === 1) {
+      setSelected(newSelection[0]);
+      setMultiSelected([]);
+    } else {
+      setMultiSelected(newSelection);
+      setSelected(null);
+    }
+    showToast(`${newSelection.length}件複製しました`);
   }
 
   function rotateSelectedGroup() {
@@ -4796,11 +5094,12 @@ ${cs.units.length > 0 ? `
     const du = drag.type === "move_unit" ? units.find((x) => x.id === drag.unitId) : drag.draftUnit;
     if (!du) return null;
     const dfp = unitFootprintCells(du);
-    const { cx, cy } = toCell(drag.pointerX, drag.pointerY);
+    const { cx, cy, wx, wy } = toCell(drag.pointerX, drag.pointerY);
     const fx = layout.floor.x || 0, fy = layout.floor.y || 0;
     let px, py;
     if (drag.type === "move_unit") {
-      const ddx = cx - (drag.offsetCx || 0), ddy = cy - (drag.offsetCy || 0);
+      const ddx = +(wx / cellPx - (drag.offsetCx || 0)).toFixed(1);
+      const ddy = +(wy / cellPx - (drag.offsetCy || 0)).toFixed(1);
       px = clamp(ddx, fx, fx + layout.floor.cols - dfp.w);
       py = clamp(ddy, fy, fy + layout.floor.rows - dfp.h);
     } else {
@@ -5097,6 +5396,15 @@ ${cs.units.length > 0 ? `
           >
             担当者管理
           </button>
+          <button
+            className="rounded-xl border-2 shadow-sm font-bold"
+            style={{ padding: "8px 12px", fontSize: "18px", background: "linear-gradient(135deg, #f1f5f9, #e2e8f0)", color: "#475569", borderColor: "#cbd5e1", cursor: "pointer" }}
+            onClick={() => setSizePresetsModalOpen(true)}
+            type="button"
+            title="サイズプリセット設定"
+          >
+            ⚙
+          </button>
           {/* Auth UI */}
           <div className="ml-1 border-l pl-2 flex items-center gap-2">
             {isLoggedIn ? (
@@ -5256,37 +5564,41 @@ ${cs.units.length > 0 ? `
         <div className="space-y-5">
           {/* テンプレート選択 */}
           <div>
-            <div className="flex items-center gap-2 mb-2">
-              <div className="w-1 h-4 rounded-full" style={{ background: "#3b82f6" }} />
-              <div className="text-sm font-bold text-gray-700">テンプレート</div>
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <div className="w-1 h-4 rounded-full" style={{ background: "#3b82f6" }} />
+                <div className="text-sm font-bold text-gray-700">テンプレート</div>
+              </div>
+              <button
+                type="button"
+                className="text-xs text-blue-600 hover:underline"
+                onClick={() => setSizePresetsModalOpen(true)}
+              >
+                プリセット編集
+              </button>
             </div>
             <div className="grid grid-cols-4 gap-2">
-              {[
-                { k: "パレット", icon: "\u{1f4e6}", w: "1.2", d: "1.0", h: "1.6", color: "#dbeafe", activeColor: "#3b82f6" },
-                { k: "カゴ", icon: "\u{1f6d2}", w: "0.8", d: "0.6", h: "0.7", color: "#d1fae5", activeColor: "#10b981" },
-                { k: "単体荷物", icon: "\u{1f4e6}", w: "0.4", d: "0.3", h: "0.25", color: "#fef3c7", activeColor: "#f59e0b" },
-                { k: "配電盤", icon: "\u{26a1}", w: "1.0", d: "0.5", h: "1.8", color: "#fef9c3", activeColor: "#eab308" },
-              ].map((t) => {
-                const isActive = template === t.k;
+              {(sizePresets.units || []).map((t) => {
+                const isActive = template === t.name;
                 return (
                   <button
-                    key={t.k}
+                    key={t.id}
                     type="button"
                     className="flex flex-col items-center rounded-xl border-2 p-2 select-none"
                     style={{
-                      background: isActive ? t.activeColor : t.color,
-                      borderColor: isActive ? t.activeColor : "transparent",
+                      background: isActive ? (t.activeColor || "#3b82f6") : (t.color || "#f8fafc"),
+                      borderColor: isActive ? (t.activeColor || "#3b82f6") : "transparent",
                       color: isActive ? "#fff" : "#334155",
                       transition: "all 0.15s",
                     }}
                     onClick={() => {
-                      setTemplate(t.k);
-                      setForm((s) => ({ ...s, w: t.w, d: t.d, h: t.h }));
+                      setTemplate(t.name);
+                      setForm((s) => ({ ...s, w: String(t.w_m), d: String(t.d_m), h: String(t.h_m) }));
                     }}
                   >
-                    <span style={{ fontSize: 22 }}>{t.icon}</span>
-                    <span className="mt-0.5 text-xs font-bold">{t.k}</span>
-                    <span className="text-[10px]" style={{ opacity: 0.7 }}>{t.w}x{t.d}x{t.h}m</span>
+                    <span style={{ fontSize: 22 }}>{t.icon || "\u{1f4e6}"}</span>
+                    <span className="mt-0.5 text-xs font-bold">{t.name}</span>
+                    <span className="text-[10px]" style={{ opacity: 0.7 }}>{t.w_m}x{t.d_m}x{t.h_m}m</span>
                   </button>
                 );
               })}
@@ -5557,6 +5869,15 @@ ${cs.units.length > 0 ? `
             作成
           </button>
         </div>
+      </Modal>
+
+      {/* サイズプリセット設定モーダル */}
+      <Modal title="サイズプリセット設定" open={sizePresetsModalOpen} onClose={() => setSizePresetsModalOpen(false)} maxWidth="42rem">
+        <SizePresetsEditor
+          sizePresets={sizePresets}
+          setSizePresets={setSizePresets}
+          onClose={() => setSizePresetsModalOpen(false)}
+        />
       </Modal>
 
       {/* Body */}
@@ -6791,10 +7112,10 @@ ${cs.units.length > 0 ? `
               {drag?.type === "move_unit" && (() => {
                 const u = unitsRef.current.find((x) => x.id === drag.unitId);
                 if (!u) return null;
-                const { cx, cy } = toCell(drag.pointerX, drag.pointerY);
+                const { cx, cy, wx, wy } = toCell(drag.pointerX, drag.pointerY);
                 const fp = unitFootprintCells(u);
-                const dropX = cx - (drag.offsetCx || 0);
-                const dropY = cy - (drag.offsetCy || 0);
+                const dropX = +(wx / cellPx - (drag.offsetCx || 0)).toFixed(1);
+                const dropY = +(wy / cellPx - (drag.offsetCy || 0)).toFixed(1);
 
                 // Check if pointer is over a rack slot
                 const rackSlot = findRackSlotAtCell(cx, cy);
@@ -6825,8 +7146,8 @@ ${cs.units.length > 0 ? `
                 const shelf = findShelfAtCell(cx, cy);
                 if (shelf) {
                   const local = worldToShelfLocal(shelf, dropX, dropY);
-                  const localX = clamp(Math.floor(local.localX), 0, shelf.w - fp.w);
-                  const localY = clamp(Math.floor(local.localY), 0, shelf.h - fp.h);
+                  const localX = clamp(+local.localX.toFixed(1), 0, +(shelf.w - fp.w).toFixed(1));
+                  const localY = clamp(+local.localY.toFixed(1), 0, +(shelf.h - fp.h).toFixed(1));
                   const wp = shelfLocalToWorld(shelf, localX, localY);
                   return (
                     <div
@@ -6978,6 +7299,29 @@ ${cs.units.length > 0 ? `
                 ))}
               </div>
 
+              {/* 棚の新規作成サイズプリセット */}
+              <div className="mt-2 flex items-center gap-2">
+                <label className="text-xs text-gray-600 whitespace-nowrap">棚サイズ:</label>
+                <select
+                  className="flex-1 rounded-lg border border-slate-200 px-2 py-1 text-xs bg-white"
+                  value={selectedShelfPresetId || ""}
+                  onChange={(e) => setSelectedShelfPresetId(e.target.value || null)}
+                >
+                  <option value="">デフォルト (6×4)</option>
+                  {(sizePresets.shelves || []).map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="text-xs text-blue-600 hover:underline whitespace-nowrap"
+                  onClick={() => setSizePresetsModalOpen(true)}
+                  title="プリセットを編集"
+                >
+                  編集
+                </button>
+              </div>
+
               <div className="mt-2 rounded-2xl border bg-gray-50 p-3 text-xs text-gray-700">
                 区画/ラック/棚を<strong>ドラッグで移動</strong>、右下ハンドルでリサイズできます。
               </div>
@@ -7113,6 +7457,16 @@ ${cs.units.length > 0 ? `
                           type="button"
                         >
                           一括回転
+                        </button>
+                      )}
+                      {selectionSet.some((s) => s.kind === "unit" || s.kind === "zone" || s.kind === "shelf" || s.kind === "rack") && (
+                        <button
+                          className="rounded-xl border px-3 py-2 text-sm hover:bg-emerald-50 bg-emerald-50 text-emerald-700 border-emerald-300"
+                          onClick={duplicateSelected}
+                          type="button"
+                          title="選択中のオブジェクトを複製 (中身は含めない)"
+                        >
+                          {selectionSet.length > 1 ? "一括複製" : "複製"}
                         </button>
                       )}
                       <button
@@ -8119,6 +8473,15 @@ ${cs.units.length > 0 ? `
                       })()}
                     </div>
                     <div className="text-xs text-gray-500">選択中のアイテムをドラッグでグループ移動できます。</div>
+                    {selectionSet.some((s) => s.kind === "unit" || s.kind === "zone" || s.kind === "shelf" || s.kind === "rack") && (
+                      <button
+                        className="rounded-xl border px-3 py-2 text-sm hover:bg-emerald-50 bg-emerald-50 text-emerald-700 border-emerald-300 w-full"
+                        onClick={() => { if (!requireAuth()) return; duplicateSelected(); }}
+                        type="button"
+                      >
+                        一括複製 ({selectionSet.length}件)
+                      </button>
+                    )}
                     <button
                       className="rounded-xl border px-3 py-2 text-sm hover:bg-red-50 text-red-600 border-red-300 w-full"
                       onClick={() => { if (!requireAuth()) return; removeSelected(); showToast("一括削除しました"); }}
@@ -8131,7 +8494,17 @@ ${cs.units.length > 0 ? `
                   <div className="text-sm text-gray-600">荷物または配電盤をクリックすると詳細が出ます。Ctrl+クリックで複数選択。</div>
                 ) : selected.kind === "zone" ? (
                   <div className="space-y-2">
-                    <div className="text-sm font-semibold">区画: {selectedEntity.name}</div>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-sm font-semibold">区画: {selectedEntity.name}</div>
+                      <button
+                        className="rounded-lg border px-2.5 py-1 text-xs hover:bg-emerald-50 bg-emerald-50 text-emerald-700 border-emerald-300"
+                        type="button"
+                        onClick={() => { if (!requireAuth()) return; duplicateSelected(); }}
+                        title="この区画を複製 (中身は含めない)"
+                      >
+                        複製
+                      </button>
+                    </div>
                     {selectedEntity.client && <div className="text-xs text-gray-500">取引先: {selectedEntity.client}</div>}
                     {/* 予約ON/OFF */}
                     <div className="border-t pt-2 pb-1">
@@ -8331,6 +8704,14 @@ ${cs.units.length > 0 ? `
                         }}
                       >
                         回転
+                      </button>
+                      <button
+                        className="rounded-xl border px-3 py-2 text-sm hover:bg-emerald-50 bg-emerald-50 text-emerald-700 border-emerald-300"
+                        type="button"
+                        onClick={() => { if (!requireAuth()) return; duplicateSelected(); }}
+                        title="この荷物を複製 (履歴・画像はコピーしない)"
+                      >
+                        複製
                       </button>
                       <button
                         className="rounded-xl border px-3 py-2 text-sm hover:bg-gray-50"
