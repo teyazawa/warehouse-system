@@ -1554,6 +1554,12 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
   useEffect(() => { panelsRef.current = panels; }, [panels]);
   // unitsRef は下で既に定義済み
 
+  // クリック(≒ゼロ距離ドラッグ)で位置が丸め誤差ぶんずれるのを防ぐ:
+  // 閾値を超えるまで pushHistory と位置更新をスキップする
+  const dragMovedRef = useRef(false);
+  const dragHistoryPushedRef = useRef(false);
+  const CLICK_PX = 3;
+
   const pushHistory = useCallback(() => {
     if (!isLoggedIn) return;
     const snap = {
@@ -2679,7 +2685,8 @@ const allClientNames = useMemo(() => {
     e.preventDefault();
     const u = units.find((x) => x.id === unitId);
     if (!u) return;
-    pushHistory();
+    dragMovedRef.current = false;
+    dragHistoryPushedRef.current = false;
 
     // ラック内の荷物ドラッグは常に単体移動（group_moveへの誤爆を防ぐ）
     const isInRack = u.loc?.kind === "rack";
@@ -2740,7 +2747,8 @@ const allClientNames = useMemo(() => {
 
   function beginMoveFloor(e) {
     e.stopPropagation();
-    pushHistory();
+    dragMovedRef.current = false;
+    dragHistoryPushedRef.current = false;
     setSelected({ kind: "floor" });
     setDrag({
       type: "move_floor",
@@ -2754,7 +2762,8 @@ const allClientNames = useMemo(() => {
     e.stopPropagation();
     const z = layout.zones.find((x) => x.id === id);
     if (!z) return;
-    pushHistory();
+    dragMovedRef.current = false;
+    dragHistoryPushedRef.current = false;
     if (selectionSet.length > 1 && isItemSelected("zone", id)) {
       setDrag({ type: "group_move", startX: e.clientX, startY: e.clientY, pointerX: e.clientX, pointerY: e.clientY });
       return;
@@ -2791,7 +2800,8 @@ const allClientNames = useMemo(() => {
     e.stopPropagation();
     const r = layout.racks.find((x) => x.id === id);
     if (!r) return;
-    pushHistory();
+    dragMovedRef.current = false;
+    dragHistoryPushedRef.current = false;
     if (selectionSet.length > 1 && isItemSelected("rack", id)) {
       setDrag({ type: "group_move", startX: e.clientX, startY: e.clientY, pointerX: e.clientX, pointerY: e.clientY });
       return;
@@ -2814,7 +2824,8 @@ const allClientNames = useMemo(() => {
     e.stopPropagation();
     const s = (layout.shelves || []).find((x) => x.id === id);
     if (!s) return;
-    pushHistory();
+    dragMovedRef.current = false;
+    dragHistoryPushedRef.current = false;
     if (selectionSet.length > 1 && isItemSelected("shelf", id)) {
       setDrag({ type: "group_move", startX: e.clientX, startY: e.clientY, pointerX: e.clientX, pointerY: e.clientY });
       return;
@@ -2837,7 +2848,8 @@ const allClientNames = useMemo(() => {
     e.stopPropagation();
     const p = panels.find((x) => x.id === id);
     if (!p) return;
-    pushHistory();
+    dragMovedRef.current = false;
+    dragHistoryPushedRef.current = false;
     if (selectionSet.length > 1 && isItemSelected("panel", id)) {
       setDrag({ type: "group_move", startX: e.clientX, startY: e.clientY, pointerX: e.clientX, pointerY: e.clientY });
       return;
@@ -3047,6 +3059,26 @@ const allClientNames = useMemo(() => {
     if (drag.type === "group_move") {
       setDrag((d) => (d ? { ...d, pointerX: e.clientX, pointerY: e.clientY } : d));
       return;
+    }
+
+    // クリック判定: ピクセル閾値を超えるまで位置更新をスキップ (丸め誤差による微小ずれを防ぐ)
+    const isMoveDrag = (
+      drag.type === "move_zone" || drag.type === "move_panel" || drag.type === "move_unit" ||
+      drag.type === "move_shelf" || drag.type === "move_rack" || drag.type === "move_floor"
+    );
+    if (isMoveDrag && !dragMovedRef.current) {
+      if (Math.abs(e.clientX - drag.startX) < CLICK_PX && Math.abs(e.clientY - drag.startY) < CLICK_PX) {
+        // まだクリック状態: zone/panel/unit はドロップ判定用にpointer追跡だけ更新
+        if (drag.type === "move_zone" || drag.type === "move_panel" || drag.type === "move_unit") {
+          setDrag((d) => d ? { ...d, pointerX: e.clientX, pointerY: e.clientY } : d);
+        }
+        return;
+      }
+      dragMovedRef.current = true;
+      if (!dragHistoryPushedRef.current) {
+        dragHistoryPushedRef.current = true;
+        pushHistory();
+      }
     }
 
     const dx = Math.round((e.clientX - drag.startX) / zoom / cellPx * 10) / 10;
@@ -3490,6 +3522,7 @@ const allClientNames = useMemo(() => {
     }
 
     if (drag.type === "move_unit") {
+      if (!dragMovedRef.current) { setDrag(null); return; }
       if (!requireAuth()) { setDrag(null); return; }
       const u = unitsRef.current.find((x) => x.id === drag.unitId);
       if (!u) {
@@ -3589,6 +3622,7 @@ const allClientNames = useMemo(() => {
     }
 
     if (drag.type === "move_zone") {
+      if (!dragMovedRef.current) { setDrag(null); return; }
       const z = layout.zones.find((x) => x.id === drag.id);
       if (!z) { setDrag(null); return; }
 
@@ -3709,6 +3743,7 @@ const allClientNames = useMemo(() => {
     }
 
     if (drag.type === "move_panel") {
+      if (!dragMovedRef.current) { setDrag(null); return; }
       const p = panels.find((x) => x.id === drag.id);
       if (!p) { setDrag(null); return; }
 
