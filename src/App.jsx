@@ -2030,10 +2030,89 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
     else if (kind === "shelf") setLayout((p) => ({ ...p, shelves: (p.shelves || []).map((s) => s.id === id ? { ...s, zOrder } : s) }));
     else if (kind === "unit") setUnits((prev) => prev.map((u) => u.id === id ? { ...u, zOrder } : u));
   };
-  const zBringToFront = (kind, id) => { const zs = getLayerZs(kind); setObjZ(kind, id, (zs.length ? Math.max(...zs) : 0) + 1); setContextMenu(null); };
-  const zBringToBack = (kind, id) => { const zs = getLayerZs(kind); setObjZ(kind, id, (zs.length ? Math.min(...zs) : 0) - 1); setContextMenu(null); };
-  const zBringForward = (kind, id) => { setObjZ(kind, id, getObjZ(kind, id) + 1); setContextMenu(null); };
-  const zBringBackward = (kind, id) => { setObjZ(kind, id, getObjZ(kind, id) - 1); setContextMenu(null); };
+  // 床は zIndex: 0、bg (zone/shelf/rack) は [1, 999]、unit は effective (UNIT_BASE_Z + zOrder) >= UNIT_BASE_Z の 3 層構造。荷物は必ず区画より上。
+  const zSafeMin = (kind) => (kind === "unit" ? 0 : 1);
+  const zSafeMax = (kind) => (kind === "unit" ? Infinity : 999);
+  // 最前面へ: 他要素の max + 1 に置く。それが safeMax を上回るなら、他要素を一律 shift down して target を safeMax に着地させる (bg が unit の帯域 (>=1000) に食い込むのを防ぐ)。
+  const zBringToFront = (kind, id) => {
+    pushHistory();
+    const safeMax = zSafeMax(kind);
+    if (isBgKind(kind)) {
+      const collectOthers = (arr, k, def) => arr.filter((o) => !(kind === k && o.id === id)).map((o) => o.zOrder ?? def);
+      const others = [
+        ...collectOthers(layoutRef.current.zones, "zone", zDefault.zone),
+        ...collectOthers(layoutRef.current.racks, "rack", zDefault.rack),
+        ...collectOthers(layoutRef.current.shelves || [], "shelf", zDefault.shelf),
+      ];
+      const othersMax = others.length ? Math.max(...others) : safeMax - 1;
+      const proposed = othersMax + 1;
+      if (proposed <= safeMax) {
+        setLayout((p) => ({
+          ...p,
+          zones: p.zones.map((z) => (kind === "zone" && z.id === id ? { ...z, zOrder: proposed } : z)),
+          racks: p.racks.map((r) => (kind === "rack" && r.id === id ? { ...r, zOrder: proposed } : r)),
+          shelves: (p.shelves || []).map((s) => (kind === "shelf" && s.id === id ? { ...s, zOrder: proposed } : s)),
+        }));
+      } else {
+        const shift = safeMax - 1 - othersMax; // negative
+        setLayout((p) => ({
+          ...p,
+          zones: p.zones.map((z) => (kind === "zone" && z.id === id ? { ...z, zOrder: safeMax } : { ...z, zOrder: (z.zOrder ?? zDefault.zone) + shift })),
+          racks: p.racks.map((r) => (kind === "rack" && r.id === id ? { ...r, zOrder: safeMax } : { ...r, zOrder: (r.zOrder ?? zDefault.rack) + shift })),
+          shelves: (p.shelves || []).map((s) => (kind === "shelf" && s.id === id ? { ...s, zOrder: safeMax } : { ...s, zOrder: (s.zOrder ?? zDefault.shelf) + shift })),
+        }));
+      }
+    } else if (kind === "unit") {
+      const zs = getLayerZs(kind);
+      const proposed = (zs.length ? Math.max(...zs) : 0) + 1;
+      setUnits((prev) => prev.map((u) => (u.id === id ? { ...u, zOrder: proposed } : u)));
+    }
+    setContextMenu(null);
+  };
+  // 最背面へ: 他要素の min - 1 に置く。それが safeMin を下回るなら、他要素を一律 shift up して target を safeMin に着地させる (重なり同値でも確実に背面に回す)。
+  const zBringToBack = (kind, id) => {
+    pushHistory();
+    const safeMin = zSafeMin(kind);
+    if (isBgKind(kind)) {
+      const collectOthers = (arr, k, def) => arr.filter((o) => !(kind === k && o.id === id)).map((o) => o.zOrder ?? def);
+      const others = [
+        ...collectOthers(layoutRef.current.zones, "zone", zDefault.zone),
+        ...collectOthers(layoutRef.current.racks, "rack", zDefault.rack),
+        ...collectOthers(layoutRef.current.shelves || [], "shelf", zDefault.shelf),
+      ];
+      const othersMin = others.length ? Math.min(...others) : safeMin + 1;
+      const proposed = othersMin - 1;
+      if (proposed >= safeMin) {
+        setLayout((p) => ({
+          ...p,
+          zones: p.zones.map((z) => (kind === "zone" && z.id === id ? { ...z, zOrder: proposed } : z)),
+          racks: p.racks.map((r) => (kind === "rack" && r.id === id ? { ...r, zOrder: proposed } : r)),
+          shelves: (p.shelves || []).map((s) => (kind === "shelf" && s.id === id ? { ...s, zOrder: proposed } : s)),
+        }));
+      } else {
+        const shift = safeMin + 1 - othersMin;
+        setLayout((p) => ({
+          ...p,
+          zones: p.zones.map((z) => (kind === "zone" && z.id === id ? { ...z, zOrder: safeMin } : { ...z, zOrder: (z.zOrder ?? zDefault.zone) + shift })),
+          racks: p.racks.map((r) => (kind === "rack" && r.id === id ? { ...r, zOrder: safeMin } : { ...r, zOrder: (r.zOrder ?? zDefault.rack) + shift })),
+          shelves: (p.shelves || []).map((s) => (kind === "shelf" && s.id === id ? { ...s, zOrder: safeMin } : { ...s, zOrder: (s.zOrder ?? zDefault.shelf) + shift })),
+        }));
+      }
+    } else if (kind === "unit") {
+      const others = unitsRef.current.filter((u) => u.id !== id).map((u) => u.zOrder ?? zDefault.unit);
+      const othersMin = others.length ? Math.min(...others) : safeMin + 1;
+      const proposed = othersMin - 1;
+      if (proposed >= safeMin) {
+        setUnits((prev) => prev.map((u) => (u.id === id ? { ...u, zOrder: proposed } : u)));
+      } else {
+        const shift = safeMin + 1 - othersMin;
+        setUnits((prev) => prev.map((u) => (u.id === id ? { ...u, zOrder: safeMin } : { ...u, zOrder: (u.zOrder ?? zDefault.unit) + shift })));
+      }
+    }
+    setContextMenu(null);
+  };
+  const zBringForward = (kind, id) => { setObjZ(kind, id, Math.min(zSafeMax(kind), getObjZ(kind, id) + 1)); setContextMenu(null); };
+  const zBringBackward = (kind, id) => { setObjZ(kind, id, Math.max(zSafeMin(kind), getObjZ(kind, id) - 1)); setContextMenu(null); };
 
   const openContextMenu = (e, kind, id) => {
     if (mode !== "layout") return;
@@ -3903,6 +3982,22 @@ const allClientNames = useMemo(() => {
           setDrag(null);
           return;
         }
+        // 移動先の区画内に既存の荷物 (旧区画内のものを除く) がある場合は警告
+        const capturedShelfUnits = units.filter((u) => {
+          if (isUnitInOldZone(u)) return false;
+          if (u.loc?.kind !== "shelf" || u.loc.shelfId !== shelf.id) return false;
+          const fp = unitFootprintCells(u);
+          const ux = u.loc.x || 0, uy = u.loc.y || 0;
+          return ux >= clampedX && uy >= clampedY && ux + fp.w <= clampedX + z.w && uy + fp.h <= clampedY + z.h;
+        });
+        if (capturedShelfUnits.length > 0) {
+          const names = capturedShelfUnits.slice(0, 5).map((u) => u.name || u.kind || u.id).join("、");
+          const suffix = capturedShelfUnits.length > 5 ? ` ほか${capturedShelfUnits.length - 5}件` : "";
+          if (!confirm(`移動先に荷物が ${capturedShelfUnits.length} 件あり、この区画に取り込まれます。\n\n${names}${suffix}\n\nこのまま移動しますか？`)) {
+            setDrag(null);
+            return;
+          }
+        }
         const newZoneLoc = { kind: "shelf", shelfId: shelf.id, x: clampedX, y: clampedY };
         setLayout((prev) => ({
           ...prev,
@@ -3951,6 +4046,22 @@ const allClientNames = useMemo(() => {
         showToast("他の区画と重なるため移動できません");
         setDrag(null);
         return;
+      }
+      // 移動先の区画内に既存の荷物 (旧区画内のものを除く) がある場合は警告
+      const capturedFloorUnits = units.filter((u) => {
+        if (isUnitInOldZone(u)) return false;
+        if (u.loc?.kind !== "floor") return false;
+        const fp = unitFootprintCells(u);
+        const ux = u.loc.x || 0, uy = u.loc.y || 0;
+        return ux >= floorX && uy >= floorY && ux + fp.w <= floorX + z.w && uy + fp.h <= floorY + z.h;
+      });
+      if (capturedFloorUnits.length > 0) {
+        const names = capturedFloorUnits.slice(0, 5).map((u) => u.name || u.kind || u.id).join("、");
+        const suffix = capturedFloorUnits.length > 5 ? ` ほか${capturedFloorUnits.length - 5}件` : "";
+        if (!confirm(`移動先に荷物が ${capturedFloorUnits.length} 件あり、この区画に取り込まれます。\n\n${names}${suffix}\n\nこのまま移動しますか？`)) {
+          setDrag(null);
+          return;
+        }
       }
       const moveDx = floorX - oldZX;
       const moveDy = floorY - oldZY;
@@ -6218,7 +6329,7 @@ ${cs.units.length > 0 ? `
                 transformOrigin: "0 0",
               }}
             >
-              {/* Floor boundary - the main floor area - z-index: 1 */}
+              {/* Floor boundary - the main floor area - always at the very back (z-index: 0) */}
               <div
                 className={`absolute rounded-2xl border-2 border-gray-400 ${mode === "layout" ? "cursor-move" : "cursor-pointer"} ${isItemSelected("floor", undefined) ? "ring-2 ring-black" : ""}`}
                 style={{
@@ -6226,7 +6337,7 @@ ${cs.units.length > 0 ? `
                   top: (layout.floor.y || 0) * cellPx,
                   width: layout.floor.cols * cellPx,
                   height: layout.floor.rows * cellPx,
-                  zIndex: 1,
+                  zIndex: 0,
                   backgroundColor: `${layout.floor.floorBgColor || "#ffffff"}80`,
                 }}
                 onMouseDown={(e) => mode === "layout" && beginMoveFloor(e)}
@@ -6392,7 +6503,7 @@ ${cs.units.length > 0 ? `
                       top: z.y * cellPx,
                       width: z.w * cellPx,
                       height: z.h * cellPx,
-                      zIndex: (hasMovedZone || (zSel && drag?.type === "group_move")) ? 50 : (z.zOrder ?? 1),
+                      zIndex: (hasMovedZone || (zSel && drag?.type === "group_move")) ? 50 : Math.min(999, Math.max(1, z.zOrder ?? 1)),
                       backgroundColor: `rgba(${bgRgb.join(",")}, ${bgOpacity})`,
                       borderColor: effectiveBorderEnabled ? effectiveBorderColor : undefined,
                       transform: zoneDragTransform,
@@ -6478,7 +6589,7 @@ ${cs.units.length > 0 ? `
                       boxShadow: isSel
                         ? "0 8px 20px -4px rgba(0,0,0,0.15), inset 0 1px 0 rgba(255,255,255,0.5)"
                         : "0 4px 12px -2px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.5)",
-                      zIndex: isSel && drag?.type === "group_move" ? 50 : (r.zOrder ?? 4),
+                      zIndex: isSel && drag?.type === "group_move" ? 50 : Math.min(999, Math.max(1, r.zOrder ?? 4)),
                       transform: isSel && groupMoveTransform ? groupMoveTransform : undefined,
                       transition: drag?.type === "group_move" ? "none" : undefined,
                       userSelect: "none",
@@ -6609,7 +6720,7 @@ ${cs.units.length > 0 ? `
                       backgroundColor: `${shelfBgColor}e6`,
                       transform: `${isSel && groupMoveTransform ? groupMoveTransform + " " : ""}rotate(${shelfRotation}deg)`,
                       transformOrigin: "center center",
-                      zIndex: isSel && drag?.type === "group_move" ? 50 : (s.zOrder ?? 2),
+                      zIndex: isSel && drag?.type === "group_move" ? 50 : Math.min(999, Math.max(1, s.zOrder ?? 2)),
                       transition: drag?.type === "group_move" ? "none" : undefined,
                     }}
                     onMouseDown={(e) => mode === "layout" && beginMoveShelf(e, s.id)}
@@ -6738,7 +6849,7 @@ ${cs.units.length > 0 ? `
                               : "linear-gradient(145deg, #ffffff 0%, #f8fafc 100%)",
                             borderColor: isUnitSel ? "#1e293b" : (u.bgColor || "#e2e8f0"),
                             boxShadow: "0 2px 6px rgba(0,0,0,0.12)",
-                            zIndex: hasMovedShelfUnit ? 50 : 8,
+                            zIndex: hasMovedShelfUnit ? 50 : UNIT_BASE_Z,
                             transform: shelfDragTransform,
                             opacity: hasMovedShelfUnit ? 0.7 : undefined,
                             pointerEvents: hasMovedShelfUnit ? "none" : undefined,
@@ -6805,7 +6916,7 @@ ${cs.units.length > 0 ? `
                             height: p.h * cellPx - 2,
                             backgroundColor: `rgba(${panelBgRgb.join(",")}, ${panelBgOpacity})`,
                             borderColor: p.bgColor || "#f59e0b",
-                            zIndex: hasMovedShelfPanel ? 50 : 8,
+                            zIndex: hasMovedShelfPanel ? 50 : UNIT_BASE_Z,
                             transform: shelfPanelDragTransform,
                             opacity: hasMovedShelfPanel ? 0.7 : undefined,
                             pointerEvents: hasMovedShelfPanel ? "none" : undefined,
@@ -6854,7 +6965,7 @@ ${cs.units.length > 0 ? `
                             height: z.h * cellPx,
                             backgroundColor: `rgba(${zBgRgb.join(",")}, ${zBgOpacity})`,
                             borderColor: shelfZoneBorderEnabled ? shelfZoneBorderColor : undefined,
-                            zIndex: hasMovedShelfZone ? 50 : (z.zOrder ?? 3),
+                            zIndex: hasMovedShelfZone ? 50 : Math.min(999, Math.max(1, z.zOrder ?? 3)),
                             transform: shelfZoneDragTransform,
                             opacity: hasMovedShelfZone ? 0.7 : undefined,
                             pointerEvents: hasMovedShelfZone ? "none" : undefined,
@@ -6956,7 +7067,7 @@ ${cs.units.length > 0 ? `
                             : "linear-gradient(145deg, #ffffff 0%, #f8fafc 100%)",
                           borderColor: isUnitSel ? "#1e293b" : (u.bgColor || "#e2e8f0"),
                           boxShadow: "0 2px 6px rgba(0,0,0,0.12)",
-                          zIndex: hasMovedUnit ? 50 : (UNIT_BASE_Z + (u.zOrder ?? 0) + (u.stackZ || 0)),
+                          zIndex: hasMovedUnit ? 50 : Math.max(UNIT_BASE_Z, UNIT_BASE_Z + (u.zOrder ?? 0) + (u.stackZ || 0)),
                           transform: dragTr,
                           opacity: hasMovedUnit ? 0.7 : undefined,
                           pointerEvents: hasMovedUnit ? "none" : undefined,
@@ -7033,7 +7144,7 @@ ${cs.units.length > 0 ? `
                         : (shouldBlink && !isSel) ? undefined : (isSel
                           ? "0 10px 25px -5px rgba(0,0,0,0.15), 0 4px 6px -2px rgba(0,0,0,0.1)"
                           : "0 4px 12px -2px rgba(0,0,0,0.08), 0 2px 4px -1px rgba(0,0,0,0.04)"),
-                      zIndex: (hasMoved || isGroupMoving) ? 50 : (UNIT_BASE_Z + (u.zOrder ?? 0) + (u.stackZ || 0)),
+                      zIndex: (hasMoved || isGroupMoving) ? 50 : Math.max(UNIT_BASE_Z, UNIT_BASE_Z + (u.zOrder ?? 0) + (u.stackZ || 0)),
                       transform: dragTransform,
                       opacity: hasMoved ? 0.7 : (isTransit ? 0.35 : undefined),
                       pointerEvents: hasMoved ? "none" : undefined,
@@ -7099,7 +7210,7 @@ ${cs.units.length > 0 ? `
                       height: p.h * cellPx,
                       backgroundColor: `rgba(${bgRgb.join(",")}, ${bgOpacity})`,
                       borderColor: p.bgColor || "#f59e0b",
-                      zIndex: hasMovedPanel ? 50 : isSel && drag?.type === "group_move" ? 50 : 6,
+                      zIndex: hasMovedPanel ? 50 : isSel && drag?.type === "group_move" ? 50 : UNIT_BASE_Z,
                       transform: panelDragTransform,
                       opacity: hasMovedPanel ? 0.7 : undefined,
                       transition: (hasMovedPanel || drag?.type === "group_move") ? "none" : undefined,
