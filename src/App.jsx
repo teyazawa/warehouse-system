@@ -2972,7 +2972,14 @@ const allClientNames = useMemo(() => {
   }
 
   function findShelfAtCell(cx, cy) {
-    const shelves = (layout.shelves || []).slice().sort((a, b) => (b.zOrder ?? 0) - (a.zOrder ?? 0));
+    // DOM 描画順と一致させるため: zOrder 降順、同値時は配列末尾優先 (index 降順)
+    const arr = layout.shelves || [];
+    const shelves = arr.map((s, i) => ({ s, i })).sort((a, b) => {
+      const za = a.s.zOrder ?? 2;
+      const zb = b.s.zOrder ?? 2;
+      if (zb !== za) return zb - za;
+      return b.i - a.i;
+    }).map((e) => e.s);
     for (const shelf of shelves) {
       const vr = getShelfVisualRect(shelf);
       if (cx >= vr.x && cx < vr.x + vr.w && cy >= vr.y && cy < vr.y + vr.h) {
