@@ -2207,13 +2207,47 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
         return next;
       });
       if (unitTargets.length > 0 || zoneUnitMoves.size > 0) {
-        setUnits((prev) => prev.map((u) => {
-          const isDirect = unitTargets.some((t) => t.id === u.id);
-          const isCascade = zoneUnitMoves.has(u.id) && !isDirect;
-          if (!isDirect && !isCascade) return u;
-          const ux = u.loc.x || 0, uy = u.loc.y || 0;
-          return { ...u, loc: { ...u.loc, x: fx1(ux + dx), y: fx1(uy + dy) } };
-        }));
+        setUnits((prev) => {
+          // 移動対象を先に決定 → その位置基準で下段の stackZ を計算
+          const movedIds = new Set();
+          for (const u of prev) {
+            const isDirect = unitTargets.some((t) => t.id === u.id);
+            const isCascade = zoneUnitMoves.has(u.id) && !isDirect;
+            if (isDirect || isCascade) movedIds.add(u.id);
+          }
+          // 移動後の位置スナップショット (下段検索用)
+          const postMove = prev.map((u) => {
+            if (!movedIds.has(u.id)) return u;
+            const ux = u.loc.x || 0, uy = u.loc.y || 0;
+            return { ...u, loc: { ...u.loc, x: fx1(ux + dx), y: fx1(uy + dy) } };
+          });
+          return postMove.map((u) => {
+            if (!movedIds.has(u.id)) return u;
+            const fp = (u.w_cells != null && u.h_cells != null)
+              ? (u.rot ? { w: Math.max(1, u.h_cells), h: Math.max(1, u.w_cells) } : { w: Math.max(1, u.w_cells), h: Math.max(1, u.h_cells) })
+              : { w: 1, h: 1 };
+            const ux = u.loc.x || 0, uy = u.loc.y || 0;
+            const candidate = { x: ux, y: uy, w: fp.w, h: fp.h };
+            // 下段検索: 同じ場所に居る (自身以外) 同種 loc の荷物を stackZ 昇順で集める
+            const same = postMove.filter((o) => {
+              if (o.id === u.id) return false;
+              if (u.loc?.kind === "floor" && o.loc?.kind === "floor") return true;
+              if (u.loc?.kind === "shelf" && o.loc?.kind === "shelf" && o.loc.shelfId === u.loc.shelfId) return true;
+              return false;
+            });
+            const containing = same.filter((o) => {
+              const ofp = (o.w_cells != null && o.h_cells != null)
+                ? (o.rot ? { w: Math.max(1, o.h_cells), h: Math.max(1, o.w_cells) } : { w: Math.max(1, o.w_cells), h: Math.max(1, o.h_cells) })
+                : { w: 1, h: 1 };
+              const oRect = { x: o.loc.x || 0, y: o.loc.y || 0, w: ofp.w, h: ofp.h };
+              return containsRectLoose(oRect, candidate);
+            }).sort((a, b) => (a.stackZ || 0) - (b.stackZ || 0));
+            const newStackZ = containing.length > 0
+              ? Math.max(...containing.map((i) => (i.stackZ || 0) + (i.h_m || 0)))
+              : 0;
+            return { ...u, stackZ: newStackZ };
+          });
+        });
       }
     };
     window.addEventListener("keydown", onArrow);
@@ -2938,7 +2972,8 @@ const allClientNames = useMemo(() => {
   }
 
   function findShelfAtCell(cx, cy) {
-    for (const shelf of (layout.shelves || [])) {
+    const shelves = (layout.shelves || []).slice().sort((a, b) => (b.zOrder ?? 0) - (a.zOrder ?? 0));
+    for (const shelf of shelves) {
       const vr = getShelfVisualRect(shelf);
       if (cx >= vr.x && cx < vr.x + vr.w && cy >= vr.y && cy < vr.y + vr.h) {
         return shelf;
@@ -2959,6 +2994,43 @@ const allClientNames = useMemo(() => {
     return rects;
   }
 
+  // 棚上で候補矩形を包含する荷物一覧 (床の getContainingStackItems 棚版)
+  function getContainingStackItemsOnShelf(shelfId, candidateRect, excludeUnitId = null, fpFn = null) {
+    const fpFunc = fpFn || unitFootprintCells;
+    const items = [];
+    for (const u of units) {
+      if (u.id === excludeUnitId) continue;
+      if (u.loc?.kind !== "shelf" || u.loc.shelfId !== shelfId) continue;
+      const fp = fpFunc(u);
+      const uRect = { x: u.loc.x || 0, y: u.loc.y || 0, w: fp.w, h: fp.h };
+      if (containsRectLoose(uRect, candidateRect)) items.push(u);
+    }
+    items.sort((a, b) => (a.stackZ || 0) - (b.stackZ || 0));
+    return items;
+  }
+
+  // 棚上での重ね置きスナップ (床の snapToStackTarget 棚版)
+  function snapToStackTargetOnShelf(shelfId, localX, localY, fp, excludeUnitId = null) {
+    const SNAP_DIST = 1.5;
+    let best = null;
+    let bestDist = SNAP_DIST;
+    for (const u of units) {
+      if (u.id === excludeUnitId) continue;
+      if (u.loc?.kind !== "shelf" || u.loc.shelfId !== shelfId) continue;
+      if (!u.stackable) continue;
+      if (u.status === "in_transit") continue;
+      const ufp = unitFootprintCells(u);
+      if (fp.w > ufp.w + 0.3 || fp.h > ufp.h + 0.3) continue;
+      const ux = u.loc.x || 0, uy = u.loc.y || 0;
+      const dist = Math.abs(localX - ux) + Math.abs(localY - uy);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = { x: ux, y: uy };
+      }
+    }
+    return best;
+  }
+
   function canPlaceOnShelf(shelfId, u, localX, localY, excludeUnitId = null) {
     const shelf = (layout.shelves || []).find((s) => s.id === shelfId);
     if (!shelf) return false;
@@ -2969,7 +3041,14 @@ const allClientNames = useMemo(() => {
 
     const candidate = { x: localX, y: localY, w: fp.w, h: fp.h };
     for (const r of occupiedRectsOnShelf(shelfId, excludeUnitId)) {
-      if (overlapsRect(candidate, r)) return false;
+      if (overlapsRect(candidate, r)) {
+        // 重ね置き: 下の荷物のstackableがtrueなら、上に乗せる荷物のstackableは不問
+        if (containsRectLoose(r, candidate)) {
+          const stackItems = getContainingStackItemsOnShelf(shelfId, candidate, excludeUnitId);
+          if (stackItems.some((item) => item.stackable)) continue;
+        }
+        return false;
+      }
     }
     return true;
   }
@@ -3771,10 +3850,18 @@ const allClientNames = useMemo(() => {
       if (shelf) {
         const local = worldToShelfLocal(shelf, cx, cy);
         const fp = unitFootprintCells(u);
-        const clampedX = clamp(Math.floor(local.localX), 0, shelf.w - fp.w);
-        const clampedY = clamp(Math.floor(local.localY), 0, shelf.h - fp.h);
+        let clampedX = clamp(Math.floor(local.localX), 0, shelf.w - fp.w);
+        let clampedY = clamp(Math.floor(local.localY), 0, shelf.h - fp.h);
+        // 棚上の重ね置きスナップ
+        const shelfSnap = snapToStackTargetOnShelf(shelf.id, clampedX, clampedY, fp, origId);
+        if (shelfSnap) { clampedX = shelfSnap.x; clampedY = shelfSnap.y; }
         if (canPlaceOnShelf(shelf.id, u, clampedX, clampedY, origId)) {
-          commitPlacement({ kind: "shelf", shelfId: shelf.id, x: clampedX, y: clampedY });
+          const shelfCandidate = { x: clampedX, y: clampedY, w: fp.w, h: fp.h };
+          const shelfContaining = getContainingStackItemsOnShelf(shelf.id, shelfCandidate, origId);
+          const shelfStackZ = shelfContaining.length > 0
+            ? Math.max(...shelfContaining.map(i => (i.stackZ || 0) + (i.h_m || 0)))
+            : 0;
+          commitPlacement({ kind: "shelf", shelfId: shelf.id, x: clampedX, y: clampedY }, { stackZ: shelfStackZ });
           setDrag(null);
           return;
         } else {
@@ -3865,12 +3952,20 @@ const allClientNames = useMemo(() => {
       const shelf = findShelfAtCell(cx, cy);
       if (shelf) {
         const local = worldToShelfLocal(shelf, dropX, dropY);
-        const clampedX = clamp(+local.localX.toFixed(1), 0, +(shelf.w - fp.w).toFixed(1));
-        const clampedY = clamp(+local.localY.toFixed(1), 0, +(shelf.h - fp.h).toFixed(1));
+        let clampedX = clamp(+local.localX.toFixed(1), 0, +(shelf.w - fp.w).toFixed(1));
+        let clampedY = clamp(+local.localY.toFixed(1), 0, +(shelf.h - fp.h).toFixed(1));
+        // 棚上の重ね置きスナップ
+        const shelfSnap = snapToStackTargetOnShelf(shelf.id, clampedX, clampedY, fp, u.id);
+        if (shelfSnap) { clampedX = shelfSnap.x; clampedY = shelfSnap.y; }
 
         if (canPlaceOnShelf(shelf.id, u, clampedX, clampedY, u.id)) {
+          const shelfCandidate = { x: clampedX, y: clampedY, w: fp.w, h: fp.h };
+          const shelfContaining = getContainingStackItemsOnShelf(shelf.id, shelfCandidate, u.id);
+          const shelfStackZ = shelfContaining.length > 0
+            ? Math.max(...shelfContaining.map(i => (i.stackZ || 0) + (i.h_m || 0)))
+            : 0;
           setUnits((prev) => prev.map((x) =>
-            x.id === u.id ? { ...x, loc: { kind: "shelf", shelfId: shelf.id, x: clampedX, y: clampedY }, status: autoPromoteStatus(x) } : x
+            x.id === u.id ? { ...x, loc: { kind: "shelf", shelfId: shelf.id, x: clampedX, y: clampedY }, stackZ: shelfStackZ, status: autoPromoteStatus(x) } : x
           ));
           setDrag(null);
           return;
@@ -5135,8 +5230,13 @@ ${cs.units.length > 0 ? `
     for (let y = 0; y <= shelf.h - fp.h; y++) {
       for (let x = 0; x <= shelf.w - fp.w; x++) {
         if (canPlaceOnShelf(shelfId, u, x, y, unitId)) {
-          setUnits((prev) => prev.map((x2) => (x2.id === unitId ? { ...x2, loc: { kind: "shelf", shelfId, x, y }, status: autoPromoteStatus(x2) } : x2)));
-          showToast(`棚「${shelf.name || shelfId}」に配置しました`);
+          const candidate = { x, y, w: fp.w, h: fp.h };
+          const containing = getContainingStackItemsOnShelf(shelfId, candidate, unitId);
+          const stackZ = containing.length > 0
+            ? Math.max(...containing.map(i => (i.stackZ || 0) + (i.h_m || 0)))
+            : 0;
+          setUnits((prev) => prev.map((x2) => (x2.id === unitId ? { ...x2, loc: { kind: "shelf", shelfId, x, y }, stackZ, status: autoPromoteStatus(x2) } : x2)));
+          showToast(containing.length > 0 ? `棚「${shelf.name || shelfId}」に積み重ねました（${containing.length + 1}段目）` : `棚「${shelf.name || shelfId}」に配置しました`);
           return;
         }
       }
