@@ -1453,6 +1453,163 @@ function UnitSearchModal({ open, onClose, query, setQuery, searchKey, setSearchK
   );
 }
 
+function ShippedListModal({ open, onClose, shippedUnits, wh }) {
+  const [query, setQuery] = useState("");
+  const [clientFilter, setClientFilter] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+
+  const clientOptions = useMemo(() => {
+    const set = new Set();
+    for (const u of shippedUnits) {
+      if (u.client && typeof u.client === "string" && u.client.trim()) set.add(u.client.trim());
+    }
+    return [...set].sort();
+  }, [shippedUnits]);
+
+  const filtered = useMemo(() => {
+    const getShipTime = (u) => {
+      const raw = u.departureDate || u.shippedAt;
+      const t = raw ? new Date(raw).getTime() : NaN;
+      return isNaN(t) ? 0 : t;
+    };
+    let items = shippedUnits.slice();
+    if (clientFilter) items = items.filter((u) => u.client === clientFilter);
+    if (dateFrom) {
+      const t = new Date(dateFrom + "T00:00:00").getTime();
+      items = items.filter((u) => getShipTime(u) >= t);
+    }
+    if (dateTo) {
+      const t = new Date(dateTo + "T00:00:00").getTime() + 24 * 3600 * 1000;
+      items = items.filter((u) => getShipTime(u) < t);
+    }
+    const q = query.trim().toLowerCase();
+    if (q) {
+      items = items.filter((u) => {
+        return [u.name, u.client, u.notes, u.sku, u.barcode, u.projectName, u.department, u.personInCharge, u.kintoneRecordId]
+          .filter(Boolean)
+          .some((v) => String(v).toLowerCase().includes(q));
+      });
+    }
+    items.sort((a, b) => getShipTime(b) - getShipTime(a));
+    return items;
+  }, [shippedUnits, query, clientFilter, dateFrom, dateTo]);
+
+  if (!open) return null;
+  const capped = filtered.slice(0, 200);
+  const fmtDate = (v) => {
+    if (!v) return "—";
+    const d = new Date(v);
+    if (isNaN(d.getTime())) return "—";
+    return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
+  };
+
+  return (
+    <div
+      style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, zIndex: 99999, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(15,23,42,0.4)", backdropFilter: "blur(4px)", padding: "16px" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{ background: "white", borderRadius: "20px", boxShadow: "0 25px 60px rgba(0,0,0,0.18)", width: "100%", maxWidth: "960px", maxHeight: "88vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 24px 12px", borderBottom: "1px solid #e2e8f0" }}>
+          <span style={{ fontSize: "17px", fontWeight: 700, color: "#1e293b" }}>出庫リスト {wh?.name ? `— ${wh.name}` : ""}</span>
+          <button type="button" onClick={onClose} style={{ background: "none", border: "none", fontSize: "22px", cursor: "pointer", color: "#94a3b8", lineHeight: 1 }}>&times;</button>
+        </div>
+        {/* Filter row */}
+        <div style={{ padding: "12px 24px", display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: "10px", alignItems: "end", borderBottom: "1px solid #f1f5f9" }}>
+          <div>
+            <div style={{ fontSize: "11px", color: "#64748b", marginBottom: "4px", fontWeight: 600 }}>顧客</div>
+            <select
+              value={clientFilter}
+              onChange={(e) => setClientFilter(e.target.value)}
+              style={{ width: "100%", padding: "8px 10px", borderRadius: "10px", border: "1.5px solid #e2e8f0", fontSize: "13px", outline: "none", background: "white", cursor: "pointer" }}
+            >
+              <option value="">-- 全ての顧客 --</option>
+              {clientOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div>
+            <div style={{ fontSize: "11px", color: "#64748b", marginBottom: "4px", fontWeight: 600 }}>出庫日 開始</div>
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+              style={{ width: "100%", padding: "8px 10px", borderRadius: "10px", border: "1.5px solid #e2e8f0", fontSize: "13px", outline: "none" }}
+            />
+          </div>
+          <div>
+            <div style={{ fontSize: "11px", color: "#64748b", marginBottom: "4px", fontWeight: 600 }}>出庫日 終了</div>
+            <input
+              type="date"
+              value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)}
+              style={{ width: "100%", padding: "8px 10px", borderRadius: "10px", border: "1.5px solid #e2e8f0", fontSize: "13px", outline: "none" }}
+            />
+          </div>
+          <div>
+            <div style={{ fontSize: "11px", color: "#64748b", marginBottom: "4px", fontWeight: 600 }}>検索</div>
+            <input
+              placeholder="荷物名/顧客/担当者/SKU 等"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              style={{ width: "100%", padding: "8px 10px", borderRadius: "10px", border: "1.5px solid #e2e8f0", fontSize: "13px", outline: "none" }}
+              onFocus={(e) => e.target.style.borderColor = "#fbbf24"}
+              onBlur={(e) => e.target.style.borderColor = "#e2e8f0"}
+            />
+          </div>
+        </div>
+        {/* Count + Clear */}
+        <div style={{ padding: "8px 24px", fontSize: "12px", color: "#64748b", display: "flex", alignItems: "center", gap: "12px", borderBottom: "1px solid #f1f5f9" }}>
+          <span>{filtered.length} 件{filtered.length > 200 ? "（先頭200件表示）" : ""}</span>
+          {(query || clientFilter || dateFrom || dateTo) && (
+            <button
+              type="button"
+              onClick={() => { setQuery(""); setClientFilter(""); setDateFrom(""); setDateTo(""); }}
+              style={{ background: "#f1f5f9", border: "1px solid #cbd5e1", borderRadius: "12px", padding: "2px 10px", fontSize: "11px", cursor: "pointer", color: "#475569" }}
+            >
+              条件クリア
+            </button>
+          )}
+        </div>
+        {/* Results table */}
+        <div style={{ flex: 1, overflowY: "auto" }}>
+          {capped.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "48px 0", color: "#94a3b8", fontSize: "14px" }}>該当する出庫記録がありません</div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+              <thead style={{ position: "sticky", top: 0, background: "#f8fafc", zIndex: 1 }}>
+                <tr style={{ borderBottom: "1px solid #e2e8f0" }}>
+                  <th style={{ padding: "8px 12px", textAlign: "left", color: "#475569", fontWeight: 700 }}>出庫日</th>
+                  <th style={{ padding: "8px 12px", textAlign: "left", color: "#475569", fontWeight: 700 }}>顧客</th>
+                  <th style={{ padding: "8px 12px", textAlign: "left", color: "#475569", fontWeight: 700 }}>荷物名</th>
+                  <th style={{ padding: "8px 12px", textAlign: "left", color: "#475569", fontWeight: 700 }}>種別</th>
+                  <th style={{ padding: "8px 12px", textAlign: "right", color: "#475569", fontWeight: 700 }}>サイズ (W×D×H)</th>
+                  <th style={{ padding: "8px 12px", textAlign: "right", color: "#475569", fontWeight: 700 }}>数量</th>
+                  <th style={{ padding: "8px 12px", textAlign: "left", color: "#475569", fontWeight: 700 }}>担当</th>
+                  <th style={{ padding: "8px 12px", textAlign: "left", color: "#475569", fontWeight: 700 }}>入庫日</th>
+                </tr>
+              </thead>
+              <tbody>
+                {capped.map((u) => (
+                  <tr key={u.id} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                    <td style={{ padding: "8px 12px", color: "#1e293b", whiteSpace: "nowrap" }}>{fmtDate(u.departureDate || u.shippedAt)}</td>
+                    <td style={{ padding: "8px 12px", color: "#1e293b" }}>{u.client || "—"}</td>
+                    <td style={{ padding: "8px 12px", color: "#1e293b", fontWeight: 600 }}>{u.name || "(名称なし)"}</td>
+                    <td style={{ padding: "8px 12px", color: "#64748b" }}>{u.kind || "—"}</td>
+                    <td style={{ padding: "8px 12px", color: "#64748b", textAlign: "right", whiteSpace: "nowrap" }}>{`${u.w_m || 0}×${u.d_m || 0}×${u.h_m || 0}m`}</td>
+                    <td style={{ padding: "8px 12px", color: "#64748b", textAlign: "right" }}>{u.qty || 1}</td>
+                    <td style={{ padding: "8px 12px", color: "#64748b" }}>{u.personInCharge || "—"}</td>
+                    <td style={{ padding: "8px 12px", color: "#64748b", whiteSpace: "nowrap" }}>{fmtDate(u.arrivalDate)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SimpleGridView({ warehouses, selectedWarehouseId, onSelect, onOpen }) {
   const CARD_W = 160;
   const CARD_H = 200;
@@ -1680,6 +1837,9 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
   const [units, _setUnitsRaw] = useSupabaseState(`wh_demo_units_${wh.id}_v1`, []);
   // units: {id, kind, client, name, w_m,d_m,h_m, qty, status, rot, loc:{kind:'unplaced'|'floor'|'rack', x?,y?, rackId?, slot?}}
 
+  // 出庫予定日を過ぎた荷物の履歴（永続保存）
+  const [shippedUnits, _setShippedUnitsRaw] = useSupabaseState(`wh_demo_shipped_units_${wh.id}_v1`, []);
+
   const [panels, _setPanelsRaw] = useSupabaseState(`wh_demo_panels_${wh.id}_v1`, []);
 
   const [pricing, _setPricingRaw] = useSupabaseState(`wh_demo_pricing_${wh.id}_v1`, {
@@ -1726,6 +1886,10 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
     if (!isLoggedIn) { _authBlock(); return; }
     _setUnitsRaw(...args);
   }, [isLoggedIn, _setUnitsRaw]);
+  const setShippedUnits = useCallback((...args) => {
+    if (!isLoggedIn) { _authBlock(); return; }
+    _setShippedUnitsRaw(...args);
+  }, [isLoggedIn, _setShippedUnitsRaw]);
   const setPanels = useCallback((...args) => {
     if (!isLoggedIn) { return; }
     _setPanelsRaw(...args);
@@ -1876,6 +2040,38 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
     _setUnitsRaw((prev) => [...prev, ...newUnits]);
     _setPanelsRaw([]);
   }, []);
+
+  // 出庫予定日を過ぎた荷物を shippedUnits に移動 (翌日0時から出庫扱い)
+  // idempotent: 移動済みは units から除去済みなので再実行しても no-op
+  useEffect(() => {
+    if (!isLoggedIn) return; // 閲覧モードではデータを変更しない
+    if (!units || units.length === 0) return;
+    const now = new Date();
+    const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const toShip = units.filter((u) => {
+      if (!u.departureDate) return false;
+      const t = new Date(u.departureDate).getTime();
+      return !isNaN(t) && t < today0;
+    });
+    if (toShip.length === 0) return;
+    const toShipIds = new Set(toShip.map((u) => u.id));
+    const shippedAtISO = new Date().toISOString();
+    const shipRecords = toShip.map((u) => ({
+      ...u,
+      shippedAt: shippedAtISO,
+      _originalWhId: wh.id,
+      _originalWhName: wh.name,
+      _originalLoc: u.loc,
+      loc: { kind: "shipped" },
+      status: "shipped",
+    }));
+    _setShippedUnitsRaw((prev) => {
+      const existing = new Set(prev.map((r) => r.id));
+      const fresh = shipRecords.filter((r) => !existing.has(r.id));
+      return fresh.length > 0 ? [...prev, ...fresh] : prev;
+    });
+    _setUnitsRaw((prev) => prev.filter((u) => !toShipIds.has(u.id)));
+  }, [units, isLoggedIn, wh.id, wh.name, _setShippedUnitsRaw, _setUnitsRaw]);
 
   // 仮置き場ゾーンの自動作成（既存オブジェクトと重ならない空き位置を探索）
   const stagingCreatedRef = useRef(false);
@@ -2114,6 +2310,49 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
   const zBringForward = (kind, id) => { setObjZ(kind, id, Math.min(zSafeMax(kind), getObjZ(kind, id) + 1)); setContextMenu(null); };
   const zBringBackward = (kind, id) => { setObjZ(kind, id, Math.max(zSafeMin(kind), getObjZ(kind, id) - 1)); setContextMenu(null); };
 
+  // 棚のグループ化: 対象IDs を1つのgroupIdでまとめる
+  const groupShelves = (ids) => {
+    if (!ids || ids.length < 2) { setContextMenu(null); return; }
+    pushHistory();
+    const gid = "g-" + uid();
+    const idSet = new Set(ids);
+    setLayout((prev) => ({
+      ...prev,
+      shelves: (prev.shelves || []).map((s) => idSet.has(s.id) ? { ...s, groupId: gid } : s),
+    }));
+    // グループ化した棚のみを選択状態にする (範囲選択で紛れ込んだ区画/ラック等を除外)
+    const shelfSel = ids.map((id) => ({ kind: "shelf", id }));
+    setSelected(shelfSel[0]);
+    setMultiSelected(shelfSel.slice(1));
+    setContextMenu(null);
+  };
+  // グループ解除: 対象IDs のgroupIdを外す。同グループの残りメンバーが1個以下になる場合、そのメンバーも解除
+  const ungroupShelves = (ids) => {
+    if (!ids || ids.length === 0) { setContextMenu(null); return; }
+    pushHistory();
+    const idSet = new Set(ids);
+    setLayout((prev) => {
+      const shelves = (prev.shelves || []);
+      // 対象棚の元のgroupIdを収集
+      const affectedGroupIds = new Set();
+      for (const s of shelves) {
+        if (idSet.has(s.id) && s.groupId) affectedGroupIds.add(s.groupId);
+      }
+      // 対象棚を除外して、まずgroupIdを外す
+      let next = shelves.map((s) => idSet.has(s.id) ? { ...s, groupId: null } : s);
+      // 影響を受けたgroupごとに残りメンバー数を数え、1個以下なら残りメンバーも解除
+      for (const gid of affectedGroupIds) {
+        const remaining = next.filter((s) => s.groupId === gid);
+        if (remaining.length <= 1) {
+          const remIds = new Set(remaining.map((s) => s.id));
+          next = next.map((s) => remIds.has(s.id) ? { ...s, groupId: null } : s);
+        }
+      }
+      return { ...prev, shelves: next };
+    });
+    setContextMenu(null);
+  };
+
   const openContextMenu = (e, kind, id) => {
     if (mode !== "layout") return;
     e.preventDefault();
@@ -2199,7 +2438,10 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
           next = { ...next, racks: next.racks.map((r) => rackTargets.some((t) => t.id === r.id) ? { ...r, x: fx1(r.x + dx), y: fx1(r.y + dy) } : r) };
         }
         if (shelfTargets.length > 0) {
-          next = { ...next, shelves: (next.shelves || []).map((s) => shelfTargets.some((t) => t.id === s.id) ? { ...s, x: fx1(s.x + dx), y: fx1(s.y + dy) } : s) };
+          const shelvesArr = next.shelves || [];
+          const targetIds = shelfTargets.map((t) => t.id);
+          const expandedIds = expandShelfIdsByGroup(shelvesArr, targetIds);
+          next = { ...next, shelves: shelvesArr.map((s) => expandedIds.has(s.id) ? { ...s, x: fx1(s.x + dx), y: fx1(s.y + dy) } : s) };
         }
         if (hasFloor) {
           next = { ...next, floor: { ...next.floor, x: fx1((next.floor.x || 0) + dx), y: fx1((next.floor.y || 0) + dy) } };
@@ -2328,6 +2570,8 @@ const [invoicePeriod, setInvoicePeriod] = useState({ start: "", end: "" });
 const [invoiceFilters, setInvoiceFilters] = useState({ client: "", department: "", clientContact: "" });
 const [newPersonName, setNewPersonName] = useState("");
 const personList = site?.personList || [];
+// 出庫リストモーダル
+const [shippedListOpen, setShippedListOpen] = useState(false);
 // 顧客スプレッドシート管理モーダル
 const [customerSheetModalOpen, setCustomerSheetModalOpen] = useState(false);
 const [selectedSheetClient, setSelectedSheetClient] = useState("");
@@ -2702,6 +2946,28 @@ const allClientNames = useMemo(() => {
   function overlapsRect(a, b) {
     const EPS = 0.001;
     return a.x < b.x + b.w - EPS && a.x + a.w > b.x + EPS && a.y < b.y + b.h - EPS && a.y + a.h > b.y + EPS;
+  }
+
+  // ===== 棚グループ化 =====
+  const SHELF_GROUP_COLORS = ["#ef4444", "#f59e0b", "#10b981", "#3b82f6", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16"];
+  function shelfGroupColor(groupId) {
+    if (!groupId) return null;
+    let h = 0;
+    for (let i = 0; i < groupId.length; i++) h = ((h << 5) - h + groupId.charCodeAt(i)) | 0;
+    return SHELF_GROUP_COLORS[Math.abs(h) % SHELF_GROUP_COLORS.length];
+  }
+  // 棚IDの Set を受け取り、それらが属するグループの全メンバーを含んだ Set を返す
+  function expandShelfIdsByGroup(shelvesArr, ids) {
+    const idsSet = ids instanceof Set ? new Set(ids) : new Set(ids);
+    const groupIds = new Set();
+    for (const s of shelvesArr) {
+      if (idsSet.has(s.id) && s.groupId) groupIds.add(s.groupId);
+    }
+    if (groupIds.size === 0) return idsSet;
+    for (const s of shelvesArr) {
+      if (s.groupId && groupIds.has(s.groupId)) idsSet.add(s.id);
+    }
+    return idsSet;
   }
 
   // 矩形outerが矩形innerを完全に包含するか（浮動小数点許容）
@@ -3218,6 +3484,13 @@ const allClientNames = useMemo(() => {
     }
     setSelected({ kind: "shelf", id });
     setMultiSelected([]);
+    // グループに属する場合は、同グループの全棚の基準位置を記録して一括移動
+    if (s.groupId) {
+      const members = (layout.shelves || []).filter((x) => x.groupId === s.groupId);
+      const memberBases = members.map((m) => ({ id: m.id, x: m.x, y: m.y }));
+      setDrag({ type: "move_shelf", id, startX: e.clientX, startY: e.clientY, baseRect: { ...s }, groupMembers: memberBases });
+      return;
+    }
     setDrag({ type: "move_shelf", id, startX: e.clientX, startY: e.clientY, baseRect: { ...s } });
   }
 
@@ -3573,8 +3846,20 @@ const allClientNames = useMemo(() => {
     }
 
     if (drag.type === "move_shelf" || drag.type === "resize_shelf") {
+      // グループ移動: groupMembers に記録された各棚に同じ dx/dy を適用
+      const groupMoveMap = (drag.type === "move_shelf" && drag.groupMembers)
+        ? new Map(drag.groupMembers.map((m) => [m.id, m]))
+        : null;
       setLayout((prev) => {
         const shelves = (prev.shelves || []).map((s) => {
+          if (groupMoveMap && groupMoveMap.has(s.id)) {
+            const base = groupMoveMap.get(s.id);
+            return {
+              ...s,
+              x: +(base.x + dx).toFixed(1),
+              y: +(base.y + dy).toFixed(1),
+            };
+          }
           if (s.id !== drag.id) return s;
           if (drag.type === "move_shelf") {
             return {
@@ -3782,7 +4067,9 @@ const allClientNames = useMemo(() => {
             let shelves = prev.shelves || [];
             const zoneIds = new Set(items.filter((s) => s.kind === "zone").map((s) => s.id));
             const rackIds = new Set(items.filter((s) => s.kind === "rack").map((s) => s.id));
-            const shelfIds = new Set(items.filter((s) => s.kind === "shelf").map((s) => s.id));
+            const shelfIdsRaw = items.filter((s) => s.kind === "shelf").map((s) => s.id);
+            // 選択された棚の属するグループの他メンバーも連動対象に含める
+            const shelfIds = expandShelfIdsByGroup(shelves, shelfIdsRaw);
             if (zoneIds.size > 0) zones = zones.map((z) => (zoneIds.has(z.id) && (!z.loc || z.loc.kind === "floor")) ? { ...z, x: z.x + dx, y: z.y + dy } : z);
             if (rackIds.size > 0) racks = racks.map((r) => rackIds.has(r.id) ? { ...r, x: r.x + dx, y: r.y + dy } : r);
             if (shelfIds.size > 0) shelves = shelves.map((s) => shelfIds.has(s.id) ? { ...s, x: s.x + dx, y: s.y + dy } : s);
@@ -3805,6 +4092,10 @@ const allClientNames = useMemo(() => {
           const vr = getShelfVisualRect(s);
           return overlapsRect(vr, origFloor);
         };
+        // 床上の棚IDを収集し、それらが属するグループの他メンバー(床外)も一緒に動かす
+        const shelvesArr = layout.shelves || [];
+        const onFloorIds = shelvesArr.filter(isShelfOnFloor).map((s) => s.id);
+        const moveShelfIds = expandShelfIdsByGroup(shelvesArr, onFloorIds);
         setUnits((prev) => prev.map((u) => {
           if (u.loc?.kind !== "floor") return u;
           return { ...u, loc: { ...u.loc, x: u.loc.x + totalDx, y: u.loc.y + totalDy } };
@@ -3813,7 +4104,7 @@ const allClientNames = useMemo(() => {
           ...prev,
           zones: prev.zones.map((z) => (!z.loc || z.loc.kind === "floor") ? { ...z, x: z.x + totalDx, y: z.y + totalDy } : z),
           racks: prev.racks.map((r) => ({ ...r, x: r.x + totalDx, y: r.y + totalDy })),
-          shelves: (prev.shelves || []).map((s) => isShelfOnFloor(s) ? { ...s, x: s.x + totalDx, y: s.y + totalDy } : s),
+          shelves: (prev.shelves || []).map((s) => moveShelfIds.has(s.id) ? { ...s, x: s.x + totalDx, y: s.y + totalDy } : s),
         }));
         setPanels((prev) => prev.map((p) => ({ ...p, x: p.x + totalDx, y: p.y + totalDy })));
       }
@@ -5603,6 +5894,15 @@ ${cs.units.length > 0 ? `
           </button>
           <button
             className="rounded-xl border-2 shadow-sm font-bold"
+            style={{ padding: "8px 16px", fontSize: "14px", background: "linear-gradient(135deg, #fee2e2, #fecaca)", color: "#991b1b", borderColor: "#fca5a5", cursor: "pointer" }}
+            onClick={() => setShippedListOpen(true)}
+            type="button"
+            title={`出庫済み ${shippedUnits.length}件`}
+          >
+            出庫リスト
+          </button>
+          <button
+            className="rounded-xl border-2 shadow-sm font-bold"
             style={{ padding: "8px 16px", fontSize: "14px", background: "linear-gradient(135deg, #dbeafe, #bfdbfe)", color: "#1e40af", borderColor: "#93c5fd", cursor: "pointer" }}
             onClick={() => setPricingModalOpen(true)}
             type="button"
@@ -5701,20 +6001,54 @@ ${cs.units.length > 0 ? `
           onContextMenu={(e) => e.preventDefault()}
         >
           {[
-            { label: "最前面へ", fn: zBringToFront },
-            { label: "一つ前へ", fn: zBringForward },
-            { label: "一つ後ろへ", fn: zBringBackward },
-            { label: "最背面へ", fn: zBringToBack },
+            { label: "最前面へ", fn: () => zBringToFront(contextMenu.kind, contextMenu.id) },
+            { label: "一つ前へ", fn: () => zBringForward(contextMenu.kind, contextMenu.id) },
+            { label: "一つ後ろへ", fn: () => zBringBackward(contextMenu.kind, contextMenu.id) },
+            { label: "最背面へ", fn: () => zBringToBack(contextMenu.kind, contextMenu.id) },
           ].map((item) => (
             <button
               key={item.label}
-              onClick={() => item.fn(contextMenu.kind, contextMenu.id)}
+              onClick={item.fn}
               className="w-full text-left px-3 py-1.5 text-sm hover:bg-slate-100 rounded"
               style={{ background: "transparent", border: "none", cursor: "pointer" }}
             >
               {item.label}
             </button>
           ))}
+          {contextMenu.kind === "shelf" && (() => {
+            const shelvesArr = layout.shelves || [];
+            const rightClickedInSelection = selectionSet.some((s) => s.kind === "shelf" && s.id === contextMenu.id);
+            const targetShelfIds = rightClickedInSelection
+              ? selectionSet.filter((s) => s.kind === "shelf").map((s) => s.id)
+              : [contextMenu.id];
+            const targetShelves = shelvesArr.filter((s) => targetShelfIds.includes(s.id));
+            const canGroup = targetShelfIds.length >= 2;
+            const canUngroup = targetShelves.some((s) => !!s.groupId);
+            if (!canGroup && !canUngroup) return null;
+            return (
+              <>
+                <div style={{ height: 1, background: "#e2e8f0", margin: "4px 0" }} />
+                {canGroup && (
+                  <button
+                    onClick={() => groupShelves(targetShelfIds)}
+                    className="w-full text-left px-3 py-1.5 text-sm hover:bg-slate-100 rounded"
+                    style={{ background: "transparent", border: "none", cursor: "pointer" }}
+                  >
+                    グループ化 ({targetShelfIds.length})
+                  </button>
+                )}
+                {canUngroup && (
+                  <button
+                    onClick={() => ungroupShelves(targetShelves.filter((s) => !!s.groupId).map((s) => s.id))}
+                    className="w-full text-left px-3 py-1.5 text-sm hover:bg-slate-100 rounded"
+                    style={{ background: "transparent", border: "none", cursor: "pointer" }}
+                  >
+                    グループ解除
+                  </button>
+                )}
+              </>
+            );
+          })()}
         </div>
       )}
 
@@ -6812,11 +7146,13 @@ ${cs.units.length > 0 ? `
                 const shelfUnits = placedOnShelf.filter((u) => u.loc?.shelfId === s.id);
                 const shelfRotation = s.rotation || 0;
                 const shelfBgColor = s.bgColor || "#f0fdfa";
+                const groupColor = shelfGroupColor(s.groupId);
                 return (
                   <React.Fragment key={s.id}>
                   <div
                     className={
-                      `absolute rounded-xl border-2 border-gray-400 ` +
+                      `absolute rounded-xl border-2 ` +
+                      (groupColor ? "" : "border-gray-400 ") +
                       (isSel ? "ring-2 ring-black" : "")
                     }
                     style={{
@@ -6829,6 +7165,7 @@ ${cs.units.length > 0 ? `
                       transformOrigin: "center center",
                       zIndex: isSel && drag?.type === "group_move" ? 50 : Math.min(999, Math.max(1, s.zOrder ?? 2)),
                       transition: drag?.type === "group_move" ? "none" : undefined,
+                      ...(groupColor ? { borderColor: groupColor, borderStyle: "dashed", boxShadow: `0 0 0 2px ${groupColor}33` } : null),
                     }}
                     onMouseDown={(e) => mode === "layout" && beginMoveShelf(e, s.id)}
                     onClick={(e) => handleItemClick(e, "shelf", s.id)}
@@ -10175,6 +10512,14 @@ ${cs.units.length > 0 ? `
           </button>
         </div>
       </Modal>
+
+      {/* 出庫リストモーダル */}
+      <ShippedListModal
+        open={shippedListOpen}
+        onClose={() => setShippedListOpen(false)}
+        shippedUnits={shippedUnits}
+        wh={wh}
+      />
 
       {/* 配電盤詳細モーダル */}
       <Modal
