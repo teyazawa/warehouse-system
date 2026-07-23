@@ -7,7 +7,7 @@
 ---
 
 ## 最終更新: 2026-07-23
-## 最新コミット: (このコミット直前) `afaea5a` feat: 出庫予定日超過で自動出庫リスト移動+棚のグループ化機能
+## 最新コミット (push済): `f30c4cc` fix: 荷物フットプリント実寸化+棚境目/吸着改善+救出ボタン+グループ結合詳細モーダル+stackZ再計算
 
 ---
 
@@ -245,7 +245,8 @@ npm run build   # dist/ に出力
 
 ## 過去の主な引継ぎ(memory 側に詳細)
 
-- `handover_20260722_warehouse_fractional_cell_group_modal_rescue.md` — 端数セル/棚境目/救出/グループモーダル (現在)
+- `handover_20260723_warehouse_group_modal_stackz.md` — グループモーダル・zoneDetail 化+ドラッグ+stackZ再計算 (現在)
+- `handover_20260722_warehouse_fractional_cell_group_modal_rescue.md` — 端数セル/棚境目/救出/グループモーダル (前日、本日コミットに包含)
 - `handover_20260721_warehouse_ship_list_shelf_group.md` — 出庫リスト自動化+棚グループ化 初版
 - `handover_20260708_warehouse_shelf_stacking.md` — 棚上多段積み・findShelfAtCell zOrder 降順化
 - `handover_20260707_warehouse_zindex_layers.md` — 3層 z-index構造 (床<区画/棚/ラック<荷物)
