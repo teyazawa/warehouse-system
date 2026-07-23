@@ -1304,7 +1304,7 @@ const STATUS_OPTIONS = [
   { value: "planned_out", label: "出荷予定" },
 ];
 
-function UnitSearchModal({ open, onClose, query, setQuery, searchKey, setSearchKey, results, onNavigate, allUnits }) {
+function UnitSearchModal({ open, onClose, query, setQuery, searchKey, setSearchKey, results, onNavigate, onReleaseToUnplaced, allUnits }) {
   if (!open) return null;
   const capped = results.slice(0, 100);
   const isSpecific = searchKey !== "all";
@@ -1426,21 +1426,33 @@ function UnitSearchModal({ open, onClose, query, setQuery, searchKey, setSearchK
         <div style={{ flex: 1, overflowY: "auto", padding: "0 24px 16px" }}>
           {capped.map((u) => {
             const locText = !u.loc || u.loc.kind === "unplaced" ? "未配置" : u.loc.kind === "floor" ? "床置き" : u.loc.kind === "rack" ? "ラック" : u.loc.kind === "shelf" ? "棚" : u.loc.kind;
+            const isPlaced = u.loc && u.loc.kind !== "unplaced";
             return (
               <div
                 key={u.id + "_" + u._whId}
-                onClick={() => onNavigate(u)}
-                style={{ display: "flex", alignItems: "center", gap: "10px", padding: "8px 10px", borderRadius: "10px", cursor: "pointer", borderBottom: "1px solid #f1f5f9", transition: "background .12s" }}
+                style={{ display: "flex", alignItems: "center", gap: "10px", padding: "8px 10px", borderRadius: "10px", borderBottom: "1px solid #f1f5f9", transition: "background .12s" }}
                 onMouseEnter={(e) => e.currentTarget.style.background = "#fffbeb"}
                 onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
               >
-                <Badge color={getStatusColor(u.status)}>{getStatusLabel(u.status)}</Badge>
-                <span style={{ fontWeight: 600, fontSize: "13px", color: "#1e293b", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "180px" }}>{u.name || "(名称なし)"}</span>
-                <span style={{ fontSize: "11px", color: "#64748b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "160px" }}>
-                  {[u.client, u.department, u.personInCharge].filter(Boolean).join(" / ") || "—"}
-                </span>
-                <Badge color="purple">{u._whName}</Badge>
-                <span style={{ fontSize: "11px", color: "#94a3b8", marginLeft: "auto", flexShrink: 0 }}>{locText}</span>
+                <div onClick={() => onNavigate(u)} style={{ display: "flex", alignItems: "center", gap: "10px", flex: 1, minWidth: 0, cursor: "pointer" }}>
+                  <Badge color={getStatusColor(u.status)}>{getStatusLabel(u.status)}</Badge>
+                  <span style={{ fontWeight: 600, fontSize: "13px", color: "#1e293b", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "180px" }}>{u.name || "(名称なし)"}</span>
+                  <span style={{ fontSize: "11px", color: "#64748b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "160px" }}>
+                    {[u.client, u.department, u.personInCharge].filter(Boolean).join(" / ") || "—"}
+                  </span>
+                  <Badge color="purple">{u._whName}</Badge>
+                  <span style={{ fontSize: "11px", color: "#94a3b8", marginLeft: "auto", flexShrink: 0 }}>{locText}</span>
+                </div>
+                {onReleaseToUnplaced && isPlaced && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onReleaseToUnplaced(u); }}
+                    title="この荷物を強制的に未配置リストに戻す (棚下に隠れて動かせない時の救出)"
+                    style={{ padding: "4px 8px", fontSize: "11px", fontWeight: 600, color: "#dc2626", background: "#fee2e2", border: "1px solid #fca5a5", borderRadius: "8px", cursor: "pointer", flexShrink: 0 }}
+                  >
+                    未配置に戻す
+                  </button>
+                )}
               </div>
             );
           })}
@@ -1836,6 +1848,25 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
   const [layout, _setLayoutRaw] = useSupabaseState(`wh_demo_layout_${wh.id}_v1`, defaultLayout);
   const [units, _setUnitsRaw] = useSupabaseState(`wh_demo_units_${wh.id}_v1`, []);
   // units: {id, kind, client, name, w_m,d_m,h_m, qty, status, rot, loc:{kind:'unplaced'|'floor'|'rack', x?,y?, rackId?, slot?}}
+
+  // 外部 (荷物検索モーダルの「未配置に戻す」等) から localStorage/Supabase を直接書き換えられた時、
+  // in-memory state を再読み込みして同期する。下段が抜けた場合の stackZ 再計算も同時に実行。
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.detail?.whId !== wh.id) return;
+      try {
+        let raw = JSON.parse(localStorage.getItem(`wh_demo_units_${wh.id}_v1`)) || [];
+        // 床と全棚の stackZ を再計算 (下段撤去時の上段宙浮きバグ対策)
+        raw = recalcStackZOnLoc(raw, "floor");
+        for (const s of (layoutRef.current?.shelves || [])) {
+          raw = recalcStackZOnLoc(raw, { shelfId: s.id });
+        }
+        _setUnitsRaw(raw);
+      } catch { /* ignore */ }
+    };
+    window.addEventListener("wh:units-external-update", handler);
+    return () => window.removeEventListener("wh:units-external-update", handler);
+  }, [wh.id]);
 
   // 出庫予定日を過ぎた荷物の履歴（永続保存）
   const [shippedUnits, _setShippedUnitsRaw] = useSupabaseState(`wh_demo_shipped_units_${wh.id}_v1`, []);
@@ -2401,14 +2432,7 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
       // 区画内ユニット判定用に事前スナップショット
       const zonesSnap = zoneTargets.map((zt) => layoutRef.current.zones.find((z) => z.id === zt.id)).filter(Boolean);
       const zoneUnitMoves = new Set();
-      const fpFor = (u) => {
-        if (u.w_cells != null && u.h_cells != null) {
-          const fw = Math.max(1, u.w_cells);
-          const fd = Math.max(1, u.h_cells);
-          return u.rot ? { w: fd, h: fw } : { w: fw, h: fd };
-        }
-        return { w: 1, h: 1 };
-      };
+      const fpFor = (u) => unitFootprintCells(u);
       for (const z of zonesSnap) {
         const isFloorZone = !z.loc || z.loc.kind === "floor";
         const zx = isFloorZone ? z.x : (z.loc.x || 0);
@@ -2450,45 +2474,34 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
       });
       if (unitTargets.length > 0 || zoneUnitMoves.size > 0) {
         setUnits((prev) => {
-          // 移動対象を先に決定 → その位置基準で下段の stackZ を計算
+          // 移動対象を先に決定
           const movedIds = new Set();
           for (const u of prev) {
             const isDirect = unitTargets.some((t) => t.id === u.id);
             const isCascade = zoneUnitMoves.has(u.id) && !isDirect;
             if (isDirect || isCascade) movedIds.add(u.id);
           }
-          // 移動後の位置スナップショット (下段検索用)
+          // 移動後の位置スナップショット
           const postMove = prev.map((u) => {
             if (!movedIds.has(u.id)) return u;
             const ux = u.loc.x || 0, uy = u.loc.y || 0;
             return { ...u, loc: { ...u.loc, x: fx1(ux + dx), y: fx1(uy + dy) } };
           });
-          return postMove.map((u) => {
-            if (!movedIds.has(u.id)) return u;
-            const fp = (u.w_cells != null && u.h_cells != null)
-              ? (u.rot ? { w: Math.max(1, u.h_cells), h: Math.max(1, u.w_cells) } : { w: Math.max(1, u.w_cells), h: Math.max(1, u.h_cells) })
-              : { w: 1, h: 1 };
-            const ux = u.loc.x || 0, uy = u.loc.y || 0;
-            const candidate = { x: ux, y: uy, w: fp.w, h: fp.h };
-            // 下段検索: 同じ場所に居る (自身以外) 同種 loc の荷物を stackZ 昇順で集める
-            const same = postMove.filter((o) => {
-              if (o.id === u.id) return false;
-              if (u.loc?.kind === "floor" && o.loc?.kind === "floor") return true;
-              if (u.loc?.kind === "shelf" && o.loc?.kind === "shelf" && o.loc.shelfId === u.loc.shelfId) return true;
-              return false;
-            });
-            const containing = same.filter((o) => {
-              const ofp = (o.w_cells != null && o.h_cells != null)
-                ? (o.rot ? { w: Math.max(1, o.h_cells), h: Math.max(1, o.w_cells) } : { w: Math.max(1, o.w_cells), h: Math.max(1, o.h_cells) })
-                : { w: 1, h: 1 };
-              const oRect = { x: o.loc.x || 0, y: o.loc.y || 0, w: ofp.w, h: ofp.h };
-              return containsRectLoose(oRect, candidate);
-            }).sort((a, b) => (a.stackZ || 0) - (b.stackZ || 0));
-            const newStackZ = containing.length > 0
-              ? Math.max(...containing.map((i) => (i.stackZ || 0) + (i.h_m || 0)))
-              : 0;
-            return { ...u, stackZ: newStackZ };
-          });
+          // 影響を受ける loc をまとめて再計算 (下段撤去による宙浮き対策)
+          const affectedLocs = new Set();
+          for (const id of movedIds) {
+            const u = postMove.find((x) => x.id === id);
+            if (!u) continue;
+            if (u.loc?.kind === "floor") affectedLocs.add("floor");
+            else if (u.loc?.kind === "shelf") affectedLocs.add(`shelf:${u.loc.shelfId}`);
+          }
+          let result = postMove;
+          for (const key of affectedLocs) {
+            result = key === "floor"
+              ? recalcStackZOnLoc(result, "floor")
+              : recalcStackZOnLoc(result, { shelfId: key.slice(6) });
+          }
+          return result;
         });
       }
     };
@@ -2535,6 +2548,28 @@ function closeZoneDetailModal() {
   setZoneDetailZone(null);
   setZoneDetailDrag(null);
   setZoneDetail3D(false);
+}
+
+// 棚グループ結合表示モーダル (グループ化された棚を隙間空きで並べて2D/3D閲覧+ドラッグ移動)
+const [shelfGroupDetailOpen, setShelfGroupDetailOpen] = useState(false);
+const [shelfGroupDetailData, setShelfGroupDetailData] = useState(null); // { groupId, memberIds }
+const [shelfGroupDetail3D, setShelfGroupDetail3D] = useState(false);
+const [shelfGroupDetailRotStep, setShelfGroupDetailRotStep] = useState(0);
+const [shelfGroupDetailZoom, setShelfGroupDetailZoom] = useState(1);
+const [shelfGroupDetailDrag, setShelfGroupDetailDrag] = useState(null); // { unitId, startX,startY, pointerX,pointerY, baseLocalX,baseLocalY, baseShelfId }
+function openShelfGroupDetailModal(groupId, memberIds) {
+  setShelfGroupDetailData({ groupId, memberIds });
+  setShelfGroupDetail3D(false);
+  setShelfGroupDetailRotStep(0);
+  setShelfGroupDetailZoom(1);
+  setShelfGroupDetailDrag(null);
+  setShelfGroupDetailOpen(true);
+}
+function closeShelfGroupDetailModal() {
+  setShelfGroupDetailOpen(false);
+  setShelfGroupDetailData(null);
+  setShelfGroupDetail3D(false);
+  setShelfGroupDetailDrag(null);
 }
 
 // ラック拡大モーダル用State
@@ -2931,15 +2966,19 @@ const allClientNames = useMemo(() => {
   }
 
   function unitFootprintCells(u) {
-    // w_cells/h_cellsが設定されている場合はそちらを優先（リサイズ対応）
-    if (u.w_cells != null && u.h_cells != null) {
-      const fw = Math.max(1, u.w_cells);
-      const fd = Math.max(1, u.h_cells);
-      return u.rot ? { w: fd, h: fw } : { w: fw, h: fd };
-    }
-    // 従来のメートル単位からの計算
-    const fw = Math.max(1, Math.ceil(u.w_m / layout.floor.cell_m_w));
-    const fd = Math.max(1, Math.ceil(u.d_m / layout.floor.cell_m_d));
+    // 端数セル対応: w_m を authoritative にし、実寸そのままの小数セル値を返す。
+    // 以前は Math.ceil で切り上げていたため、実寸より視覚フットプリントが膨らみ、
+    // 棚に「入るはず」の荷物が入らない/意図しない重ね置きが発生していた。
+    const cellW = layout.floor.cell_m_w || 1.2;
+    const cellD = layout.floor.cell_m_d || 1.0;
+    const wm = (typeof u.w_m === "number" && u.w_m > 0)
+      ? u.w_m
+      : (u.w_cells || 1) * cellW;
+    const dm = (typeof u.d_m === "number" && u.d_m > 0)
+      ? u.d_m
+      : (u.h_cells || 1) * cellD;
+    const fw = Math.max(0.1, wm / cellW);
+    const fd = Math.max(0.1, dm / cellD);
     return u.rot ? { w: fd, h: fw } : { w: fw, h: fd };
   }
 
@@ -2985,6 +3024,48 @@ const allClientNames = useMemo(() => {
            inner.y >= outer.y - tol &&
            inner.x + inner.w <= outer.x + outer.w + tol &&
            inner.y + inner.h <= outer.y + outer.h + tol;
+  }
+
+  // 指定 loc 上の全ユニットの stackZ を再計算 (下段が抜けた時の宙浮きバグ対策)。
+  // locKey: "floor" | { shelfId }  として 2 パターン受け取る。
+  // アルゴリズム: 既存 stackZ 昇順で処理 (=下から上へ) し、各ユニットの containers を「自分より前に処理済み」のユニットに限定。
+  // これで同サイズ相互包含による循環 (高さ暴走) を防ぐ。
+  function recalcStackZOnLoc(unitsList, locSpec) {
+    const inLoc = (u) => {
+      if (locSpec === "floor") return u.loc?.kind === "floor";
+      if (locSpec && locSpec.shelfId) return u.loc?.kind === "shelf" && u.loc.shelfId === locSpec.shelfId;
+      return false;
+    };
+    const targets = unitsList.filter(inLoc);
+    if (targets.length === 0) return unitsList;
+    // 既存 stackZ の昇順で処理 (安定ソート: 同値時は元の並び順=idを維持)
+    const sorted = [...targets].sort((a, b) => (a.stackZ || 0) - (b.stackZ || 0));
+    const rects = new Map();
+    for (const u of sorted) {
+      const fp = unitFootprintCells(u);
+      rects.set(u.id, { x: u.loc.x || 0, y: u.loc.y || 0, w: fp.w, h: fp.h });
+    }
+    const z = new Map();
+    for (const u of sorted) {
+      const r = rects.get(u.id);
+      let maxBase = 0;
+      // すでに処理済み (=下段) のユニットから container を探す
+      for (const o of sorted) {
+        if (o.id === u.id) break; // sorted 順で自分より前だけ見る
+        const oR = rects.get(o.id);
+        if (containsRectLoose(oR, r)) {
+          const base = (z.get(o.id) || 0) + (o.h_m || 0);
+          if (base > maxBase) maxBase = base;
+        }
+      }
+      z.set(u.id, maxBase);
+    }
+    return unitsList.map((u) => {
+      if (!inLoc(u)) return u;
+      const nz = z.get(u.id);
+      if (nz === u.stackZ) return u;
+      return { ...u, stackZ: nz };
+    });
   }
 
   function occupiedRectsFloor(excludeUnitId = null) {
@@ -3038,11 +3119,12 @@ const allClientNames = useMemo(() => {
     return items;
   }
 
-  // 重ね置きスナップ: 近くにstackableな荷物があればその位置にスナップ
+  // 重ね置きスナップ: 候補矩形が既存stackable荷物と半分以上重なる時のみスナップ。
+  // (以前は Manhattan距離1.5 セル以内でスナップしていたため、隣接ギリギリ配置が吸い込まれる問題があった)
   function snapToStackTarget(x, y, fp, excludeUnitId = null) {
-    const SNAP_DIST = 1.5; // セル単位のスナップ距離
+    const OVERLAP_RATIO = 0.5; // 候補面積の50%以上重なりで吸着
     let best = null;
-    let bestDist = SNAP_DIST;
+    let bestDist = Infinity;
     for (const u of units) {
       if (u.id === excludeUnitId) continue;
       if (u.loc?.kind !== "floor") continue;
@@ -3052,6 +3134,11 @@ const allClientNames = useMemo(() => {
       // 候補が既存荷物の上に乗れるか（サイズ的に収まるか）
       if (fp.w > ufp.w + 0.3 || fp.h > ufp.h + 0.3) continue;
       const ux = u.loc.x || 0, uy = u.loc.y || 0;
+      const ovW = Math.max(0, Math.min(x + fp.w, ux + ufp.w) - Math.max(x, ux));
+      const ovH = Math.max(0, Math.min(y + fp.h, uy + ufp.h) - Math.max(y, uy));
+      const overlap = ovW * ovH;
+      const cArea = Math.max(0.01, fp.w * fp.h);
+      if (overlap / cArea < OVERLAP_RATIO) continue;
       const dist = Math.abs(x - ux) + Math.abs(y - uy);
       if (dist < bestDist) {
         bestDist = dist;
@@ -3255,6 +3342,34 @@ const allClientNames = useMemo(() => {
     return null;
   }
 
+  // 棚の境目に箱を落とす時のあいまいさ解消:
+  // 箱矩形と各棚の重なり面積が最大の棚を採用。全く重ならなければポインタ位置にフォールバック。
+  function findShelfForBox(boxX, boxY, boxW, boxH, fallbackCx, fallbackCy) {
+    const arr = layout.shelves || [];
+    if (arr.length === 0) return null;
+    const shelves = arr.map((s, i) => ({ s, i })).sort((a, b) => {
+      const za = a.s.zOrder ?? 2;
+      const zb = b.s.zOrder ?? 2;
+      if (zb !== za) return zb - za;
+      return b.i - a.i;
+    }).map((e) => e.s);
+    let best = null;
+    let bestOverlap = 0;
+    for (const shelf of shelves) {
+      const vr = getShelfVisualRect(shelf);
+      const ovW = Math.max(0, Math.min(boxX + boxW, vr.x + vr.w) - Math.max(boxX, vr.x));
+      const ovH = Math.max(0, Math.min(boxY + boxH, vr.y + vr.h) - Math.max(boxY, vr.y));
+      const overlap = ovW * ovH;
+      // 最大重なり優先。同値時は前段のソート順 (zOrder降順→末尾優先) を維持するため厳密より大のみ更新
+      if (overlap > bestOverlap) {
+        bestOverlap = overlap;
+        best = shelf;
+      }
+    }
+    if (best) return best;
+    return findShelfAtCell(fallbackCx, fallbackCy);
+  }
+
   function occupiedRectsOnShelf(shelfId, excludeUnitId = null) {
     const rects = [];
     for (const u of units) {
@@ -3282,11 +3397,11 @@ const allClientNames = useMemo(() => {
     return items;
   }
 
-  // 棚上での重ね置きスナップ (床の snapToStackTarget 棚版)
+  // 棚上での重ね置きスナップ (床の snapToStackTarget 棚版): 候補矩形との重なり50%以上で吸着
   function snapToStackTargetOnShelf(shelfId, localX, localY, fp, excludeUnitId = null) {
-    const SNAP_DIST = 1.5;
+    const OVERLAP_RATIO = 0.5;
     let best = null;
-    let bestDist = SNAP_DIST;
+    let bestDist = Infinity;
     for (const u of units) {
       if (u.id === excludeUnitId) continue;
       if (u.loc?.kind !== "shelf" || u.loc.shelfId !== shelfId) continue;
@@ -3295,6 +3410,11 @@ const allClientNames = useMemo(() => {
       const ufp = unitFootprintCells(u);
       if (fp.w > ufp.w + 0.3 || fp.h > ufp.h + 0.3) continue;
       const ux = u.loc.x || 0, uy = u.loc.y || 0;
+      const ovW = Math.max(0, Math.min(localX + fp.w, ux + ufp.w) - Math.max(localX, ux));
+      const ovH = Math.max(0, Math.min(localY + fp.h, uy + ufp.h) - Math.max(localY, uy));
+      const overlap = ovW * ovH;
+      const cArea = Math.max(0.01, fp.w * fp.h);
+      if (overlap / cArea < OVERLAP_RATIO) continue;
       const dist = Math.abs(localX - ux) + Math.abs(localY - uy);
       if (dist < bestDist) {
         bestDist = dist;
@@ -4144,17 +4264,18 @@ const allClientNames = useMemo(() => {
       }
 
       // Try shelf placement if hovering shelf
-      const shelf = findShelfAtCell(cx, cy);
+      // 棚候補: 箱矩形の重なり最大 (ポインタ位置は仮の箱左上として扱う)
+      const fpPlace = unitFootprintCells(u);
+      const shelf = findShelfForBox(cx, cy, fpPlace.w, fpPlace.h, cx, cy);
       if (shelf) {
         const local = worldToShelfLocal(shelf, cx, cy);
-        const fp = unitFootprintCells(u);
-        let clampedX = clamp(Math.floor(local.localX), 0, shelf.w - fp.w);
-        let clampedY = clamp(Math.floor(local.localY), 0, shelf.h - fp.h);
+        let clampedX = clamp(+local.localX.toFixed(1), 0, +(shelf.w - fpPlace.w).toFixed(1));
+        let clampedY = clamp(+local.localY.toFixed(1), 0, +(shelf.h - fpPlace.h).toFixed(1));
         // 棚上の重ね置きスナップ
-        const shelfSnap = snapToStackTargetOnShelf(shelf.id, clampedX, clampedY, fp, origId);
+        const shelfSnap = snapToStackTargetOnShelf(shelf.id, clampedX, clampedY, fpPlace, origId);
         if (shelfSnap) { clampedX = shelfSnap.x; clampedY = shelfSnap.y; }
         if (canPlaceOnShelf(shelf.id, u, clampedX, clampedY, origId)) {
-          const shelfCandidate = { x: clampedX, y: clampedY, w: fp.w, h: fp.h };
+          const shelfCandidate = { x: clampedX, y: clampedY, w: fpPlace.w, h: fpPlace.h };
           const shelfContaining = getContainingStackItemsOnShelf(shelf.id, shelfCandidate, origId);
           const shelfStackZ = shelfContaining.length > 0
             ? Math.max(...shelfContaining.map(i => (i.stackZ || 0) + (i.h_m || 0)))
@@ -4228,13 +4349,22 @@ const allClientNames = useMemo(() => {
       const dropX = +(wx / cellPx - (drag.offsetCx || 0)).toFixed(1);
       const dropY = +(wy / cellPx - (drag.offsetCy || 0)).toFixed(1);
 
+      // 移動元 loc を記録 (下段が抜けた時の上段 stackZ 再計算用)
+      const srcLoc = u.loc?.kind === "shelf"
+        ? { shelfId: u.loc.shelfId }
+        : (u.loc?.kind === "floor" ? "floor" : null);
+
       // Check if dropped on a rack slot (rackはスロット離散なのでcx,cy=整数で判定)
       const rackSlot = findRackSlotAtCell(cx, cy);
       if (rackSlot) {
         if (isRackSlotFree(rackSlot.rackId, rackSlot.slot, u.id)) {
-          setUnits((prev) => prev.map((x) =>
-            x.id === u.id ? { ...x, loc: { kind: "rack", rackId: rackSlot.rackId, slot: rackSlot.slot }, status: autoPromoteStatus(x) } : x
-          ));
+          setUnits((prev) => {
+            let next = prev.map((x) =>
+              x.id === u.id ? { ...x, loc: { kind: "rack", rackId: rackSlot.rackId, slot: rackSlot.slot }, status: autoPromoteStatus(x) } : x
+            );
+            if (srcLoc) next = recalcStackZOnLoc(next, srcLoc);
+            return next;
+          });
           setSelected({ kind: "unit", id: u.id });
           setMultiSelected([]);
           setDrag(null);
@@ -4246,8 +4376,8 @@ const allClientNames = useMemo(() => {
         }
       }
 
-      // Check if dropped on a shelf (detect at pointer position)
-      const shelf = findShelfAtCell(cx, cy);
+      // Check if dropped on a shelf: 箱矩形との重なりが最大の棚を選択 (境目のあいまいさ解消)
+      const shelf = findShelfForBox(dropX, dropY, fp.w, fp.h, cx, cy);
       if (shelf) {
         const local = worldToShelfLocal(shelf, dropX, dropY);
         let clampedX = clamp(+local.localX.toFixed(1), 0, +(shelf.w - fp.w).toFixed(1));
@@ -4262,9 +4392,16 @@ const allClientNames = useMemo(() => {
           const shelfStackZ = shelfContaining.length > 0
             ? Math.max(...shelfContaining.map(i => (i.stackZ || 0) + (i.h_m || 0)))
             : 0;
-          setUnits((prev) => prev.map((x) =>
-            x.id === u.id ? { ...x, loc: { kind: "shelf", shelfId: shelf.id, x: clampedX, y: clampedY }, stackZ: shelfStackZ, status: autoPromoteStatus(x) } : x
-          ));
+          setUnits((prev) => {
+            let next = prev.map((x) =>
+              x.id === u.id ? { ...x, loc: { kind: "shelf", shelfId: shelf.id, x: clampedX, y: clampedY }, stackZ: shelfStackZ, status: autoPromoteStatus(x) } : x
+            );
+            // 元 loc (棚→棚 でも別棚なら) を再計算
+            const dstShelfKey = shelf.id;
+            if (srcLoc && (srcLoc === "floor" || srcLoc.shelfId !== dstShelfKey)) next = recalcStackZOnLoc(next, srcLoc);
+            next = recalcStackZOnLoc(next, { shelfId: shelf.id });
+            return next;
+          });
           setDrag(null);
           return;
         } else {
@@ -4307,9 +4444,15 @@ const allClientNames = useMemo(() => {
           const newStackZ = containingItems.length > 0
             ? Math.max(...containingItems.map(i => (i.stackZ || 0) + (i.h_m || 0)))
             : 0;
-          setUnits((prev) => prev.map((x) =>
-            x.id === u.id ? { ...x, loc: { kind: "floor", x: floorX, y: floorY }, stackZ: newStackZ, status: autoPromoteStatus(x) } : x
-          ));
+          setUnits((prev) => {
+            let next = prev.map((x) =>
+              x.id === u.id ? { ...x, loc: { kind: "floor", x: floorX, y: floorY }, stackZ: newStackZ, status: autoPromoteStatus(x) } : x
+            );
+            // 元 loc が別ならそちらを再計算
+            if (srcLoc && srcLoc !== "floor") next = recalcStackZOnLoc(next, srcLoc);
+            next = recalcStackZOnLoc(next, "floor");
+            return next;
+          });
           setDrag(null);
           return;
         }
@@ -7172,6 +7315,16 @@ ${cs.units.length > 0 ? `
                     onContextMenu={(e) => openContextMenu(e, "shelf", s.id)}
                     onDoubleClick={(e) => {
                       e.stopPropagation();
+                      // グループ化されている棚は、他メンバーがいる場合はグループ結合表示を優先
+                      if (s.groupId) {
+                        const memberIds = (layout.shelves || [])
+                          .filter((m) => m.groupId === s.groupId)
+                          .map((m) => m.id);
+                        if (memberIds.length > 1) {
+                          openShelfGroupDetailModal(s.groupId, memberIds);
+                          return;
+                        }
+                      }
                       openZoneDetailModal({
                         id: `__shelf_${s.id}__`,
                         name: s.name || "棚",
@@ -9676,7 +9829,7 @@ ${cs.units.length > 0 ? `
                                   value={selectedEntity.w_m}
                                   onChange={(e) => {
                                     const v = Math.max(0.1, Number(e.target.value) || 0.1);
-                                    const cells = Math.max(1, Math.ceil(v / (layout.floor.cell_m_w || 1.2)));
+                                    const cells = +Math.max(0.1, v / (layout.floor.cell_m_w || 1.2)).toFixed(2);
                                     updateUnitFieldSilent(selectedEntity.id, "w_m", +v.toFixed(2));
                                     updateUnitFieldSilent(selectedEntity.id, "w_cells", cells);
                                   }}
@@ -9690,7 +9843,7 @@ ${cs.units.length > 0 ? `
                                   value={selectedEntity.d_m}
                                   onChange={(e) => {
                                     const v = Math.max(0.1, Number(e.target.value) || 0.1);
-                                    const cells = Math.max(1, Math.ceil(v / (layout.floor.cell_m_d || 1.0)));
+                                    const cells = +Math.max(0.1, v / (layout.floor.cell_m_d || 1.0)).toFixed(2);
                                     updateUnitFieldSilent(selectedEntity.id, "d_m", +v.toFixed(2));
                                     updateUnitFieldSilent(selectedEntity.id, "h_cells", cells);
                                   }}
@@ -10831,9 +10984,16 @@ ${cs.units.length > 0 ? `
                 ? Math.max(...containingItems.map(i => (i.stackZ || 0) + (i.h_m || 0)))
                 : 0;
               if (isShelfZone) {
-                setUnits((prev) => prev.map((uu) => uu.id === u.id ? { ...uu, loc: { ...uu.loc, x: newLocalX, y: newLocalY }, stackZ: newStackZ } : uu));
+                setUnits((prev) => {
+                  const moved = prev.map((uu) => uu.id === u.id ? { ...uu, loc: { ...uu.loc, x: newLocalX, y: newLocalY }, stackZ: newStackZ } : uu);
+                  // 同一棚内移動なので棚全体を再計算 (自身+周辺の下段撤去分)
+                  return recalcStackZOnLoc(moved, { shelfId: z.loc.shelfId });
+                });
               } else {
-                setUnits((prev) => prev.map((uu) => uu.id === u.id ? { ...uu, loc: { kind: "floor", x: absX, y: absY }, stackZ: newStackZ } : uu));
+                setUnits((prev) => {
+                  const moved = prev.map((uu) => uu.id === u.id ? { ...uu, loc: { kind: "floor", x: absX, y: absY }, stackZ: newStackZ } : uu);
+                  return recalcStackZOnLoc(moved, "floor");
+                });
               }
             } else {
               if (z.reserved && z.reservationEndDate) {
@@ -11141,6 +11301,428 @@ ${cs.units.length > 0 ? `
               <div className="border-t px-5 py-3 text-xs text-gray-500 flex justify-between">
                 <span>ドラッグで移動 / ダブルクリックで詳細</span>
                 <span>{zoneUnits.length} 個の荷物</span>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* 棚グループ結合表示モーダル (グループ化された棚を隙間空きで並べて2D/3D+ドラッグ移動) */}
+      {shelfGroupDetailOpen && shelfGroupDetailData && (() => {
+        const { groupId, memberIds } = shelfGroupDetailData;
+        const members = (layout.shelves || []).filter((m) => memberIds.includes(m.id));
+        if (members.length === 0) return null;
+        const GROUP_GAP = 1; // セル単位の隙間
+        // 元の位置順で並べる (左上優先)
+        const sorted = [...members].sort((a, b) => (a.x - b.x) || (a.y - b.y));
+        let curX = 0;
+        const layouted = sorted.map((m) => {
+          const withOffset = { ...m, _offsetX: curX };
+          curX += m.w + GROUP_GAP;
+          return withOffset;
+        });
+        const totalW = Math.max(1, curX - GROUP_GAP);
+        const maxH = Math.max(1, ...layouted.map((m) => m.h));
+
+        // 仮想X → メンバー棚を返す (ギャップに落ちた場合は最寄り棚)
+        const shelfAtVirtualX = (vx) => {
+          for (const m of layouted) {
+            if (vx >= m._offsetX && vx < m._offsetX + m.w) return m;
+          }
+          // ギャップ or 範囲外: 最寄りの棚を返す
+          let best = layouted[0];
+          let bestD = Infinity;
+          for (const m of layouted) {
+            const cx = m._offsetX + m.w / 2;
+            const d = Math.abs(vx - cx);
+            if (d < bestD) { bestD = d; best = m; }
+          }
+          return best;
+        };
+
+        // 実寸フットプリント (小数セル)
+        const cellMW = layout.floor.cell_m_w || 1.2;
+        const cellMD = layout.floor.cell_m_d || 1.0;
+        const realFP = (u) => {
+          const fw = Math.max(0.2, (u.w_m || cellMW) / cellMW);
+          const fd = Math.max(0.2, (u.d_m || cellMD) / cellMD);
+          return u.rot ? { w: fd, h: fw } : { w: fw, h: fd };
+        };
+
+        // 各メンバー棚上の荷物を集約 (ローカル座標 → 仮想座標に offsetX 分ずらす)
+        const allUnits = layouted.flatMap((m) => {
+          const shelfUnits = units.filter((u) => u.loc?.kind === "shelf" && u.loc.shelfId === m.id);
+          return shelfUnits.map((u) => {
+            const fp = unitFootprintCells(u);
+            const rp = realFP(u);
+            return {
+              ...u,
+              _localX: m._offsetX + (u.loc.x || 0),
+              _localY: (u.loc.y || 0),
+              _fw: fp.w, _fh: fp.h,
+              _realW: rp.w, _realH: rp.h,
+              _shelfId: m.id,
+              _shelfOffsetX: m._offsetX,
+            };
+          });
+        });
+
+        // モーダル動的スケール (zoneDetailと同水準)
+        const maxModalW = Math.min(window.innerWidth - 80, 1400);
+        const maxModalH = Math.min(window.innerHeight - 200, 800);
+        const gCellPx = Math.max(20, Math.min(Math.floor(maxModalW / totalW), Math.floor(maxModalH / maxH), 80));
+        const gGridW = totalW * gCellPx;
+        const gGridH = maxH * gCellPx;
+        const SUB = 4; // サブグリッド (0.25 セル刻み)
+
+        // 3Dビュー用
+        const gIsoMath = shelfGroupDetail3D ? getIsoMath(totalW, maxH, shelfGroupDetailRotStep) : null;
+        const gIsoViewItems = allUnits.map((u) => ({ ...u, gx: u._localX, gy: u._localY, fw: u._realW, fh: u._realH }));
+        const gIsoShelfZones = layouted.map((m) => ({
+          id: `gshelf-${m.id}`,
+          name: m.name || "棚",
+          gx: m._offsetX,
+          gy: 0,
+          w: m.w,
+          h: m.h,
+          bgColor: m.bgColor || "#f0fdfa",
+          bgOpacity: 60,
+          labelColor: m.labelColor || "#334155",
+        }));
+
+        const gColor = shelfGroupColor(groupId) || "#a78bfa";
+
+        // ドラッグ中の目標仮想座標を計算
+        const calcGroupDragTarget = (d) => {
+          let rawVX, rawVY;
+          if (shelfGroupDetail3D && gIsoMath) {
+            const { tileW, tileH, invRotDelta } = gIsoMath;
+            const zm = shelfGroupDetailZoom;
+            const dsx = (d.pointerX - d.startX) / zm;
+            const dsy = (d.pointerY - d.startY) / zm;
+            const drgx = dsx / tileW + dsy / tileH;
+            const drgy = dsy / tileH - dsx / tileW;
+            const { dgx, dgy } = invRotDelta(drgx, drgy);
+            rawVX = Math.round((d.baseLocalX + d.baseShelfOffsetX + dgx) * SUB) / SUB;
+            rawVY = Math.round((d.baseLocalY + dgy) * SUB) / SUB;
+          } else {
+            const dx = d.pointerX - d.startX;
+            const dy = d.pointerY - d.startY;
+            rawVX = Math.round((d.baseLocalX + d.baseShelfOffsetX + dx / gCellPx) * SUB) / SUB;
+            rawVY = Math.round((d.baseLocalY + dy / gCellPx) * SUB) / SUB;
+          }
+          // 対象棚を仮想Xから決定
+          const u = units.find((uu) => uu.id === d.unitId);
+          const fp = u ? realFP(u) : { w: 1, h: 1 };
+          const targetShelf = shelfAtVirtualX(rawVX + fp.w / 2);
+          // 棚内ローカル座標に変換 + 棚境界内にクランプ
+          const localX = clamp(rawVX - targetShelf._offsetX, 0, Math.max(0, targetShelf.w - fp.w));
+          const localY = clamp(rawVY, 0, Math.max(0, targetShelf.h - fp.h));
+          // スタックスナップ (対象棚内の stackable ユニット)
+          let stackTargetId = null;
+          let bestDist = 1.2;
+          let snapX = localX, snapY = localY;
+          for (const zu of allUnits) {
+            if (zu.id === d.unitId) continue;
+            if (zu._shelfId !== targetShelf.id) continue;
+            if (!zu.stackable) continue;
+            const zLocalX = zu._localX - targetShelf._offsetX;
+            const zLocalY = zu._localY;
+            const dist = Math.abs(localX - zLocalX) + Math.abs(localY - zLocalY);
+            if (dist < bestDist) {
+              bestDist = dist;
+              stackTargetId = zu.id;
+              snapX = zLocalX;
+              snapY = zLocalY;
+            }
+          }
+          return { shelfId: targetShelf.id, shelfOffsetX: targetShelf._offsetX, localX: snapX, localY: snapY, stackTargetId };
+        };
+
+        // ドラッグ中ゴースト
+        const gGhost = (() => {
+          if (!shelfGroupDetailDrag) return null;
+          const d = shelfGroupDetailDrag;
+          const t = calcGroupDragTarget(d);
+          const u = units.find((uu) => uu.id === d.unitId);
+          if (!u) return null;
+          const fp = realFP(u);
+          const ok = canPlaceOnShelf(t.shelfId, u, t.localX, t.localY, u.id);
+          return { vx: t.shelfOffsetX + t.localX, vy: t.localY, w: fp.w, h: fp.h, ok, unitId: u.id, stackTargetId: t.stackTargetId };
+        })();
+
+        const draggingIdG = shelfGroupDetailDrag?.unitId;
+        const hasDragMovedG = shelfGroupDetailDrag && (shelfGroupDetailDrag.pointerX !== shelfGroupDetailDrag.startX || shelfGroupDetailDrag.pointerY !== shelfGroupDetailDrag.startY);
+
+        // ドロップ処理
+        const handleGroupDrop = () => {
+          if (!shelfGroupDetailDrag) return;
+          if (!requireAuth()) { setShelfGroupDetailDrag(null); return; }
+          const d = shelfGroupDetailDrag;
+          const t = calcGroupDragTarget(d);
+          const u = units.find((uu) => uu.id === d.unitId);
+          const noMove = t.shelfId === d.baseShelfId && Math.abs(t.localX - d.baseLocalX) < 0.001 && Math.abs(t.localY - d.baseLocalY) < 0.001;
+          if (u && !noMove) {
+            if (canPlaceOnShelf(t.shelfId, u, t.localX, t.localY, u.id)) {
+              const candidate = { x: t.localX, y: t.localY, w: realFP(u).w, h: realFP(u).h };
+              const containing = units.filter((s) => s.id !== u.id && s.loc?.kind === "shelf" && s.loc.shelfId === t.shelfId).filter((s) => {
+                const sfp = realFP(s);
+                return containsRectLoose({ x: s.loc.x || 0, y: s.loc.y || 0, w: sfp.w, h: sfp.h }, candidate);
+              });
+              const newStackZ = containing.length > 0
+                ? Math.max(...containing.map((i) => (i.stackZ || 0) + (i.h_m || 0)))
+                : 0;
+              setUnits((prev) => {
+                let moved = prev.map((uu) => uu.id === u.id
+                  ? { ...uu, loc: { kind: "shelf", shelfId: t.shelfId, x: t.localX, y: t.localY }, stackZ: newStackZ }
+                  : uu);
+                // 元棚 (下段撤去による上段の宙浮き対策) と 移動先棚の両方を再計算
+                if (d.baseShelfId && d.baseShelfId !== t.shelfId) {
+                  moved = recalcStackZOnLoc(moved, { shelfId: d.baseShelfId });
+                }
+                moved = recalcStackZOnLoc(moved, { shelfId: t.shelfId });
+                return moved;
+              });
+            } else {
+              showToast("ここには置けません(他の荷物と重なっています)");
+            }
+          }
+          setShelfGroupDetailDrag(null);
+        };
+
+        const startGroupDragUnit = (e, u) => {
+          e.stopPropagation();
+          e.preventDefault();
+          const zu = allUnits.find((uu) => uu.id === u.id);
+          if (!zu) return;
+          setShelfGroupDetailDrag({
+            unitId: u.id,
+            startX: e.clientX,
+            startY: e.clientY,
+            pointerX: e.clientX,
+            pointerY: e.clientY,
+            baseLocalX: zu._localX - zu._shelfOffsetX,
+            baseLocalY: zu._localY,
+            baseShelfId: zu._shelfId,
+            baseShelfOffsetX: zu._shelfOffsetX,
+          });
+        };
+
+        return (
+          <div
+            style={{
+              position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+              zIndex: 99998,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              backgroundColor: "rgba(0, 0, 0, 0.6)",
+            }}
+            onClick={(e) => { if (e.target === e.currentTarget) closeShelfGroupDetailModal(); }}
+            onMouseMove={(e) => {
+              if (!shelfGroupDetailDrag) return;
+              setShelfGroupDetailDrag((prev) => prev ? { ...prev, pointerX: e.clientX, pointerY: e.clientY } : null);
+            }}
+            onMouseUp={handleGroupDrop}
+          >
+            <div
+              style={{
+                background: "white",
+                borderRadius: 16,
+                boxShadow: "0 25px 50px -12px rgba(0,0,0,0.25)",
+                maxWidth: gGridW + 48,
+                maxHeight: window.innerHeight - 40,
+                overflow: "auto",
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* ヘッダー */}
+              <div className="flex items-center justify-between border-b px-5 py-4 gap-3">
+                <div className="text-lg font-semibold flex-1 min-w-0 flex items-center gap-3">
+                  <span style={{ display: "inline-block", width: 14, height: 14, borderRadius: 4, background: gColor, border: `2px dashed ${gColor}` }} />
+                  グループ結合表示 — {members.length}個の棚 ({sorted.map((m) => m.name || "棚").join(" / ")})
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <button
+                    className="rounded-xl border px-3 py-1.5 text-sm font-bold"
+                    style={shelfGroupDetail3D
+                      ? { background: "#ede9fe", color: "#7c3aed", borderColor: "#c4b5fd" }
+                      : { background: "#f1f5f9", color: "#475569", borderColor: "#cbd5e1" }}
+                    onClick={() => { setShelfGroupDetail3D((v) => !v); setShelfGroupDetailDrag(null); }}
+                    type="button"
+                  >{shelfGroupDetail3D ? "2Dに戻す" : "3Dビュー"}</button>
+                  {shelfGroupDetail3D && (
+                    <>
+                      <button className="rounded-lg border px-2 py-1 text-sm hover:bg-gray-100" onClick={() => setShelfGroupDetailRotStep((r) => (r + 3) % 4)} type="button">↺</button>
+                      <button className="rounded-lg border px-2 py-1 text-sm hover:bg-gray-100" onClick={() => setShelfGroupDetailRotStep((r) => (r + 1) % 4)} type="button">↻</button>
+                      <button className="rounded-lg border px-2 py-1 text-xs hover:bg-gray-100" onClick={() => setShelfGroupDetailZoom((v) => Math.min(3, v + 0.2))} type="button">+</button>
+                      <button className="rounded-lg border px-2 py-1 text-xs hover:bg-gray-100" onClick={() => setShelfGroupDetailZoom((v) => Math.max(0.3, v - 0.2))} type="button">-</button>
+                    </>
+                  )}
+                  <button
+                    className="rounded-xl px-3 py-1 text-sm hover:bg-gray-100"
+                    onClick={closeShelfGroupDetailModal}
+                    type="button"
+                  >✕</button>
+                </div>
+              </div>
+
+              {/* === 2Dグリッド (zoneDetail同水準) === */}
+              {!shelfGroupDetail3D && (
+                <div className="px-5 py-4 flex justify-center">
+                  <div
+                    style={{
+                      position: "relative",
+                      width: gGridW,
+                      height: gGridH,
+                      backgroundColor: "#eef2f7",
+                      borderRadius: 8,
+                      border: `2px solid ${gColor}66`,
+                      userSelect: "none",
+                    }}
+                  >
+                    {/* サブグリッド線 (0.25セル刻み) */}
+                    {Array.from({ length: totalW * SUB - 1 }, (_, i) => (
+                      <div key={`gsv${i}`} style={{
+                        position: "absolute", left: (i + 1) * (gCellPx / SUB), top: 0,
+                        width: 1, height: gGridH,
+                        backgroundColor: (i + 1) % SUB === 0 ? "rgba(0,0,0,0.10)" : "rgba(0,0,0,0.03)",
+                      }} />
+                    ))}
+                    {Array.from({ length: maxH * SUB - 1 }, (_, i) => (
+                      <div key={`gsh${i}`} style={{
+                        position: "absolute", top: (i + 1) * (gCellPx / SUB), left: 0,
+                        height: 1, width: gGridW,
+                        backgroundColor: (i + 1) % SUB === 0 ? "rgba(0,0,0,0.10)" : "rgba(0,0,0,0.03)",
+                      }} />
+                    ))}
+
+                    {/* 各メンバー棚 (ダッシュ枠+背景) */}
+                    {layouted.map((m) => {
+                      const bg = m.bgColor || "#f0fdfa";
+                      const bgRgb = hexToRgb(bg);
+                      const labelRgb = hexToRgb(m.labelColor || "#334155");
+                      return (
+                        <div
+                          key={`gshelf-${m.id}`}
+                          style={{
+                            position: "absolute",
+                            left: m._offsetX * gCellPx,
+                            top: 0,
+                            width: m.w * gCellPx,
+                            height: m.h * gCellPx,
+                            background: `rgba(${bgRgb.join(",")}, 0.85)`,
+                            border: `2px dashed ${gColor}`,
+                            borderRadius: 8,
+                            boxShadow: `0 0 0 2px ${gColor}22`,
+                            zIndex: 1,
+                            pointerEvents: "none",
+                            display: "flex", alignItems: "center", justifyContent: "center",
+                          }}
+                        >
+                          <div style={{
+                            fontSize: `${Math.min(m.w, m.h) * gCellPx / 6}px`,
+                            fontWeight: 900,
+                            color: `rgba(${labelRgb.join(",")}, ${(m.labelOpacity ?? 15) / 100})`,
+                            pointerEvents: "none", textAlign: "center",
+                          }}>{m.name || "棚"}</div>
+                        </div>
+                      );
+                    })}
+
+                    {/* 荷物 (実寸表示+ドラッグ対応) */}
+                    {allUnits.map((u) => {
+                      const isDrag = u.id === draggingIdG && hasDragMovedG;
+                      const isStackTarget = gGhost && gGhost.stackTargetId === u.id;
+                      const bgRgb = hexToRgb(u.bgColor || "#ffffff");
+                      const bgOp = (u.bgOpacity ?? 100) / 100;
+                      const kindIcon = u.kind === "パレット" ? "📦" : u.kind === "カゴ" ? "🧺" : u.kind === "配電盤" ? "⚡" : "📋";
+                      const realWPx = u._realW * gCellPx;
+                      const realHPx = u._realH * gCellPx;
+                      const wM = u.rot ? (u.d_m || cellMD) : (u.w_m || cellMW);
+                      const dM = u.rot ? (u.w_m || cellMW) : (u.d_m || cellMD);
+                      return (
+                        <div
+                          key={`gunit-${u.id}`}
+                          style={{
+                            position: "absolute",
+                            left: u._localX * gCellPx,
+                            top: u._localY * gCellPx,
+                            width: realWPx,
+                            height: realHPx,
+                            background: u.bgColor
+                              ? `rgba(${bgRgb.join(",")}, ${bgOp})`
+                              : "linear-gradient(145deg, #ffffff 0%, #f8fafc 50%, #f1f5f9 100%)",
+                            border: isStackTarget ? "3px solid #3b82f6" : "2px solid " + (u.bgColor || "#e2e8f0"),
+                            borderRadius: 8,
+                            boxShadow: isStackTarget ? "0 0 12px rgba(59,130,246,0.5)" : "0 2px 6px rgba(0,0,0,0.12)",
+                            zIndex: 10 + (u.stackZ || 0) + (isDrag ? 999 : 0),
+                            opacity: isDrag ? 0.4 : 1,
+                            cursor: "grab",
+                          }}
+                          onMouseDown={(e) => startGroupDragUnit(e, u)}
+                          onDoubleClick={(e) => { e.stopPropagation(); openDetailModal(u); }}
+                          title={`${u.name || u.kind} (${wM.toFixed(1)}×${dM.toFixed(1)}m)`}
+                        >
+                          <div className="text-[10px] px-1 pt-1 truncate font-semibold text-slate-800">{kindIcon} {u.name || u.kind}</div>
+                          {u.client && <div className="text-[9px] px-1 truncate text-slate-600">{u.client}</div>}
+                        </div>
+                      );
+                    })}
+
+                    {/* ドラッグゴースト */}
+                    {gGhost && hasDragMovedG && (
+                      <div style={{
+                        position: "absolute",
+                        left: gGhost.vx * gCellPx,
+                        top: gGhost.vy * gCellPx,
+                        width: gGhost.w * gCellPx,
+                        height: gGhost.h * gCellPx,
+                        border: `3px dashed ${gGhost.ok ? "#22c55e" : "#ef4444"}`,
+                        background: gGhost.ok ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)",
+                        borderRadius: 8,
+                        pointerEvents: "none",
+                        zIndex: 1000,
+                      }} />
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* 3Dビュー */}
+              {shelfGroupDetail3D && gIsoMath && (() => {
+                // ゴーストを回転後の座標系に投影
+                const isoGhostG = (gGhost && hasDragMovedG) ? (() => {
+                  const u = units.find((uu) => uu.id === gGhost.unitId);
+                  if (!u) return null;
+                  const rfp = realFP(u);
+                  const { rx, ry, rw, rh } = gIsoMath.rotateRect(gGhost.vx, gGhost.vy, rfp.w, rfp.h);
+                  return { gx: rx, gy: ry, fw: rw, fh: rh, ok: gGhost.ok, h: u.h_m || 1 };
+                })() : null;
+                return (
+                  <div className="px-5 py-4 flex justify-center">
+                    <Iso3DView
+                      viewCols={totalW} viewRows={maxH}
+                      viewBgColor="#f8fafc"
+                      viewItems={gIsoViewItems}
+                      viewZones={gIsoShelfZones}
+                      rotStep={shelfGroupDetailRotStep}
+                      zoom={shelfGroupDetailZoom}
+                      onZoomChange={setShelfGroupDetailZoom}
+                      blinkingUnitIds={blinkingUnitIds}
+                      maxHeight="65vh"
+                      onUnitMouseDown={(e, u) => startGroupDragUnit(e, u)}
+                      onUnitDoubleClick={(e, u) => openDetailModal(u)}
+                      draggingId={draggingIdG} hasDragMoved={hasDragMovedG}
+                      ghostBox={isoGhostG}
+                      stackTargetId={gGhost?.stackTargetId || null}
+                    />
+                  </div>
+                );
+              })()}
+
+              {/* フッター */}
+              <div className="border-t px-5 py-2 text-xs text-slate-500 flex justify-between">
+                <span>ドラッグで移動 / ダブルクリックで詳細</span>
+                <span>{allUnits.length} 個の荷物 / {members.length} 個の棚</span>
               </div>
             </div>
           </div>
@@ -11610,6 +12192,45 @@ export default function App() {
     }
   }
 
+  // 未配置化: 棚下に隠れて動かせない等の救出用。UnitSearchModal 経由で呼ばれる。
+  // 対象の loc を "unplaced" にし、その倉庫の localStorage + Supabase を直接書き換える。
+  function releaseUnitToUnplaced(unit) {
+    if (!unit || !unit._whId) return;
+    if (!confirm(`「${unit.name || "(名称なし)"}」を未配置リストに戻しますか?\n\n配置が確定するまで、他のユニットに影響しません。`)) return;
+    const key = `wh_demo_units_${unit._whId}_v1`;
+    let arr;
+    try {
+      arr = JSON.parse(localStorage.getItem(key)) || [];
+    } catch {
+      arr = [];
+    }
+    const idx = arr.findIndex((u) => u.id === unit.id);
+    if (idx < 0) {
+      alert("対象の荷物が見つかりませんでした (別セッションで既に移動された可能性)");
+      return;
+    }
+    const orig = arr[idx];
+    const hist = (orig.editHistory || []).slice();
+    hist.push({
+      timestamp: new Date().toISOString(),
+      action: "未配置に戻す (救出)",
+      by: displayName || "",
+    });
+    if (hist.length > 200) hist.splice(0, hist.length - 200);
+    arr[idx] = { ...orig, loc: { kind: "unplaced" }, stackZ: 0, editHistory: hist };
+    try {
+      localStorage.setItem(key, JSON.stringify(arr));
+    } catch { /* ignore */ }
+    if (supabase) {
+      supabase.from("app_state").upsert({ key, value: arr, updated_at: new Date().toISOString() }).then(() => {});
+    }
+    setSearchRefreshKey((k) => k + 1);
+    // アクティブ倉庫が一致する場合は WarehouseView 側の in-memory state も同期させる必要がある。
+    // useSupabaseState は storage/realtime を購読していないので、CustomEvent で通知する。
+    window.dispatchEvent(new CustomEvent("wh:units-external-update", { detail: { whId: unit._whId } }));
+    alert(`「${orig.name || "(名称なし)"}」を未配置リストに戻しました。`);
+  }
+
   // Map pan/zoom
   const containerRef = useRef(null);
   const [zoom, setZoom] = useState(1);
@@ -11952,6 +12573,7 @@ export default function App() {
         setSearchKey={setUnitSearchKey}
         results={unitSearchResults}
         onNavigate={navigateToUnit}
+        onReleaseToUnplaced={releaseUnitToUnplaced}
         allUnits={allUnitsForSearch}
       />
       </>
@@ -12590,6 +13212,7 @@ export default function App() {
         setSearchKey={setUnitSearchKey}
         results={unitSearchResults}
         onNavigate={navigateToUnit}
+        onReleaseToUnplaced={releaseUnitToUnplaced}
         allUnits={allUnitsForSearch}
       />
     </div>
