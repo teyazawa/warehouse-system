@@ -5885,6 +5885,11 @@ ${cs.units.length > 0 ? `
       .filter((s) => s.outboundDate === selDateStr)
       .sort((a, b) => (a.client || "").localeCompare(b.client || ""));
   }, [schedulesForThisWh, selectedDate]);
+  // 未定予定 (この倉庫が受入先): 明示 undecided または 入庫日なし
+  const scheduledUndecidedForThisWh = useMemo(
+    () => schedulesForThisWh.filter((s) => s.scheduleType === "undecided" || !s.inboundDate),
+    [schedulesForThisWh]
+  );
 
   // 運行中ユニット一覧（selectedDate が運行期間内のもの）
   const transitUnits = useMemo(() => {
@@ -6932,12 +6937,15 @@ ${cs.units.length > 0 ? `
                           <div className="flex items-center gap-2">
                             <span style={{ width: 10, height: 10, borderRadius: 3, background: s.color || "#60a5fa", flexShrink: 0 }} />
                             <div className="font-medium">{s.caseName || "(案件名なし)"}</div>
+                            {s.scheduleType === "long_term" && (
+                              <span style={{ background: "#f59e0b", color: "#fff", padding: "1px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>長期</span>
+                            )}
                           </div>
                           <div className="mt-1 text-xs text-gray-600 space-y-0.5">
                             {s.client && <div>顧客: {s.client}</div>}
                             {s.requiredTsubo !== "" && s.requiredTsubo != null && <div>必要坪数: {s.requiredTsubo} 坪</div>}
                             {s.packageForm && <div>荷姿: {s.packageForm}</div>}
-                            <div>保管期間: {s.inboundDate} 〜 {s.outboundDate}</div>
+                            <div>保管期間: {s.inboundDate} 〜 {s.outboundDate || "(未定)"}</div>
                           </div>
                           {s.personInCharge && (
                             <div className="mt-1 text-xs text-gray-500">担当: {s.personInCharge}</div>
@@ -6961,16 +6969,51 @@ ${cs.units.length > 0 ? `
                           <div className="flex items-center gap-2">
                             <span style={{ width: 10, height: 10, borderRadius: 3, background: s.color || "#f87171", flexShrink: 0 }} />
                             <div className="font-medium">{s.caseName || "(案件名なし)"}</div>
+                            {s.scheduleType === "long_term" && (
+                              <span style={{ background: "#f59e0b", color: "#fff", padding: "1px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>長期</span>
+                            )}
                           </div>
                           <div className="mt-1 text-xs text-gray-600 space-y-0.5">
                             {s.client && <div>顧客: {s.client}</div>}
-                            <div>保管期間: {s.inboundDate} 〜 {s.outboundDate}</div>
+                            <div>保管期間: {s.inboundDate || "(未定)"} 〜 {s.outboundDate}</div>
                           </div>
                         </div>
                       ))}
                     </div>
                   </div>
                 )}
+              </div>
+            </div>
+          )}
+
+          {/* 未定予定 (この倉庫が受入先) */}
+          {scheduledUndecidedForThisWh.length > 0 && (
+            <div className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm">
+              <SectionTitle right={<Badge color="gray">{scheduledUndecidedForThisWh.length} 件</Badge>}>
+                未定予定
+              </SectionTitle>
+              <div className="text-[11px] text-gray-500 mb-2">日付未定でこの倉庫を受入先とする予定です</div>
+              <div className="space-y-2 max-h-48 overflow-y-auto">
+                {scheduledUndecidedForThisWh.map((s) => (
+                  <div
+                    key={s.id}
+                    className="rounded-xl border p-2 text-sm cursor-pointer transition-colors hover:bg-gray-50"
+                    style={{ borderStyle: "dashed", borderColor: s.color || "#94a3b8" }}
+                    onDoubleClick={() => onEditSchedule && onEditSchedule(s)}
+                    title="ダブルクリックで編集"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span style={{ width: 10, height: 10, borderRadius: "50%", background: s.color || "#94a3b8", flexShrink: 0 }} />
+                      <div className="font-medium">{s.caseName || "(案件名なし)"}</div>
+                      <span style={{ background: "#94a3b8", color: "#fff", padding: "1px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>未定</span>
+                    </div>
+                    <div className="mt-1 text-xs text-gray-600 space-y-0.5">
+                      {s.client && <div>顧客: {s.client}</div>}
+                      {s.requiredTsubo !== "" && s.requiredTsubo != null && <div>必要坪数: {s.requiredTsubo} 坪</div>}
+                      {s.packageForm && <div>荷姿: {s.packageForm}</div>}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           )}
@@ -12195,6 +12238,7 @@ function daysDiff(a, b) {
 
 function ScheduleEditModal({ open, mode, initial, onSave, onDelete, onClose, clientOptions, personOptions, warehouses }) {
   const [form, setForm] = useState({
+    scheduleType: "normal", // "normal" | "undecided" | "long_term"
     client: "", caseName: "", requiredTsubo: "",
     packageForm: "", inboundDate: "", outboundDate: "",
     personInCharge: "", color: SCHEDULE_QUICK_COLORS[0],
@@ -12205,6 +12249,7 @@ function ScheduleEditModal({ open, mode, initial, onSave, onDelete, onClose, cli
     if (!open) return;
     if (initial) {
       setForm({
+        scheduleType: initial.scheduleType || "normal",
         client: initial.client || "",
         caseName: initial.caseName || "",
         requiredTsubo: initial.requiredTsubo ?? "",
@@ -12220,6 +12265,7 @@ function ScheduleEditModal({ open, mode, initial, onSave, onDelete, onClose, cli
       const today = toYmd(new Date());
       const rand = SCHEDULE_QUICK_COLORS[Math.floor(Math.random() * SCHEDULE_QUICK_COLORS.length)];
       setForm({
+        scheduleType: "normal",
         client: "", caseName: "", requiredTsubo: "",
         packageForm: "", inboundDate: today, outboundDate: addDaysYmd(today, 7),
         personInCharge: "", color: rand,
@@ -12230,11 +12276,17 @@ function ScheduleEditModal({ open, mode, initial, onSave, onDelete, onClose, cli
 
   if (!open) return null;
 
-  const valid = form.client.trim() && form.caseName.trim() && form.inboundDate && form.outboundDate && form.inboundDate <= form.outboundDate;
+  const isLongTerm = form.scheduleType === "long_term";
+  // 全種別で入庫日/出庫日は任意。両方入っている場合のみ順序をチェック。
+  const datesOk = !form.inboundDate || !form.outboundDate || form.inboundDate <= form.outboundDate;
+  const valid = form.client.trim() && form.caseName.trim() && datesOk;
 
   const handleSave = () => {
     if (!valid) {
-      alert("顧客名・案件名・入庫予定日・出庫予定日は必須です（出庫日は入庫日以降）");
+      const msg = !datesOk
+        ? "出庫日は入庫日以降にしてください"
+        : "顧客名・案件名は必須です";
+      alert(msg);
       return;
     }
     onSave({
@@ -12246,8 +12298,61 @@ function ScheduleEditModal({ open, mode, initial, onSave, onDelete, onClose, cli
   const inputStyle = { width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 13, boxSizing: "border-box" };
   const labelStyle = { fontSize: 12, fontWeight: 600, color: "#475569", marginBottom: 4, display: "block" };
 
+  const typeOptions = [
+    { key: "normal", label: "通常", color: "#6366f1", desc: "通常の入出庫予定（日付未入力なら未定セクションに表示）" },
+    { key: "undecided", label: "未定", color: "#94a3b8", desc: "分類上「未定」として明示（日付を入れても未定セクションに表示）" },
+    { key: "long_term", label: "長期予定", color: "#f59e0b", desc: "長期保管予定（縞模様バーで表示 / 日付未入力なら未定セクション）" },
+  ];
+
+  // 種別切替: 未定/長期 に切り替える時は日付を空欄化。
+  // 通常 に切り替える時は日付が空欄なら today/+7 で復元。
+  const handleTypeChange = (nextType) => {
+    setForm((s) => {
+      if (s.scheduleType === nextType) return s;
+      if (nextType === "undecided" || nextType === "long_term") {
+        return { ...s, scheduleType: nextType, inboundDate: "", outboundDate: "" };
+      }
+      // nextType === "normal"
+      const today = toYmd(new Date());
+      return {
+        ...s,
+        scheduleType: nextType,
+        inboundDate: s.inboundDate || today,
+        outboundDate: s.outboundDate || addDaysYmd(today, 7),
+      };
+    });
+  };
+
   return (
     <Modal title={mode === "edit" ? "予定の編集" : "入出庫予定の作成"} open={open} onClose={onClose} maxWidth="44rem">
+      {/* 予定種別セレクター */}
+      <div style={{ marginBottom: 14, padding: 10, background: "#f8fafc", borderRadius: 10, border: "1px solid #e2e8f0" }}>
+        <div style={labelStyle}>予定種別</div>
+        <div style={{ display: "flex", gap: 6 }}>
+          {typeOptions.map((opt) => {
+            const active = form.scheduleType === opt.key;
+            return (
+              <button key={opt.key} type="button"
+                onClick={() => handleTypeChange(opt.key)}
+                style={{
+                  flex: 1, padding: "8px 10px", borderRadius: 8,
+                  border: active ? `2px solid ${opt.color}` : "1px solid #cbd5e1",
+                  background: active ? opt.color : "#fff",
+                  color: active ? "#fff" : "#475569",
+                  fontSize: 13, fontWeight: 700, cursor: "pointer",
+                  transition: "all 0.15s",
+                }}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ marginTop: 6, fontSize: 11, color: "#64748b" }}>
+          {typeOptions.find((o) => o.key === form.scheduleType)?.desc}
+        </div>
+      </div>
+
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
         <div>
           <label style={labelStyle}>顧客名 <span style={{ color: "#dc2626" }}>*</span></label>
@@ -12269,11 +12374,17 @@ function ScheduleEditModal({ open, mode, initial, onSave, onDelete, onClose, cli
           <input style={inputStyle} value={form.packageForm} onChange={(e) => setForm((s) => ({ ...s, packageForm: e.target.value }))} placeholder="例: パレット / 段ボール / バラ" />
         </div>
         <div>
-          <label style={labelStyle}>入庫予定日 <span style={{ color: "#dc2626" }}>*</span></label>
+          <label style={labelStyle}>
+            入庫予定日
+            <span style={{ color: "#94a3b8", fontSize: 11, marginLeft: 4 }}>(任意)</span>
+          </label>
           <input type="date" style={inputStyle} value={form.inboundDate} onChange={(e) => setForm((s) => ({ ...s, inboundDate: e.target.value }))} />
         </div>
         <div>
-          <label style={labelStyle}>出庫予定日 <span style={{ color: "#dc2626" }}>*</span></label>
+          <label style={labelStyle}>
+            出庫予定日
+            <span style={{ color: "#94a3b8", fontSize: 11, marginLeft: 4 }}>(任意)</span>
+          </label>
           <input type="date" style={inputStyle} value={form.outboundDate} onChange={(e) => setForm((s) => ({ ...s, outboundDate: e.target.value }))} />
         </div>
         <div>
@@ -12389,11 +12500,20 @@ function SchedulePlanView({ schedules, onAdd, onEdit }) {
     return list;
   }, [rangeStart, rangeDays, todayYmd]);
 
+  // 未定ピル対象: 明示的な undecided、または入庫日なし (どの種別でも)
+  const undecidedSchedules = useMemo(() => {
+    return (schedules || []).filter((s) => s.scheduleType === "undecided" || !s.inboundDate);
+  }, [schedules]);
+
+  // 日付付きバーとして描画する予定: undecided 以外で inboundDate がある
+  // 出庫日欠落は inbound+30日を暫定終端として扱う
   const groups = useMemo(() => {
-    const inRange = (schedules || []).filter((s) =>
-      s.inboundDate && s.outboundDate &&
-      !(s.outboundDate < rangeStart || s.inboundDate > rangeEnd)
-    );
+    const inRange = (schedules || []).filter((s) => {
+      if (s.scheduleType === "undecided") return false;
+      if (!s.inboundDate) return false;
+      const effectiveEnd = s.outboundDate || addDaysYmd(s.inboundDate, 30);
+      return !(effectiveEnd < rangeStart || s.inboundDate > rangeEnd);
+    });
     const byClient = new Map();
     for (const s of inRange) {
       const key = s.client || "(未設定)";
@@ -12403,13 +12523,14 @@ function SchedulePlanView({ schedules, onAdd, onEdit }) {
     const clients = [...byClient.keys()].sort();
     return clients.map((c) => {
       const items = byClient.get(c);
-      const sorted = [...items].sort((a, b) => a.inboundDate.localeCompare(b.inboundDate));
+      const sorted = [...items].sort((a, b) => (a.inboundDate || "").localeCompare(b.inboundDate || ""));
       const rows = [];
       for (const s of sorted) {
         let placed = false;
         for (const row of rows) {
           const last = row[row.length - 1];
-          if (last.outboundDate < s.inboundDate) {
+          const lastEnd = last.outboundDate || addDaysYmd(last.inboundDate, 30);
+          if (lastEnd < s.inboundDate) {
             row.push(s);
             placed = true;
             break;
@@ -12430,7 +12551,8 @@ function SchedulePlanView({ schedules, onAdd, onEdit }) {
 
   const renderBar = (s, subRowIdx) => {
     const rawStart = daysDiff(rangeStart, s.inboundDate);
-    const rawEnd = daysDiff(rangeStart, s.outboundDate);
+    const effectiveEndYmd = s.outboundDate || addDaysYmd(s.inboundDate, 30);
+    const rawEnd = daysDiff(rangeStart, effectiveEndYmd);
     const startIdx = Math.max(0, rawStart);
     const endIdx = Math.min(days.length - 1, rawEnd);
     if (endIdx < startIdx) return null;
@@ -12438,28 +12560,38 @@ function SchedulePlanView({ schedules, onAdd, onEdit }) {
     const left = startIdx * dayPx + 1;
     const clipLeft = rawStart < 0;
     const clipRight = rawEnd > days.length - 1;
+    const openEnd = !s.outboundDate; // 出庫日未定
+    const isLongTerm = s.scheduleType === "long_term";
     const tsuboText = (s.requiredTsubo === "" || s.requiredTsubo == null) ? "" : `\n必要坪数: ${s.requiredTsubo}坪`;
     const packageText = s.packageForm ? `\n荷姿: ${s.packageForm}` : "";
     const personText = s.personInCharge ? `\n担当: ${s.personInCharge}` : "";
     const notesText = s.notes ? `\n備考: ${s.notes}` : "";
+    const typeText = isLongTerm ? "\n[長期予定]" : "";
+    const outText = openEnd ? "(未定)" : s.outboundDate;
+    const baseColor = s.color || SCHEDULE_QUICK_COLORS[0];
+    // 長期予定は縞模様。出庫日未定は右端フェード。
+    const bgStyle = isLongTerm
+      ? { backgroundColor: baseColor, backgroundImage: `repeating-linear-gradient(45deg, rgba(255,255,255,0.35) 0 8px, transparent 8px 16px)` }
+      : { backgroundColor: baseColor };
     return (
       <div
         key={s.id}
-        title={`${s.client} / ${s.caseName}\n入庫: ${s.inboundDate} → 出庫: ${s.outboundDate}${tsuboText}${packageText}${personText}${notesText}`}
+        title={`${s.client} / ${s.caseName}${typeText}\n入庫: ${s.inboundDate} → 出庫: ${outText}${tsuboText}${packageText}${personText}${notesText}`}
         onDoubleClick={() => onEdit(s)}
         style={{
           position: "absolute",
           top: subRowIdx * (rowHeight + rowGap) + rowGap,
           left, width, height: rowHeight,
-          background: s.color || SCHEDULE_QUICK_COLORS[0],
+          ...bgStyle,
           borderRadius: 6,
           borderTopLeftRadius: clipLeft ? 0 : 6,
           borderBottomLeftRadius: clipLeft ? 0 : 6,
-          borderTopRightRadius: clipRight ? 0 : 6,
-          borderBottomRightRadius: clipRight ? 0 : 6,
+          borderTopRightRadius: (clipRight || openEnd) ? 0 : 6,
+          borderBottomRightRadius: (clipRight || openEnd) ? 0 : 6,
           border: "1px solid rgba(0,0,0,0.15)",
+          borderRight: openEnd ? "2px dashed rgba(255,255,255,0.8)" : "1px solid rgba(0,0,0,0.15)",
           padding: "0 8px",
-          display: "flex", alignItems: "center",
+          display: "flex", alignItems: "center", gap: 4,
           color: "#fff", fontSize: 12, fontWeight: 700,
           cursor: "pointer",
           overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis",
@@ -12468,7 +12600,11 @@ function SchedulePlanView({ schedules, onAdd, onEdit }) {
           userSelect: "none",
         }}
       >
-        {s.caseName}
+        {isLongTerm && (
+          <span style={{ background: "rgba(0,0,0,0.35)", padding: "1px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700, flexShrink: 0, letterSpacing: "0.03em" }}>長期</span>
+        )}
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{s.caseName}</span>
+        {openEnd && <span style={{ marginLeft: "auto", fontSize: 10, opacity: 0.85, flexShrink: 0 }}>→ 未定</span>}
       </div>
     );
   };
@@ -12497,6 +12633,56 @@ function SchedulePlanView({ schedules, onAdd, onEdit }) {
           </button>
         </div>
       </div>
+
+      {/* 未定予定セクション (ある時だけ表示) */}
+      {undecidedSchedules.length > 0 && (
+        <div style={{ borderBottom: "1px solid #e2e8f0", padding: "10px 14px", background: "linear-gradient(180deg, #f8fafc, #f1f5f9)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: "#64748b" }}>未定予定</span>
+            <span style={{ background: "#e2e8f0", color: "#475569", borderRadius: 10, padding: "1px 8px", fontSize: 11, fontWeight: 600 }}>{undecidedSchedules.length}件</span>
+            <span style={{ fontSize: 11, color: "#94a3b8" }}>入庫日未入力または未定種別の予定。ダブルクリックで編集</span>
+          </div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {undecidedSchedules.map((s) => {
+              const isLong = s.scheduleType === "long_term";
+              const partialDates = (s.inboundDate || s.outboundDate)
+                ? `${s.inboundDate || "?"} 〜 ${s.outboundDate || "?"}`
+                : "";
+              return (
+                <div
+                  key={s.id}
+                  onDoubleClick={() => onEdit(s)}
+                  title={`${s.client} / ${s.caseName}${isLong ? "\n[長期予定]" : "\n[未定]"}${partialDates ? `\n${partialDates}` : ""}${s.requiredTsubo ? `\n必要坪数: ${s.requiredTsubo}坪` : ""}${s.packageForm ? `\n荷姿: ${s.packageForm}` : ""}${s.personInCharge ? `\n担当: ${s.personInCharge}` : ""}${s.notes ? `\n備考: ${s.notes}` : ""}`}
+                  style={{
+                    display: "inline-flex", alignItems: "center", gap: 6,
+                    padding: "5px 10px", borderRadius: 999,
+                    background: "#fff",
+                    border: `2px dashed ${s.color || "#94a3b8"}`,
+                    cursor: "pointer",
+                    fontSize: 12,
+                    color: "#334155",
+                    userSelect: "none",
+                  }}
+                >
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: s.color || "#94a3b8", flexShrink: 0 }} />
+                  <span style={{ fontWeight: 700 }}>{s.caseName || "(案件名なし)"}</span>
+                  <span style={{ color: "#94a3b8" }}>／</span>
+                  <span style={{ color: "#64748b" }}>{s.client || "(顧客名なし)"}</span>
+                  {isLong && (
+                    <span style={{ background: "#f59e0b", color: "#fff", padding: "1px 6px", borderRadius: 4, fontSize: 10, fontWeight: 700 }}>長期</span>
+                  )}
+                  {partialDates && (
+                    <span style={{ color: "#94a3b8", fontSize: 10 }}>{partialDates}</span>
+                  )}
+                  {s.requiredTsubo !== "" && s.requiredTsubo != null && (
+                    <span style={{ color: "#94a3b8", fontSize: 11 }}>{s.requiredTsubo}坪</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* body */}
       <div style={{ flex: 1, overflow: "auto" }}>
@@ -12534,7 +12720,9 @@ function SchedulePlanView({ schedules, onAdd, onEdit }) {
           {/* body rows */}
           {groups.length === 0 ? (
             <div style={{ padding: 60, textAlign: "center", color: "#94a3b8", fontSize: 14 }}>
-              この期間に予定はありません。「＋ 予定作成」から追加してください。
+              {undecidedSchedules.length > 0
+                ? "この期間に日付付き予定はありません（上部の未定予定を参照）"
+                : "この期間に予定はありません。「＋ 予定作成」から追加してください。"}
             </div>
           ) : groups.map(({ client, rows }) => {
             const rowsHeight = rows.length * (rowHeight + rowGap) + rowGap;
