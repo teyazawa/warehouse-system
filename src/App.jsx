@@ -1198,7 +1198,7 @@ function getJapaneseHolidays(year) {
   return holidays;
 }
 
-function CalendarStub({ selectedDate, onPick }) {
+function CalendarStub({ selectedDate, onPick, markedInbound, markedOutbound }) {
   // Very simple month grid (no locale edge cases)
   const d = new Date(selectedDate);
   const year = d.getFullYear();
@@ -1215,6 +1215,7 @@ function CalendarStub({ selectedDate, onPick }) {
   while (cells.length % 7 !== 0) cells.push(null);
 
   const dayHeaders = "日月火水木金土".split("");
+  const ymdOf = (cd) => cd ? `${cd.getFullYear()}-${String(cd.getMonth() + 1).padStart(2, "0")}-${String(cd.getDate()).padStart(2, "0")}` : "";
 
   return (
     <div className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm">
@@ -1264,6 +1265,9 @@ function CalendarStub({ selectedDate, onPick }) {
             `${cd.getFullYear()}-${String(cd.getMonth()+1).padStart(2,"0")}-${String(cd.getDate()).padStart(2,"0")}`
           );
           const dayColor = isSelected ? "#ffffff" : (dow === 0 || isHoliday) ? "#ef4444" : dow === 6 ? "#3b82f6" : undefined;
+          const cellYmd = ymdOf(cd);
+          const hasIn = cellYmd && markedInbound && markedInbound.has(cellYmd);
+          const hasOut = cellYmd && markedOutbound && markedOutbound.has(cellYmd);
           return (
             <button
               key={idx}
@@ -1271,16 +1275,30 @@ function CalendarStub({ selectedDate, onPick }) {
               disabled={!cd}
               onClick={() => cd && onPick(cd)}
               className={
-                "aspect-square rounded-lg text-sm " +
+                "aspect-square rounded-lg text-sm relative " +
                 (cd ? (isSelected ? "bg-black" : "hover:bg-gray-100") : "opacity-0")
               }
               style={dayColor ? { color: dayColor } : undefined}
+              title={cd ? [hasIn ? "入庫予定あり" : null, hasOut ? "出庫予定あり" : null].filter(Boolean).join(" / ") : ""}
             >
               {cd ? cd.getDate() : ""}
+              {(hasIn || hasOut) && (
+                <div style={{ position: "absolute", bottom: 2, left: 0, right: 0, display: "flex", justifyContent: "center", gap: 2, pointerEvents: "none" }}>
+                  {hasIn && <span style={{ width: 5, height: 5, borderRadius: "50%", background: isSelected ? "#93c5fd" : "#3b82f6" }} />}
+                  {hasOut && <span style={{ width: 5, height: 5, borderRadius: "50%", background: isSelected ? "#fca5a5" : "#ef4444" }} />}
+                </div>
+              )}
             </button>
           );
         })}
       </div>
+
+      {(markedInbound || markedOutbound) && (
+        <div className="mt-2 flex items-center gap-3 text-[10px] text-gray-500">
+          <span className="inline-flex items-center gap-1"><span style={{ width: 6, height: 6, borderRadius: "50%", background: "#3b82f6", display: "inline-block" }} />入庫予定</span>
+          <span className="inline-flex items-center gap-1"><span style={{ width: 6, height: 6, borderRadius: "50%", background: "#ef4444", display: "inline-block" }} />出庫予定</span>
+        </div>
+      )}
 
       <div className="mt-3 text-xs text-gray-500">選択日: {d.toLocaleDateString("ja-JP")}</div>
     </div>
@@ -1806,7 +1824,7 @@ function SimpleGridView({ warehouses, selectedWarehouseId, onSelect, onOpen }) {
   );
 }
 
-function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, warehouses, onSwitchWarehouse, isLoggedIn, displayName, onLoginClick, onLogout, pendingFocusUnit, onFocusUnitHandled, onOpenUnitSearch }) {
+function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, warehouses, onSwitchWarehouse, isLoggedIn, displayName, onLoginClick, onLogout, pendingFocusUnit, onFocusUnitHandled, onOpenUnitSearch, schedules, onEditSchedule }) {
   const [selectedDate, setSelectedDate] = useState(() => new Date());
 
   const defaultLayout = useMemo(
@@ -5828,6 +5846,46 @@ ${cs.units.length > 0 ? `
       .sort((a, b) => (a.arrivalDate || "").localeCompare(b.arrivalDate || ""));
   }, [units, selectedDate]);
 
+  // 入出庫予定表（schedules）からこの倉庫を受入先とする分を抽出
+  const schedulesForThisWh = useMemo(
+    () => (schedules || []).filter((s) => s.warehouseId === wh.id),
+    [schedules, wh.id]
+  );
+  // カレンダーに印を付ける日付集合（入庫日と出庫日）
+  // 予定表 (schedules) + 倉庫内 units の arrivalDate/departureDate 両方を集計
+  const scheduledInboundDates = useMemo(() => {
+    const set = new Set();
+    for (const s of schedulesForThisWh) if (s.inboundDate) set.add(s.inboundDate);
+    for (const u of units) if (u.arrivalDate) set.add(u.arrivalDate.slice(0, 10));
+    return set;
+  }, [schedulesForThisWh, units]);
+  const scheduledOutboundDates = useMemo(() => {
+    const set = new Set();
+    for (const s of schedulesForThisWh) if (s.outboundDate) set.add(s.outboundDate);
+    for (const u of units) if (u.departureDate) set.add(u.departureDate.slice(0, 10));
+    return set;
+  }, [schedulesForThisWh, units]);
+  // 選択日と入庫日が一致する予定
+  const scheduledArrivalsToday = useMemo(() => {
+    const y = selectedDate.getFullYear();
+    const m = String(selectedDate.getMonth() + 1).padStart(2, "0");
+    const d = String(selectedDate.getDate()).padStart(2, "0");
+    const selDateStr = `${y}-${m}-${d}`;
+    return schedulesForThisWh
+      .filter((s) => s.inboundDate === selDateStr)
+      .sort((a, b) => (a.client || "").localeCompare(b.client || ""));
+  }, [schedulesForThisWh, selectedDate]);
+  // 選択日と出庫日が一致する予定
+  const scheduledDeparturesToday = useMemo(() => {
+    const y = selectedDate.getFullYear();
+    const m = String(selectedDate.getMonth() + 1).padStart(2, "0");
+    const d = String(selectedDate.getDate()).padStart(2, "0");
+    const selDateStr = `${y}-${m}-${d}`;
+    return schedulesForThisWh
+      .filter((s) => s.outboundDate === selDateStr)
+      .sort((a, b) => (a.client || "").localeCompare(b.client || ""));
+  }, [schedulesForThisWh, selectedDate]);
+
   // 運行中ユニット一覧（selectedDate が運行期間内のもの）
   const transitUnits = useMemo(() => {
     const selDateStr = (() => {
@@ -6619,7 +6677,12 @@ ${cs.units.length > 0 ? `
             transition: "width 200ms ease, min-width 200ms ease, opacity 150ms ease",
           }}
         >
-          <CalendarStub selectedDate={selectedDate} onPick={setSelectedDate} />
+          <CalendarStub
+            selectedDate={selectedDate}
+            onPick={setSelectedDate}
+            markedInbound={scheduledInboundDates}
+            markedOutbound={scheduledOutboundDates}
+          />
 
           {/* 出庫予定セクション */}
           <div className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm">
@@ -6845,6 +6908,72 @@ ${cs.units.length > 0 ? `
               </div>
             )}
           </div>
+
+          {/* 入出庫予定表 → この倉庫を受入先とする予定 */}
+          {(scheduledArrivalsToday.length > 0 || scheduledDeparturesToday.length > 0) && (
+            <div className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm">
+              <SectionTitle
+                right={<Badge color="purple">{scheduledArrivalsToday.length + scheduledDeparturesToday.length} 件</Badge>}
+              >
+                入出庫予定表（{selectedDate.toLocaleDateString("ja-JP")}）
+              </SectionTitle>
+              <div className="space-y-3 max-h-64 overflow-y-auto">
+                {scheduledArrivalsToday.length > 0 && (
+                  <div>
+                    <div className="text-[11px] font-semibold text-blue-700 mb-1">入庫予定</div>
+                    <div className="space-y-2">
+                      {scheduledArrivalsToday.map((s) => (
+                        <div
+                          key={s.id}
+                          className="rounded-xl border p-2 text-sm hover:bg-blue-50 cursor-pointer transition-colors"
+                          onDoubleClick={() => onEditSchedule && onEditSchedule(s)}
+                          title="ダブルクリックで編集"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span style={{ width: 10, height: 10, borderRadius: 3, background: s.color || "#60a5fa", flexShrink: 0 }} />
+                            <div className="font-medium">{s.caseName || "(案件名なし)"}</div>
+                          </div>
+                          <div className="mt-1 text-xs text-gray-600 space-y-0.5">
+                            {s.client && <div>顧客: {s.client}</div>}
+                            {s.requiredTsubo !== "" && s.requiredTsubo != null && <div>必要坪数: {s.requiredTsubo} 坪</div>}
+                            {s.packageForm && <div>荷姿: {s.packageForm}</div>}
+                            <div>保管期間: {s.inboundDate} 〜 {s.outboundDate}</div>
+                          </div>
+                          {s.personInCharge && (
+                            <div className="mt-1 text-xs text-gray-500">担当: {s.personInCharge}</div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {scheduledDeparturesToday.length > 0 && (
+                  <div>
+                    <div className="text-[11px] font-semibold text-red-700 mb-1">出庫予定</div>
+                    <div className="space-y-2">
+                      {scheduledDeparturesToday.map((s) => (
+                        <div
+                          key={s.id}
+                          className="rounded-xl border p-2 text-sm hover:bg-red-50 cursor-pointer transition-colors"
+                          onDoubleClick={() => onEditSchedule && onEditSchedule(s)}
+                          title="ダブルクリックで編集"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span style={{ width: 10, height: 10, borderRadius: 3, background: s.color || "#f87171", flexShrink: 0 }} />
+                            <div className="font-medium">{s.caseName || "(案件名なし)"}</div>
+                          </div>
+                          <div className="mt-1 text-xs text-gray-600 space-y-0.5">
+                            {s.client && <div>顧客: {s.client}</div>}
+                            <div>保管期間: {s.inboundDate} 〜 {s.outboundDate}</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           <div className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-sm">
             <SectionTitle>取引先別 占有（概算）</SectionTitle>
@@ -12034,6 +12163,410 @@ ${cs.units.length > 0 ? `
   );
 }
 
+// ==================== 入出庫予定表 ====================
+// クイックプリセット (少数)。フルパレットはネイティブカラーピッカーで自由選択
+const SCHEDULE_QUICK_COLORS = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#14b8a6", "#3b82f6", "#6366f1", "#a855f7", "#ec4899", "#78716c"];
+
+function toYmd(d) {
+  if (!d) return "";
+  if (typeof d === "string") return d;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+function parseYmd(s) {
+  if (!s) return null;
+  const [y, m, d] = s.split("-").map(Number);
+  return new Date(y, m - 1, d);
+}
+function addDaysYmd(s, n) {
+  const d = parseYmd(s);
+  if (!d) return s;
+  d.setDate(d.getDate() + n);
+  return toYmd(d);
+}
+function daysDiff(a, b) {
+  const da = parseYmd(a);
+  const db = parseYmd(b);
+  if (!da || !db) return 0;
+  return Math.round((db - da) / (1000 * 60 * 60 * 24));
+}
+
+function ScheduleEditModal({ open, mode, initial, onSave, onDelete, onClose, clientOptions, personOptions, warehouses }) {
+  const [form, setForm] = useState({
+    client: "", caseName: "", requiredTsubo: "",
+    packageForm: "", inboundDate: "", outboundDate: "",
+    personInCharge: "", color: SCHEDULE_QUICK_COLORS[0],
+    warehouseId: "", notes: "",
+  });
+
+  useEffect(() => {
+    if (!open) return;
+    if (initial) {
+      setForm({
+        client: initial.client || "",
+        caseName: initial.caseName || "",
+        requiredTsubo: initial.requiredTsubo ?? "",
+        packageForm: initial.packageForm || "",
+        inboundDate: initial.inboundDate || "",
+        outboundDate: initial.outboundDate || "",
+        personInCharge: initial.personInCharge || "",
+        color: initial.color || SCHEDULE_QUICK_COLORS[0],
+        warehouseId: initial.warehouseId || "",
+        notes: initial.notes || "",
+      });
+    } else {
+      const today = toYmd(new Date());
+      const rand = SCHEDULE_QUICK_COLORS[Math.floor(Math.random() * SCHEDULE_QUICK_COLORS.length)];
+      setForm({
+        client: "", caseName: "", requiredTsubo: "",
+        packageForm: "", inboundDate: today, outboundDate: addDaysYmd(today, 7),
+        personInCharge: "", color: rand,
+        warehouseId: "", notes: "",
+      });
+    }
+  }, [open, initial]);
+
+  if (!open) return null;
+
+  const valid = form.client.trim() && form.caseName.trim() && form.inboundDate && form.outboundDate && form.inboundDate <= form.outboundDate;
+
+  const handleSave = () => {
+    if (!valid) {
+      alert("顧客名・案件名・入庫予定日・出庫予定日は必須です（出庫日は入庫日以降）");
+      return;
+    }
+    onSave({
+      ...form,
+      requiredTsubo: form.requiredTsubo === "" || form.requiredTsubo == null ? "" : Number(form.requiredTsubo),
+    });
+  };
+
+  const inputStyle = { width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid #cbd5e1", fontSize: 13, boxSizing: "border-box" };
+  const labelStyle = { fontSize: 12, fontWeight: 600, color: "#475569", marginBottom: 4, display: "block" };
+
+  return (
+    <Modal title={mode === "edit" ? "予定の編集" : "入出庫予定の作成"} open={open} onClose={onClose} maxWidth="44rem">
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <div>
+          <label style={labelStyle}>顧客名 <span style={{ color: "#dc2626" }}>*</span></label>
+          <input list="schedule-client-list" style={inputStyle} value={form.client} onChange={(e) => setForm((s) => ({ ...s, client: e.target.value }))} placeholder="例: 山田商事" />
+          <datalist id="schedule-client-list">
+            {(clientOptions || []).map((c) => <option key={c} value={c} />)}
+          </datalist>
+        </div>
+        <div>
+          <label style={labelStyle}>案件名 <span style={{ color: "#dc2626" }}>*</span></label>
+          <input style={inputStyle} value={form.caseName} onChange={(e) => setForm((s) => ({ ...s, caseName: e.target.value }))} placeholder="例: 2026年夏イベント資材" />
+        </div>
+        <div>
+          <label style={labelStyle}>必要坪数</label>
+          <input type="number" step="0.1" min="0" style={inputStyle} value={form.requiredTsubo} onChange={(e) => setForm((s) => ({ ...s, requiredTsubo: e.target.value }))} placeholder="例: 12.5" />
+        </div>
+        <div>
+          <label style={labelStyle}>荷姿</label>
+          <input style={inputStyle} value={form.packageForm} onChange={(e) => setForm((s) => ({ ...s, packageForm: e.target.value }))} placeholder="例: パレット / 段ボール / バラ" />
+        </div>
+        <div>
+          <label style={labelStyle}>入庫予定日 <span style={{ color: "#dc2626" }}>*</span></label>
+          <input type="date" style={inputStyle} value={form.inboundDate} onChange={(e) => setForm((s) => ({ ...s, inboundDate: e.target.value }))} />
+        </div>
+        <div>
+          <label style={labelStyle}>出庫予定日 <span style={{ color: "#dc2626" }}>*</span></label>
+          <input type="date" style={inputStyle} value={form.outboundDate} onChange={(e) => setForm((s) => ({ ...s, outboundDate: e.target.value }))} />
+        </div>
+        <div>
+          <label style={labelStyle}>社内担当者</label>
+          {personOptions && personOptions.length > 0 ? (
+            <select style={inputStyle} value={form.personInCharge} onChange={(e) => setForm((s) => ({ ...s, personInCharge: e.target.value }))}>
+              <option value="">（未設定）</option>
+              {personOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+          ) : (
+            <input style={inputStyle} value={form.personInCharge} onChange={(e) => setForm((s) => ({ ...s, personInCharge: e.target.value }))} placeholder="担当者名" />
+          )}
+        </div>
+        <div>
+          <label style={labelStyle}>受入先倉庫（任意 / 将来の連携用）</label>
+          <select style={inputStyle} value={form.warehouseId} onChange={(e) => setForm((s) => ({ ...s, warehouseId: e.target.value }))}>
+            <option value="">（未定）</option>
+            {(warehouses || []).map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+          </select>
+        </div>
+        <div style={{ gridColumn: "1 / -1" }}>
+          <label style={labelStyle}>バー色</label>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <input
+              type="color"
+              value={form.color || "#60a5fa"}
+              onChange={(e) => setForm((s) => ({ ...s, color: e.target.value }))}
+              style={{ width: 52, height: 40, border: "1px solid #cbd5e1", borderRadius: 8, padding: 2, cursor: "pointer" }}
+              title="クリックでカラーピッカーを開く"
+            />
+            <input
+              style={{ ...inputStyle, width: 130, flex: "none" }}
+              value={form.color}
+              onChange={(e) => setForm((s) => ({ ...s, color: e.target.value }))}
+              placeholder="#RRGGBB"
+            />
+            <div style={{ minWidth: 90, height: 30, padding: "0 10px", borderRadius: 6, background: form.color, border: "1px solid rgba(0,0,0,0.15)", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 11, fontWeight: 700, textShadow: "0 1px 2px rgba(0,0,0,0.35)" }}>
+              プレビュー
+            </div>
+            <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+              {SCHEDULE_QUICK_COLORS.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setForm((s) => ({ ...s, color: c }))}
+                  style={{
+                    width: 26, height: 26, borderRadius: "50%",
+                    border: form.color && form.color.toLowerCase() === c.toLowerCase() ? "3px solid #1e293b" : "1px solid rgba(0,0,0,0.15)",
+                    background: c,
+                    cursor: "pointer", padding: 0,
+                  }}
+                  title={c}
+                />
+              ))}
+            </div>
+          </div>
+          <div style={{ marginTop: 6, fontSize: 11, color: "#94a3b8" }}>
+            左のスウォッチをクリックで自由に色を選択できます（プリセットは目安）
+          </div>
+        </div>
+        <div style={{ gridColumn: "1 / -1" }}>
+          <label style={labelStyle}>備考</label>
+          <textarea style={{ ...inputStyle, minHeight: 60, resize: "vertical" }} value={form.notes} onChange={(e) => setForm((s) => ({ ...s, notes: e.target.value }))} />
+        </div>
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 20, gap: 8 }}>
+        <div>
+          {mode === "edit" && (
+            <button type="button" onClick={onDelete}
+              style={{ padding: "8px 16px", borderRadius: 10, border: "1px solid #fca5a5", background: "#fff", color: "#dc2626", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+              削除
+            </button>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button type="button" onClick={onClose}
+            style={{ padding: "8px 16px", borderRadius: 10, border: "1px solid #cbd5e1", background: "#fff", color: "#475569", fontSize: 13, cursor: "pointer" }}>
+            キャンセル
+          </button>
+          <button type="button" onClick={handleSave} disabled={!valid}
+            style={{ padding: "8px 20px", borderRadius: 10, background: valid ? "linear-gradient(135deg, #10b981, #06b6d4)" : "#cbd5e1", color: "#fff", border: "none", fontSize: 13, fontWeight: 700, cursor: valid ? "pointer" : "not-allowed" }}>
+            保存
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function SchedulePlanView({ schedules, onAdd, onEdit }) {
+  const dayPx = 40;
+  const rowHeight = 30;
+  const rowGap = 4;
+  const leftColWidth = 180;
+
+  const [rangeStart, setRangeStart] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 3);
+    return toYmd(d);
+  });
+  const [rangeDays, setRangeDays] = useState(60);
+  const rangeEnd = useMemo(() => addDaysYmd(rangeStart, rangeDays - 1), [rangeStart, rangeDays]);
+  const todayYmd = toYmd(new Date());
+
+  const days = useMemo(() => {
+    const list = [];
+    for (let i = 0; i < rangeDays; i++) {
+      const ymd = addDaysYmd(rangeStart, i);
+      const d = parseYmd(ymd);
+      list.push({ ymd, dow: d.getDay(), day: d.getDate(), month: d.getMonth() + 1, isToday: ymd === todayYmd });
+    }
+    return list;
+  }, [rangeStart, rangeDays, todayYmd]);
+
+  const groups = useMemo(() => {
+    const inRange = (schedules || []).filter((s) =>
+      s.inboundDate && s.outboundDate &&
+      !(s.outboundDate < rangeStart || s.inboundDate > rangeEnd)
+    );
+    const byClient = new Map();
+    for (const s of inRange) {
+      const key = s.client || "(未設定)";
+      if (!byClient.has(key)) byClient.set(key, []);
+      byClient.get(key).push(s);
+    }
+    const clients = [...byClient.keys()].sort();
+    return clients.map((c) => {
+      const items = byClient.get(c);
+      const sorted = [...items].sort((a, b) => a.inboundDate.localeCompare(b.inboundDate));
+      const rows = [];
+      for (const s of sorted) {
+        let placed = false;
+        for (const row of rows) {
+          const last = row[row.length - 1];
+          if (last.outboundDate < s.inboundDate) {
+            row.push(s);
+            placed = true;
+            break;
+          }
+        }
+        if (!placed) rows.push([s]);
+      }
+      return { client: c, rows };
+    });
+  }, [schedules, rangeStart, rangeEnd]);
+
+  const shiftRange = (delta) => setRangeStart((s) => addDaysYmd(s, delta));
+  const goToday = () => {
+    const d = new Date();
+    d.setDate(d.getDate() - 3);
+    setRangeStart(toYmd(d));
+  };
+
+  const renderBar = (s, subRowIdx) => {
+    const rawStart = daysDiff(rangeStart, s.inboundDate);
+    const rawEnd = daysDiff(rangeStart, s.outboundDate);
+    const startIdx = Math.max(0, rawStart);
+    const endIdx = Math.min(days.length - 1, rawEnd);
+    if (endIdx < startIdx) return null;
+    const width = (endIdx - startIdx + 1) * dayPx - 2;
+    const left = startIdx * dayPx + 1;
+    const clipLeft = rawStart < 0;
+    const clipRight = rawEnd > days.length - 1;
+    const tsuboText = (s.requiredTsubo === "" || s.requiredTsubo == null) ? "" : `\n必要坪数: ${s.requiredTsubo}坪`;
+    const packageText = s.packageForm ? `\n荷姿: ${s.packageForm}` : "";
+    const personText = s.personInCharge ? `\n担当: ${s.personInCharge}` : "";
+    const notesText = s.notes ? `\n備考: ${s.notes}` : "";
+    return (
+      <div
+        key={s.id}
+        title={`${s.client} / ${s.caseName}\n入庫: ${s.inboundDate} → 出庫: ${s.outboundDate}${tsuboText}${packageText}${personText}${notesText}`}
+        onDoubleClick={() => onEdit(s)}
+        style={{
+          position: "absolute",
+          top: subRowIdx * (rowHeight + rowGap) + rowGap,
+          left, width, height: rowHeight,
+          background: s.color || SCHEDULE_QUICK_COLORS[0],
+          borderRadius: 6,
+          borderTopLeftRadius: clipLeft ? 0 : 6,
+          borderBottomLeftRadius: clipLeft ? 0 : 6,
+          borderTopRightRadius: clipRight ? 0 : 6,
+          borderBottomRightRadius: clipRight ? 0 : 6,
+          border: "1px solid rgba(0,0,0,0.15)",
+          padding: "0 8px",
+          display: "flex", alignItems: "center",
+          color: "#fff", fontSize: 12, fontWeight: 700,
+          cursor: "pointer",
+          overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+          textShadow: "0 1px 2px rgba(0,0,0,0.35)",
+          userSelect: "none",
+        }}
+      >
+        {s.caseName}
+      </div>
+    );
+  };
+
+  const btn = { padding: "6px 12px", borderRadius: 8, border: "1px solid #cbd5e1", background: "#fff", cursor: "pointer", fontSize: 13, color: "#334155" };
+  const btnPrimary = { padding: "6px 14px", borderRadius: 8, border: "1px solid #6366f1", background: "#6366f1", color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 600 };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: "#fff", borderRadius: 16, border: "1px solid #e2e8f0", overflow: "hidden" }}>
+      {/* toolbar */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: 12, borderBottom: "1px solid #e2e8f0", flexWrap: "wrap" }}>
+        <button type="button" onClick={() => shiftRange(-30)} style={btn}>← 30日</button>
+        <button type="button" onClick={() => shiftRange(-7)} style={btn}>← 7日</button>
+        <button type="button" onClick={goToday} style={btnPrimary}>今日</button>
+        <button type="button" onClick={() => shiftRange(7)} style={btn}>7日 →</button>
+        <button type="button" onClick={() => shiftRange(30)} style={btn}>30日 →</button>
+        <div style={{ marginLeft: 12, fontSize: 13, color: "#475569" }}>{rangeStart} 〜 {rangeEnd}</div>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+          <label style={{ fontSize: 13, color: "#475569" }}>表示日数</label>
+          <input type="number" min="14" max="180" value={rangeDays}
+            onChange={(e) => setRangeDays(clamp(Number(e.target.value) || 60, 14, 180))}
+            style={{ width: 70, padding: "4px 8px", borderRadius: 6, border: "1px solid #cbd5e1", fontSize: 13 }} />
+          <button type="button" onClick={onAdd}
+            style={{ padding: "8px 18px", borderRadius: 10, background: "linear-gradient(135deg, #10b981, #06b6d4)", color: "#fff", border: "none", fontWeight: 700, cursor: "pointer", boxShadow: "0 2px 8px rgba(16,185,129,0.3)", fontSize: 13 }}>
+            ＋ 予定作成
+          </button>
+        </div>
+      </div>
+
+      {/* body */}
+      <div style={{ flex: 1, overflow: "auto" }}>
+        <div style={{ minWidth: leftColWidth + days.length * dayPx, position: "relative" }}>
+          {/* date header row */}
+          <div style={{ display: "flex", position: "sticky", top: 0, zIndex: 3, background: "#f8fafc", borderBottom: "2px solid #cbd5e1" }}>
+            <div style={{ width: leftColWidth, minWidth: leftColWidth, position: "sticky", left: 0, zIndex: 4, background: "#f1f5f9", borderRight: "2px solid #cbd5e1", padding: "8px 12px", fontWeight: 700, fontSize: 13, color: "#334155", display: "flex", alignItems: "center" }}>
+              顧客名
+            </div>
+            <div style={{ display: "flex" }}>
+              {days.map((d) => {
+                const isWeekend = d.dow === 0 || d.dow === 6;
+                const showMonth = d.day === 1 || d.ymd === rangeStart;
+                return (
+                  <div key={d.ymd} style={{
+                    width: dayPx, minWidth: dayPx,
+                    textAlign: "center",
+                    padding: "3px 0",
+                    borderRight: "1px solid #e2e8f0",
+                    background: d.isToday ? "#fef3c7" : (isWeekend ? "#eef2f7" : "#f8fafc"),
+                    fontSize: 11,
+                    color: d.dow === 0 ? "#dc2626" : d.dow === 6 ? "#2563eb" : "#475569",
+                  }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", minHeight: 14 }}>
+                      {showMonth ? `${d.month}月` : ""}
+                    </div>
+                    <div style={{ fontWeight: 700, fontSize: 13 }}>{d.day}</div>
+                    <div style={{ fontSize: 9 }}>{["日", "月", "火", "水", "木", "金", "土"][d.dow]}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* body rows */}
+          {groups.length === 0 ? (
+            <div style={{ padding: 60, textAlign: "center", color: "#94a3b8", fontSize: 14 }}>
+              この期間に予定はありません。「＋ 予定作成」から追加してください。
+            </div>
+          ) : groups.map(({ client, rows }) => {
+            const rowsHeight = rows.length * (rowHeight + rowGap) + rowGap;
+            return (
+              <div key={client} style={{ display: "flex", borderBottom: "1px solid #e2e8f0" }}>
+                <div style={{ width: leftColWidth, minWidth: leftColWidth, position: "sticky", left: 0, zIndex: 2, background: "#fff", borderRight: "2px solid #cbd5e1", padding: "12px", fontWeight: 600, fontSize: 13, color: "#1e293b", display: "flex", alignItems: "center" }}>
+                  {client}
+                </div>
+                <div style={{ position: "relative", width: days.length * dayPx, height: rowsHeight }}>
+                  {days.map((d, i) => {
+                    const isWeekend = d.dow === 0 || d.dow === 6;
+                    return (
+                      <div key={d.ymd} style={{
+                        position: "absolute", left: i * dayPx, top: 0,
+                        width: dayPx, height: "100%",
+                        borderRight: "1px solid #f1f5f9",
+                        background: d.isToday ? "rgba(254,243,199,0.35)" : (isWeekend ? "rgba(241,245,249,0.4)" : "transparent"),
+                        pointerEvents: "none",
+                      }} />
+                    );
+                  })}
+                  {rows.map((row, subIdx) => row.map((s) => renderBar(s, subIdx)))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function runSelfTests() {
   // Minimal internal tests (run only when ?selftest=1)
   const assert = (cond, msg) => {
@@ -12123,6 +12656,36 @@ export default function App() {
     },
   ]);
 
+  // --- 入出庫予定表 ---
+  const [schedules, setSchedules] = useSupabaseState("wh_schedules_v1", []);
+  const [scheduleModalOpen, setScheduleModalOpen] = useState(false);
+  const [scheduleEditTarget, setScheduleEditTarget] = useState(null); // 編集対象 or null=新規
+
+  function openScheduleCreate() {
+    setScheduleEditTarget(null);
+    setScheduleModalOpen(true);
+  }
+  function openScheduleEdit(s) {
+    setScheduleEditTarget(s);
+    setScheduleModalOpen(true);
+  }
+  function saveSchedule(data) {
+    const now = new Date().toISOString();
+    if (scheduleEditTarget) {
+      setSchedules((prev) => prev.map((x) => x.id === scheduleEditTarget.id ? { ...x, ...data, updatedAt: now } : x));
+    } else {
+      const newItem = { ...data, id: "sch-" + uid(), createdAt: now, updatedAt: now };
+      setSchedules((prev) => [...(prev || []), newItem]);
+    }
+    setScheduleModalOpen(false);
+  }
+  function deleteSchedule() {
+    if (!scheduleEditTarget) return;
+    if (!confirm(`「${scheduleEditTarget.caseName || "(名称なし)"}」を削除しますか?`)) return;
+    setSchedules((prev) => (prev || []).filter((x) => x.id !== scheduleEditTarget.id));
+    setScheduleModalOpen(false);
+  }
+
   const activeWarehouse = useMemo(() => warehouses.find((w) => w.id === activeWarehouseId) || null, [
     warehouses,
     activeWarehouseId,
@@ -12159,6 +12722,19 @@ export default function App() {
     }
     return result;
   }, [warehouses, searchRefreshKey]);
+
+  // 予定モーダル用: 顧客名候補（全倉庫のユニット + 既存予定から集計）
+  const scheduleClientOptions = useMemo(() => {
+    const s = new Set();
+    for (const u of allUnitsForSearch) {
+      if (u.client && u.client !== "(未設定)") s.add(u.client);
+    }
+    for (const sch of (schedules || [])) {
+      if (sch.client) s.add(sch.client);
+    }
+    return [...s].sort();
+  }, [allUnitsForSearch, schedules]);
+  const schedulePersonOptions = useMemo(() => (site?.personList || []).map((p) => p.name).filter(Boolean), [site]);
 
   const unitSearchResults = useMemo(() => {
     const q = unitSearchQuery.trim().toLowerCase();
@@ -12563,6 +13139,8 @@ export default function App() {
         pendingFocusUnit={pendingFocusUnit}
         onFocusUnitHandled={() => setPendingFocusUnit(null)}
         onOpenUnitSearch={openUnitSearch}
+        schedules={schedules || []}
+        onEditSchedule={openScheduleEdit}
       />
       <UnitSearchModal
         open={unitSearchOpen}
@@ -12575,6 +13153,17 @@ export default function App() {
         onNavigate={navigateToUnit}
         onReleaseToUnplaced={releaseUnitToUnplaced}
         allUnits={allUnitsForSearch}
+      />
+      <ScheduleEditModal
+        open={scheduleModalOpen}
+        mode={scheduleEditTarget ? "edit" : "create"}
+        initial={scheduleEditTarget}
+        onSave={saveSchedule}
+        onDelete={deleteSchedule}
+        onClose={() => setScheduleModalOpen(false)}
+        clientOptions={scheduleClientOptions}
+        personOptions={schedulePersonOptions}
+        warehouses={warehouses}
       />
       </>
     );
@@ -12589,7 +13178,7 @@ export default function App() {
       <div style={{ display: "flex", alignItems: "center", padding: "10px 20px", borderBottom: "1px solid #e2e8f0", background: "linear-gradient(to right, #ffffff, #f8fafc)" }}>
         <div className="flex items-center gap-3">
           <div className="flex overflow-hidden rounded-xl border-2 shadow-sm" style={{ borderColor: "#6366f1" }}>
-            {[["map", "マップ"], ["simple", "一覧"]].map(([mode, label]) => (
+            {[["map", "マップ"], ["simple", "一覧"], ["schedule", "予定表"]].map(([mode, label]) => (
               <button
                 key={mode}
                 type="button"
@@ -12698,9 +13287,17 @@ export default function App() {
       )}
 
       {/* Body */}
-      <div className="grid h-[calc(100vh-64px)] grid-cols-[1fr_380px] gap-4 p-4">
-        {/* Main area: Map or Simple Grid */}
-        {topViewMode === "simple" ? (
+      <div className={topViewMode === "schedule"
+        ? "h-[calc(100vh-64px)] p-4"
+        : "grid h-[calc(100vh-64px)] grid-cols-[1fr_380px] gap-4 p-4"}>
+        {/* Main area: Map / Simple Grid / Schedule */}
+        {topViewMode === "schedule" ? (
+          <SchedulePlanView
+            schedules={schedules || []}
+            onAdd={openScheduleCreate}
+            onEdit={openScheduleEdit}
+          />
+        ) : topViewMode === "simple" ? (
           <SimpleGridView
             warehouses={warehouses}
             selectedWarehouseId={selectedWarehouseId}
@@ -12738,6 +13335,7 @@ export default function App() {
         )}
 
         {/* Side panel */}
+        {topViewMode !== "schedule" && (
         <div className="flex flex-col gap-4 overflow-auto">
           {/* 選択中の倉庫情報 */}
           {selectedWarehouse && (
@@ -12893,6 +13491,7 @@ export default function App() {
             </div>
           </div>
         </div>
+        )}
       </div>
 
       {/* デバッグ: editOpen={String(editOpen)}, editId={editId}, editTarget={editTarget?.name} */}
@@ -13214,6 +13813,17 @@ export default function App() {
         onNavigate={navigateToUnit}
         onReleaseToUnplaced={releaseUnitToUnplaced}
         allUnits={allUnitsForSearch}
+      />
+      <ScheduleEditModal
+        open={scheduleModalOpen}
+        mode={scheduleEditTarget ? "edit" : "create"}
+        initial={scheduleEditTarget}
+        onSave={saveSchedule}
+        onDelete={deleteSchedule}
+        onClose={() => setScheduleModalOpen(false)}
+        clientOptions={scheduleClientOptions}
+        personOptions={schedulePersonOptions}
+        warehouses={warehouses}
       />
     </div>
   );

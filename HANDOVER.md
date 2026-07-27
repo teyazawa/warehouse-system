@@ -6,12 +6,62 @@
 
 ---
 
-## 最終更新: 2026-07-23
-## 最新コミット (push済): `f30c4cc` fix: 荷物フットプリント実寸化+棚境目/吸着改善+救出ボタン+グループ結合詳細モーダル+stackZ再計算
+## 最終更新: 2026-07-27
+## 最新コミット (push済): 本コミットで push 予定 — feat: 入出庫予定表(ガントチャート)+受入先倉庫連動
+## 前回コミット: `f30c4cc` fix: 荷物フットプリント実寸化+棚境目/吸着改善+救出ボタン+グループ結合詳細モーダル+stackZ再計算
 
 ---
 
-## 最新の作業状況 (2026-07-23)
+## 最新の作業状況 (2026-07-27)
+
+トップ画面に「入出庫予定表」タブ(ガントチャート)を新設。受入先倉庫を指定すると、その倉庫を開いたときにカレンダーの入庫予定=青ドット/出庫予定=赤ドットで表示され、選択日に一致する予定が左サイドの「入出庫予定表」セクションに出る。予定カードはダブルクリックで編集モーダル起動。
+
+### 追加コンポーネント (src/App.jsx)
+
+| 場所 | 内容 |
+|------|------|
+| ~12160 | 日付ヘルパー `toYmd/parseYmd/addDaysYmd/daysDiff` |
+| ~12175 | `SCHEDULE_QUICK_COLORS` (10色プリセット) |
+| ~12193 | `ScheduleEditModal` — 顧客名/案件名/必要坪数/荷姿/入庫日/出庫日/担当者/受入先倉庫/バー色/備考 |
+| ~12290 | `SchedulePlanView` — ガントチャート本体 (縦=顧客名, 横=日付) |
+
+### 予定オブジェクト
+```js
+{
+  id: "sch-xxxxx",
+  client, caseName, requiredTsubo, packageForm,
+  inboundDate, outboundDate,     // "YYYY-MM-DD"
+  personInCharge, color, warehouseId, notes,
+  createdAt, updatedAt,
+}
+```
+`useSupabaseState("wh_schedules_v1", [])` で永続化。
+
+### バーカラー
+`<input type="color">` (OSカラーピッカー) + HEX直接入力 + プレビュー + クイックプリセット10色。荷物と同スタイル、実質無限色選択。
+
+### 受入先倉庫連動 (WarehouseView)
+- `CalendarStub` に `markedInbound`/`markedOutbound` prop 追加 (src/App.jsx:~1201)。セル下部に青/赤ドット表示、凡例つき
+- `scheduledInboundDates`/`OutboundDates` は **schedules + units.arrivalDate/departureDate 両方**を集約 (src/App.jsx:~5854)
+- 「入庫予定」セクションの下に「入出庫予定表」セクションを追加 (src/App.jsx:~6857)。予定カード ダブルクリック → 編集モーダル
+
+### ⚠ 重要な発見
+**モーダルは App の view 分岐(map/warehouse)両方に配置が必要**。`view === "warehouse"` 分岐で ScheduleEditModal を配置し忘れていて倉庫内でダブルクリック→編集が発火しなかった。今後モーダル追加時は必ず両分岐 (src/App.jsx:~13154 warehouse分岐 と ~13390 map分岐) に配置。
+
+### 未実装(将来)
+- 入庫予定日到達で自動的にその倉庫の未配置(unplaced)に荷物レコード生成
+- `warehouseId` フィールドと UI は既に用意済み。あとは検知+生成ロジックのみ
+
+### テスト結果 (全合格)
+- [x] 予定表タブ切替、予定作成→ガントチャート表示、重複期間の自動段積み
+- [x] バーダブルクリック→編集/削除、色ピッカー(ネイティブ+プリセット+HEX)
+- [x] 受入先倉庫指定→CalendarStubドット、選択日一致→予定リスト表示
+- [x] 予定カードダブルクリック→編集モーダル (両分岐配置後)
+- [x] units.arrivalDate/departureDate もカレンダードットに反映
+
+---
+
+## 2026-07-23 の作業状況 (前回)
 
 2026-07-22 の未commit分をブラウザで動作確認→追加バグ発見→修正→全テスト合格→1コミットにまとめる、という流れ。
 
