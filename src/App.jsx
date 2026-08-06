@@ -865,6 +865,42 @@ function SectionTitle({ children, right }) {
   );
 }
 
+// 実数寸法入力: ドラフト方式で「0.2」等の途中入力を許容し、blur/Enter時に確定
+// 従来 type="number"+onChange即commit だと、"0" 入力時点で state=min にクランプされ
+// 続く "." が number 入力の二重ドット制約で無視され、"2" を打っても "0.12→round(1.2)/10=0.1" で戻る不具合があった
+function DimensionInput({ value, onCommit, min = 0.1, max = Infinity, step = 0.1, className = "", inputMode = "decimal", disabled = false }) {
+  const [draft, setDraft] = useState(String(value ?? ""));
+  const focusedRef = useRef(false);
+  useEffect(() => {
+    if (!focusedRef.current) setDraft(String(value ?? ""));
+  }, [value]);
+  const commit = () => {
+    const raw = parseFloat(draft);
+    if (!Number.isFinite(raw) || draft === "") {
+      setDraft(String(value ?? ""));
+      return;
+    }
+    const quantized = Math.round(raw / step) * step;
+    const rounded = Math.round(quantized * 1000) / 1000;
+    const clamped = Math.min(max, Math.max(min, rounded));
+    onCommit(clamped);
+    setDraft(String(clamped));
+  };
+  return (
+    <input
+      className={className}
+      type="text"
+      inputMode={inputMode}
+      value={draft}
+      disabled={disabled}
+      onFocus={() => { focusedRef.current = true; }}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => { focusedRef.current = false; commit(); }}
+      onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
+    />
+  );
+}
+
 // ─── CSS 2.5D アイソメトリックビュー ───
 // === Shared 3D Isometric Utilities & Component ===
 
@@ -3888,10 +3924,31 @@ const allClientNames = useMemo(() => {
     }
 
     if (drag.type === "resize_unit") {
-      const newW = Math.max(1, Math.round(drag.baseSize.w + dx));
-      const newH = Math.max(1, Math.round(drag.baseSize.h + dy));
-      const newWm = +(newW * (layout.floor.cell_m_w || 1.2)).toFixed(2);
-      const newDm = +(newH * (layout.floor.cell_m_d || 1.0)).toFixed(2);
+      // 0.1セル刻みで小数リサイズ。最小 0.1 セル ≒ 0.1m (cell 1.2m 換算なら 0.12m)
+      const cellW = layout.floor.cell_m_w || 1.2;
+      const cellD = layout.floor.cell_m_d || 1.0;
+      const rawW = +(drag.baseSize.w + dx).toFixed(1);
+      const rawH = +(drag.baseSize.h + dy).toFixed(1);
+      // 0.1m を保証するため cellW/cellD で下限を計算
+      const minCellsW = Math.max(0.1, +(0.1 / cellW).toFixed(2));
+      const minCellsH = Math.max(0.1, +(0.1 / cellD).toFixed(2));
+      let newW = Math.max(minCellsW, rawW);
+      let newH = Math.max(minCellsH, rawH);
+
+      // 棚に乗っている荷物は棚境界を超えないように上限クランプ
+      const uNow = unitsRef.current.find((x) => x.id === drag.unitId);
+      if (uNow && uNow.loc?.kind === "shelf") {
+        const shelf = (layout.shelves || []).find((s) => s.id === uNow.loc.shelfId);
+        if (shelf) {
+          const maxW = +(shelf.w - (uNow.loc.x || 0)).toFixed(2);
+          const maxH = +(shelf.h - (uNow.loc.y || 0)).toFixed(2);
+          if (maxW >= minCellsW) newW = Math.min(newW, maxW);
+          if (maxH >= minCellsH) newH = Math.min(newH, maxH);
+        }
+      }
+
+      const newWm = +(newW * cellW).toFixed(2);
+      const newDm = +(newH * cellD).toFixed(2);
       setUnits((prev) =>
         prev.map((u) =>
           u.id === drag.unitId ? { ...u, w_cells: newW, h_cells: newH, w_m: newWm, d_m: newDm } : u
@@ -4022,6 +4079,26 @@ const allClientNames = useMemo(() => {
           if (corner.includes("n")) {
             newH = Math.max(0.1, +(drag.baseRect.h - dy).toFixed(1));
             newY = +(drag.baseRect.y + drag.baseRect.h - newH).toFixed(1);
+          }
+
+          // 棚上に載っている荷物より小さくできないように下限をクランプ
+          // (loc.x/y はローカル座標。footprint 端が新サイズを超えないこと)
+          const contained = unitsRef.current.filter((uu) => uu.loc?.kind === "shelf" && uu.loc.shelfId === drag.id);
+          let minWFromUnits = 0.1;
+          let minHFromUnits = 0.1;
+          for (const uu of contained) {
+            const fp = unitFootprintCells(uu);
+            minWFromUnits = Math.max(minWFromUnits, +((uu.loc.x || 0) + fp.w).toFixed(2));
+            minHFromUnits = Math.max(minHFromUnits, +((uu.loc.y || 0) + fp.h).toFixed(2));
+          }
+          if (newW < minWFromUnits) {
+            // w-corner の場合 newX 側も再計算 (右端を固定)
+            if (corner.includes("w")) newX = +(drag.baseRect.x + drag.baseRect.w - minWFromUnits).toFixed(1);
+            newW = minWFromUnits;
+          }
+          if (newH < minHFromUnits) {
+            if (corner.includes("n")) newY = +(drag.baseRect.y + drag.baseRect.h - minHFromUnits).toFixed(1);
+            newH = minHFromUnits;
           }
 
           const autoArea = newW * prev.floor.cell_m_w * newH * prev.floor.cell_m_d;
@@ -8950,17 +9027,13 @@ ${cs.units.length > 0 ? `
                         </div>
                         <div>
                           <div className="text-xs text-gray-500">幅(W)</div>
-                          <input
+                          <DimensionInput
                             className="mt-1 w-full rounded-xl border px-2 py-1 text-sm"
-                            type="number"
-                            step="0.1"
-                            min="0.1"
                             value={selectedEntity.w}
-                            onChange={(e) => {
-                              if (e.target.value === "") return;
-                              const raw = Number(e.target.value);
-                              if (!Number.isFinite(raw)) return;
-                              const v = clamp(Math.round(raw * 10) / 10, 0.1, layout.floor.cols);
+                            min={0.1}
+                            max={layout.floor.cols}
+                            step={0.1}
+                            onCommit={(v) => {
                               if (selected.kind === "zone")
                                 setLayout((p) => ({
                                   ...p,
@@ -8972,31 +9045,35 @@ ${cs.units.length > 0 ? `
                                   racks: p.racks.map((r) => (r.id === selected.id ? { ...r, w: v } : r)),
                                 }));
                               if (selected.kind === "shelf") {
-                                const autoArea = v * layout.floor.cell_m_w * selectedEntity.h * layout.floor.cell_m_d;
+                                // 載っている荷物を割り込まないように下限クランプ
+                                let minW = 0.1;
+                                for (const uu of units) {
+                                  if (uu.loc?.kind !== "shelf" || uu.loc.shelfId !== selected.id) continue;
+                                  const fp = unitFootprintCells(uu);
+                                  minW = Math.max(minW, +((uu.loc.x || 0) + fp.w).toFixed(2));
+                                }
+                                const clampedW = Math.max(v, minW);
+                                if (clampedW > v) showToast(`載っている荷物の位置により幅は ${minW}m 以上必要です`);
+                                const autoArea = clampedW * layout.floor.cell_m_w * selectedEntity.h * layout.floor.cell_m_d;
                                 setLayout((p) => ({
                                   ...p,
-                                  shelves: (p.shelves || []).map((s) => (s.id === selected.id ? { ...s, w: v, area_m2: s.area_m2_manual ? s.area_m2 : autoArea } : s)),
+                                  shelves: (p.shelves || []).map((s) => (s.id === selected.id ? { ...s, w: clampedW, area_m2: s.area_m2_manual ? s.area_m2 : autoArea } : s)),
                                 }));
                               }
                               if (selected.kind === "panel")
                                 setPanels((p) => p.map((pn) => (pn.id === selected.id ? { ...pn, w: v } : pn)));
                             }}
-                            inputMode="decimal"
                           />
                         </div>
                         <div>
                           <div className="text-xs text-gray-500">高さ(H)</div>
-                          <input
+                          <DimensionInput
                             className="mt-1 w-full rounded-xl border px-2 py-1 text-sm"
-                            type="number"
-                            step="0.1"
-                            min="0.1"
                             value={selectedEntity.h}
-                            onChange={(e) => {
-                              if (e.target.value === "") return;
-                              const raw = Number(e.target.value);
-                              if (!Number.isFinite(raw)) return;
-                              const v = clamp(Math.round(raw * 10) / 10, 0.1, layout.floor.rows);
+                            min={0.1}
+                            max={layout.floor.rows}
+                            step={0.1}
+                            onCommit={(v) => {
                               if (selected.kind === "zone")
                                 setLayout((p) => ({
                                   ...p,
@@ -9008,16 +9085,24 @@ ${cs.units.length > 0 ? `
                                   racks: p.racks.map((r) => (r.id === selected.id ? { ...r, h: v } : r)),
                                 }));
                               if (selected.kind === "shelf") {
-                                const autoArea = selectedEntity.w * layout.floor.cell_m_w * v * layout.floor.cell_m_d;
+                                // 載っている荷物を割り込まないように下限クランプ
+                                let minH = 0.1;
+                                for (const uu of units) {
+                                  if (uu.loc?.kind !== "shelf" || uu.loc.shelfId !== selected.id) continue;
+                                  const fp = unitFootprintCells(uu);
+                                  minH = Math.max(minH, +((uu.loc.y || 0) + fp.h).toFixed(2));
+                                }
+                                const clampedH = Math.max(v, minH);
+                                if (clampedH > v) showToast(`載っている荷物の位置により高さは ${minH}m 以上必要です`);
+                                const autoArea = selectedEntity.w * layout.floor.cell_m_w * clampedH * layout.floor.cell_m_d;
                                 setLayout((p) => ({
                                   ...p,
-                                  shelves: (p.shelves || []).map((s) => (s.id === selected.id ? { ...s, h: v, area_m2: s.area_m2_manual ? s.area_m2 : autoArea } : s)),
+                                  shelves: (p.shelves || []).map((s) => (s.id === selected.id ? { ...s, h: clampedH, area_m2: s.area_m2_manual ? s.area_m2 : autoArea } : s)),
                                 }));
                               }
                               if (selected.kind === "panel")
                                 setPanels((p) => p.map((pn) => (pn.id === selected.id ? { ...pn, h: v } : pn)));
                             }}
-                            inputMode="decimal"
                           />
                         </div>
                       </div>
@@ -9557,15 +9642,41 @@ ${cs.units.length > 0 ? `
                       <div className="grid grid-cols-3 gap-2">
                         <div>
                           <div className="text-xs text-gray-500">幅(m)</div>
-                          <input className="mt-1 w-full rounded-xl border px-2 py-1 text-sm" type="number" min="0.1" step="0.1" value={+(selectedEntity.w_m || ((selectedEntity.w || 2) * (layout.floor.cell_m_w || 1.2))).toFixed(2)} onChange={(e) => { const v = Math.max(0.1, Number(e.target.value) || 0.1); const cells = Math.max(1, Math.ceil(v / (layout.floor.cell_m_w || 1.2))); setPanels((p) => p.map((pn) => (pn.id === selected.id ? { ...pn, w_m: +v.toFixed(2), w: cells } : pn))); }} />
+                          <DimensionInput
+                            className="mt-1 w-full rounded-xl border px-2 py-1 text-sm"
+                            value={+(selectedEntity.w_m || ((selectedEntity.w || 2) * (layout.floor.cell_m_w || 1.2))).toFixed(2)}
+                            min={0.1}
+                            step={0.1}
+                            onCommit={(v) => {
+                              const cells = Math.max(1, Math.ceil(v / (layout.floor.cell_m_w || 1.2)));
+                              setPanels((p) => p.map((pn) => (pn.id === selected.id ? { ...pn, w_m: +v.toFixed(2), w: cells } : pn)));
+                            }}
+                          />
                         </div>
                         <div>
                           <div className="text-xs text-gray-500">奥行(m)</div>
-                          <input className="mt-1 w-full rounded-xl border px-2 py-1 text-sm" type="number" min="0.1" step="0.1" value={+(selectedEntity.d_m || ((selectedEntity.h || 2) * (layout.floor.cell_m_d || 1.0))).toFixed(2)} onChange={(e) => { const v = Math.max(0.1, Number(e.target.value) || 0.1); const cells = Math.max(1, Math.ceil(v / (layout.floor.cell_m_d || 1.0))); setPanels((p) => p.map((pn) => (pn.id === selected.id ? { ...pn, d_m: +v.toFixed(2), h: cells } : pn))); }} />
+                          <DimensionInput
+                            className="mt-1 w-full rounded-xl border px-2 py-1 text-sm"
+                            value={+(selectedEntity.d_m || ((selectedEntity.h || 2) * (layout.floor.cell_m_d || 1.0))).toFixed(2)}
+                            min={0.1}
+                            step={0.1}
+                            onCommit={(v) => {
+                              const cells = Math.max(1, Math.ceil(v / (layout.floor.cell_m_d || 1.0)));
+                              setPanels((p) => p.map((pn) => (pn.id === selected.id ? { ...pn, d_m: +v.toFixed(2), h: cells } : pn)));
+                            }}
+                          />
                         </div>
                         <div>
                           <div className="text-xs text-gray-500">高さ(m)</div>
-                          <input className="mt-1 w-full rounded-xl border px-2 py-1 text-sm" type="number" min="0.1" step="0.1" value={+(selectedEntity.h_m || 1.8).toFixed(2)} onChange={(e) => { const v = Math.max(0.1, Number(e.target.value) || 0.1); setPanels((p) => p.map((pn) => (pn.id === selected.id ? { ...pn, h_m: +v.toFixed(2) } : pn))); }} />
+                          <DimensionInput
+                            className="mt-1 w-full rounded-xl border px-2 py-1 text-sm"
+                            value={+(selectedEntity.h_m || 1.8).toFixed(2)}
+                            min={0.1}
+                            step={0.1}
+                            onCommit={(v) => {
+                              setPanels((p) => p.map((pn) => (pn.id === selected.id ? { ...pn, h_m: +v.toFixed(2) } : pn)));
+                            }}
+                          />
                         </div>
                       </div>
                     </div>
@@ -9995,40 +10106,71 @@ ${cs.units.length > 0 ? `
                             <div className="grid grid-cols-3 gap-2 mt-1">
                               <div>
                                 <div className="text-[10px] text-gray-400">幅(m)</div>
-                                <input
+                                <DimensionInput
                                   className="w-full rounded-lg border px-2 py-1 text-sm"
-                                  type="number" min="0.1" step="0.1"
                                   value={selectedEntity.w_m}
-                                  onChange={(e) => {
-                                    const v = Math.max(0.1, Number(e.target.value) || 0.1);
-                                    const cells = +Math.max(0.1, v / (layout.floor.cell_m_w || 1.2)).toFixed(2);
-                                    updateUnitFieldSilent(selectedEntity.id, "w_m", +v.toFixed(2));
+                                  min={0.1}
+                                  step={0.1}
+                                  onCommit={(v) => {
+                                    let clampedV = v;
+                                    // 棚に乗っている場合は棚境界を超えない
+                                    if (selectedEntity.loc?.kind === "shelf") {
+                                      const shelf = (layout.shelves || []).find((s) => s.id === selectedEntity.loc.shelfId);
+                                      if (shelf) {
+                                        const cellW = layout.floor.cell_m_w || 1.2;
+                                        // w_m は rot=false のとき fp.w、rot=true のとき fp.h に対応
+                                        const maxWm = selectedEntity.rot
+                                          ? +((shelf.h - (selectedEntity.loc.y || 0)) * cellW).toFixed(2)
+                                          : +((shelf.w - (selectedEntity.loc.x || 0)) * cellW).toFixed(2);
+                                        if (maxWm >= 0.1 && v > maxWm) {
+                                          clampedV = maxWm;
+                                          showToast(`棚のサイズを超えるため幅は ${maxWm}m までです`);
+                                        }
+                                      }
+                                    }
+                                    const cells = +Math.max(0.1, clampedV / (layout.floor.cell_m_w || 1.2)).toFixed(2);
+                                    updateUnitFieldSilent(selectedEntity.id, "w_m", +clampedV.toFixed(2));
                                     updateUnitFieldSilent(selectedEntity.id, "w_cells", cells);
                                   }}
                                 />
                               </div>
                               <div>
                                 <div className="text-[10px] text-gray-400">奥行(m)</div>
-                                <input
+                                <DimensionInput
                                   className="w-full rounded-lg border px-2 py-1 text-sm"
-                                  type="number" min="0.1" step="0.1"
                                   value={selectedEntity.d_m}
-                                  onChange={(e) => {
-                                    const v = Math.max(0.1, Number(e.target.value) || 0.1);
-                                    const cells = +Math.max(0.1, v / (layout.floor.cell_m_d || 1.0)).toFixed(2);
-                                    updateUnitFieldSilent(selectedEntity.id, "d_m", +v.toFixed(2));
+                                  min={0.1}
+                                  step={0.1}
+                                  onCommit={(v) => {
+                                    let clampedV = v;
+                                    if (selectedEntity.loc?.kind === "shelf") {
+                                      const shelf = (layout.shelves || []).find((s) => s.id === selectedEntity.loc.shelfId);
+                                      if (shelf) {
+                                        const cellD = layout.floor.cell_m_d || 1.0;
+                                        // d_m は rot=false のとき fp.h、rot=true のとき fp.w に対応
+                                        const maxDm = selectedEntity.rot
+                                          ? +((shelf.w - (selectedEntity.loc.x || 0)) * cellD).toFixed(2)
+                                          : +((shelf.h - (selectedEntity.loc.y || 0)) * cellD).toFixed(2);
+                                        if (maxDm >= 0.1 && v > maxDm) {
+                                          clampedV = maxDm;
+                                          showToast(`棚のサイズを超えるため奥行は ${maxDm}m までです`);
+                                        }
+                                      }
+                                    }
+                                    const cells = +Math.max(0.1, clampedV / (layout.floor.cell_m_d || 1.0)).toFixed(2);
+                                    updateUnitFieldSilent(selectedEntity.id, "d_m", +clampedV.toFixed(2));
                                     updateUnitFieldSilent(selectedEntity.id, "h_cells", cells);
                                   }}
                                 />
                               </div>
                               <div>
                                 <div className="text-[10px] text-gray-400">高さ(m)</div>
-                                <input
+                                <DimensionInput
                                   className="w-full rounded-lg border px-2 py-1 text-sm"
-                                  type="number" min="0.1" step="0.1"
                                   value={selectedEntity.h_m}
-                                  onChange={(e) => {
-                                    const v = Math.max(0.1, Number(e.target.value) || 0.1);
+                                  min={0.1}
+                                  step={0.1}
+                                  onCommit={(v) => {
                                     updateUnitFieldSilent(selectedEntity.id, "h_m", +v.toFixed(2));
                                   }}
                                 />
