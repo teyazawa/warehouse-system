@@ -1519,11 +1519,17 @@ function UnitSearchModal({ open, onClose, query, setQuery, searchKey, setSearchK
   );
 }
 
-function ShippedListModal({ open, onClose, shippedUnits, wh }) {
+function ShippedListModal({ open, onClose, shippedUnits, wh, onRestore }) {
   const [query, setQuery] = useState("");
   const [clientFilter, setClientFilter] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  // 復元モード中の行: { id, date } / null=非復元中
+  const [restoring, setRestoring] = useState(null);
+  const todayYmd = useMemo(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }, []);
 
   const clientOptions = useMemo(() => {
     const set = new Set();
@@ -1652,21 +1658,86 @@ function ShippedListModal({ open, onClose, shippedUnits, wh }) {
                   <th style={{ padding: "8px 12px", textAlign: "right", color: "#475569", fontWeight: 700 }}>数量</th>
                   <th style={{ padding: "8px 12px", textAlign: "left", color: "#475569", fontWeight: 700 }}>担当</th>
                   <th style={{ padding: "8px 12px", textAlign: "left", color: "#475569", fontWeight: 700 }}>入庫日</th>
+                  {onRestore && (
+                    <th style={{ padding: "8px 12px", textAlign: "center", color: "#475569", fontWeight: 700, whiteSpace: "nowrap" }}>操作</th>
+                  )}
                 </tr>
               </thead>
               <tbody>
-                {capped.map((u) => (
-                  <tr key={u.id} style={{ borderBottom: "1px solid #f1f5f9" }}>
-                    <td style={{ padding: "8px 12px", color: "#1e293b", whiteSpace: "nowrap" }}>{fmtDate(u.departureDate || u.shippedAt)}</td>
-                    <td style={{ padding: "8px 12px", color: "#1e293b" }}>{u.client || "—"}</td>
-                    <td style={{ padding: "8px 12px", color: "#1e293b", fontWeight: 600 }}>{u.name || "(名称なし)"}</td>
-                    <td style={{ padding: "8px 12px", color: "#64748b" }}>{u.kind || "—"}</td>
-                    <td style={{ padding: "8px 12px", color: "#64748b", textAlign: "right", whiteSpace: "nowrap" }}>{`${u.w_m || 0}×${u.d_m || 0}×${u.h_m || 0}m`}</td>
-                    <td style={{ padding: "8px 12px", color: "#64748b", textAlign: "right" }}>{u.qty || 1}</td>
-                    <td style={{ padding: "8px 12px", color: "#64748b" }}>{u.personInCharge || "—"}</td>
-                    <td style={{ padding: "8px 12px", color: "#64748b", whiteSpace: "nowrap" }}>{fmtDate(u.arrivalDate)}</td>
-                  </tr>
-                ))}
+                {capped.map((u) => {
+                  const isRestoring = restoring?.id === u.id;
+                  return (
+                    <tr key={u.id} style={{ borderBottom: "1px solid #f1f5f9", background: isRestoring ? "#fef3c7" : undefined }}>
+                      <td style={{ padding: "8px 12px", color: "#1e293b", whiteSpace: "nowrap" }}>{fmtDate(u.departureDate || u.shippedAt)}</td>
+                      <td style={{ padding: "8px 12px", color: "#1e293b" }}>{u.client || "—"}</td>
+                      <td style={{ padding: "8px 12px", color: "#1e293b", fontWeight: 600 }}>{u.name || "(名称なし)"}</td>
+                      <td style={{ padding: "8px 12px", color: "#64748b" }}>{u.kind || "—"}</td>
+                      <td style={{ padding: "8px 12px", color: "#64748b", textAlign: "right", whiteSpace: "nowrap" }}>{`${u.w_m || 0}×${u.d_m || 0}×${u.h_m || 0}m`}</td>
+                      <td style={{ padding: "8px 12px", color: "#64748b", textAlign: "right" }}>{u.qty || 1}</td>
+                      <td style={{ padding: "8px 12px", color: "#64748b" }}>{u.personInCharge || "—"}</td>
+                      <td style={{ padding: "8px 12px", color: "#64748b", whiteSpace: "nowrap" }}>{fmtDate(u.arrivalDate)}</td>
+                      {onRestore && (
+                        <td style={{ padding: "8px 12px", whiteSpace: "nowrap", textAlign: "center" }}>
+                          {isRestoring ? (
+                            <div style={{ display: "flex", alignItems: "center", gap: "6px", justifyContent: "center" }}>
+                              <input
+                                type="date"
+                                value={restoring.date}
+                                onChange={(e) => setRestoring({ id: u.id, date: e.target.value })}
+                                style={{ padding: "4px 6px", borderRadius: "6px", border: "1.5px solid #f59e0b", fontSize: "12px", outline: "none" }}
+                                autoFocus
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const d = restoring.date || null;
+                                  if (d) {
+                                    const t = new Date(d + "T00:00:00").getTime();
+                                    const now = new Date();
+                                    const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+                                    if (t < today0) {
+                                      if (!window.confirm(`「${d}」は過去の日付です。\n倉庫に戻しても、次回ページを開いた時に再び出庫リストへ移動してしまいます。\nそれでも続けますか？（出庫日を空欄にする場合は日付欄をクリアしてください）`)) {
+                                        return;
+                                      }
+                                    }
+                                  }
+                                  const res = onRestore(u, d);
+                                  if (res && res.ok === false) {
+                                    alert(res.reason || "復元に失敗しました");
+                                    return;
+                                  }
+                                  setRestoring(null);
+                                  if (res?.placedTo === "unplaced") {
+                                    alert("元位置に置けなかったため「未配置」リストに戻しました");
+                                  }
+                                }}
+                                style={{ padding: "4px 10px", borderRadius: "6px", border: "1px solid #16a34a", background: "#16a34a", color: "white", fontSize: "11px", fontWeight: 600, cursor: "pointer" }}
+                              >
+                                確定
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setRestoring(null)}
+                                style={{ padding: "4px 8px", borderRadius: "6px", border: "1px solid #cbd5e1", background: "white", color: "#475569", fontSize: "11px", cursor: "pointer" }}
+                              >
+                                取消
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setRestoring({ id: u.id, date: todayYmd })}
+                              style={{ padding: "4px 10px", borderRadius: "6px", border: "1px solid #f59e0b", background: "#fef3c7", color: "#92400e", fontSize: "11px", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}
+                              title="出庫を取り消して倉庫に戻す"
+                            >
+                              戻す
+                            </button>
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
@@ -2157,6 +2228,59 @@ function WarehouseView({ wh, onBack, onUpdateWarehouse, site, onUpdateSite, ware
     });
     _setUnitsRaw((prev) => prev.filter((u) => !toShipIds.has(u.id)));
   }, [units, isLoggedIn, wh.id, wh.name, _setShippedUnitsRaw, _setUnitsRaw]);
+
+  // 出庫リストから復元 (誤って過去日を設定して出庫扱いになった荷物を戻す)
+  // newDepartureDate: "YYYY-MM-DD" または null。過去日でも許可するが、翌ロード時に再出庫される点は呼出側で警告済み前提。
+  // returns: { ok: true, placedTo: "original"|"unplaced", pastDate: bool } | { ok: false, reason: string }
+  function unshipUnit(shippedUnit, newDepartureDate) {
+    if (!isLoggedIn) { _authBlock(); return { ok: false, reason: "未ログイン" }; }
+    if (!shippedUnit || !shippedUnit.id) return { ok: false, reason: "対象なし" };
+    let pastDate = false;
+    if (newDepartureDate) {
+      const t = new Date(newDepartureDate + "T00:00:00").getTime();
+      if (isNaN(t)) return { ok: false, reason: "日付形式が不正です" };
+      const now = new Date();
+      const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      if (t < today0) pastDate = true;
+    }
+    const { _originalLoc, _originalWhId, _originalWhName, shippedAt, ...rest } = shippedUnit;
+    const restored = { ...rest };
+    // 元位置の復元判定
+    let finalLoc = { kind: "unplaced" };
+    let placedTo = "unplaced";
+    if (_originalLoc?.kind === "floor") {
+      if (canPlaceOnFloor(restored, _originalLoc.x, _originalLoc.y, restored.id)) {
+        finalLoc = _originalLoc;
+        placedTo = "original";
+      }
+    } else if (_originalLoc?.kind === "shelf" && _originalLoc.shelfId) {
+      const shelfExists = (layout.shelves || []).some((s) => s.id === _originalLoc.shelfId);
+      if (shelfExists) {
+        finalLoc = _originalLoc;
+        placedTo = "original";
+      }
+    } else if (_originalLoc?.kind === "rack" && _originalLoc.rackId) {
+      const rackExists = (layout.racks || []).some((r) => r.id === _originalLoc.rackId);
+      if (rackExists) {
+        finalLoc = _originalLoc;
+        placedTo = "original";
+      }
+    }
+    restored.loc = finalLoc;
+    restored.stackZ = 0;
+    restored.status = "in_stock";
+    restored.departureDate = newDepartureDate || null;
+    const hist = (restored.editHistory || []).slice();
+    hist.push({
+      timestamp: new Date().toISOString(),
+      action: `出庫リストから復元 (${placedTo === "original" ? "元位置" : "未配置"}${newDepartureDate ? ` / 新出庫予定: ${newDepartureDate}` : " / 出庫予定クリア"})`,
+    });
+    if (hist.length > 200) hist.splice(0, hist.length - 200);
+    restored.editHistory = hist;
+    setUnits((prev) => [...prev, restored]);
+    setShippedUnits((prev) => prev.filter((u) => u.id !== shippedUnit.id));
+    return { ok: true, placedTo, pastDate };
+  }
 
   // 仮置き場ゾーンの自動作成（既存オブジェクトと重ならない空き位置を探索）
   const stagingCreatedRef = useRef(false);
@@ -10986,6 +11110,7 @@ ${cs.units.length > 0 ? `
         onClose={() => setShippedListOpen(false)}
         shippedUnits={shippedUnits}
         wh={wh}
+        onRestore={unshipUnit}
       />
 
       {/* 配電盤詳細モーダル */}
